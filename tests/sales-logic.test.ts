@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifySalesStatus, fieldDisplayValue } from "../lib/sales-logic";
+import { classifyLossReasonGroup, classifySalesStatus, fieldDisplayValue } from "../lib/sales-logic";
 import { resolvePostSalePipelines } from "../lib/pipelines";
 
 test("Not Relevant marketing sifatsizligi sifatida ajratiladi", () => {
@@ -18,6 +18,12 @@ test("Oplata yoki post-sale funnel sotuvni bir marta tasdiqlaydi", () => {
 
 test("Причина провала enum qiymati nomga aylantiriladi", () => {
   assert.equal(fieldDisplayValue("7", new Map([["7", "Telefon noto‘g‘ri"]])), "Telefon noto‘g‘ri");
+});
+
+test("IDOKO va SD transfer marketing sifatsizligiga qo‘shilmaydi", () => {
+  assert.equal(classifyLossReasonGroup({ status: "LOW_QUALITY", reason: "IDOKO ga berildi", routingPatterns: ["idoko", "sd"] }), "ROUTING");
+  assert.equal(classifyLossReasonGroup({ status: "LOW_QUALITY", reason: "SD ga o‘tkazildi", routingPatterns: ["idoko", "sd"] }), "ROUTING");
+  assert.equal(classifyLossReasonGroup({ status: "LOW_QUALITY", reason: "Noto‘g‘ri raqam", routingPatterns: ["idoko", "sd"] }), "MARKETING");
 });
 
 test("IBOX va SD post-sale funnel Cyrillic nom bilan topiladi", () => {

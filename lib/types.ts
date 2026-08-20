@@ -19,6 +19,9 @@ export type DashboardSettings = {
   salesManagerField: string | null;
   defaultStageLimitHours: number;
   stageLimits: Record<string, number>;
+  qualifiedStageIds: string[];
+  routingReasonPatterns: string[];
+  autoSyncMinutes: number;
 };
 
 export type PipelineOption = {
@@ -68,7 +71,18 @@ export type ProcessingSource = "OUTGOING_CALL" | "STAGE_CHANGE" | "NO_PROCESSING
 export type SlaStatus = "ON_TIME" | "LATE" | "NO_PROCESSING";
 export type CreationPeriod = "WORK_HOURS" | "AFTER_HOURS";
 export type SalesStatus = "ACTIVE" | "LOW_QUALITY" | "LOST" | "WON";
+export type LossReasonGroup = "MARKETING" | "SALES" | "ROUTING" | "NONE";
 export type SalesManagerAttribution = "CUSTOM_FIELD" | "FIRST_CALL" | "STAGE_MOVER" | "CURRENT_RESPONSIBLE" | "UNKNOWN";
+
+export type StageTimelineEntry = {
+  categoryId: string;
+  pipeline: string;
+  stageId: string;
+  stage: string;
+  enteredAt: string;
+  exitedAt: string | null;
+  durationHours: number;
+};
 
 export type AnalyticsRecord = {
   analyticsVersion: number;
@@ -94,10 +108,20 @@ export type AnalyticsRecord = {
   source: string;
   salesStatus: SalesStatus;
   qualified: boolean;
+  qualifiedAt: string | null;
+  qualifiedStageId: string | null;
+  qualifiedStage: string | null;
   wonAt: string | null;
+  salesCycleHours: number | null;
   opportunity: number;
   currencyId: string;
   lossReason: string;
+  lossReasonGroup: LossReasonGroup;
+  contactId: string | null;
+  companyId: string | null;
+  customerKey: string | null;
+  duplicateOfDealId: string | null;
+  stageTimeline: StageTimelineEntry[];
   salesManagerId: string | null;
   salesManager: string | null;
   salesManagerAttribution: SalesManagerAttribution;

@@ -1,5 +1,5 @@
 import { calculateBusinessMinutes, getSlaStart, isInsideWorkingTime } from "./business-time";
-import { classifySalesStatus, fieldDisplayValue, isPaymentStage } from "./sales-logic";
+import { classifyLossReasonGroup, classifySalesStatus, fieldDisplayValue, isPaymentStage, isQualificationStage } from "./sales-logic";
 import type { SalesSnapshot } from "./storage";
 import type { AnalyticsRecord, CallOutcome, DashboardSettings, ProviderDiagnostic, SalesManagerAttribution } from "./types";
 
@@ -79,6 +79,45 @@ function firstStageChange(deal: RawDeal, histories: RawStageHistory[]) {
 
 function stageName(id: string, stages: Map<string, string>) { return stages.get(id) ?? (id || "Aniqlanmagan"); }
 
+function buildStageTimeline(input: {
+  histories: RawStageHistory[];
+  currentCategoryId: string;
+  currentStageId: string;
+  currentStageEnteredAt: Date;
+  createdAt: Date;
+  terminalAt: Date | null;
+  pipelines: Map<string, string>;
+  stages: Map<string, string>;
+}) {
+  const events: { categoryId: string; stageId: string; enteredAt: Date }[] = [];
+  for (const row of input.histories) {
+    const enteredAt = timestamp(row.CREATED_TIME); const stageId = string(row.STAGE_ID);
+    if (!enteredAt || !stageId) continue;
+    const categoryId = string(row.CATEGORY_ID || input.currentCategoryId);
+    const previous = events.at(-1);
+    if (previous?.stageId === stageId && previous.categoryId === categoryId) continue;
+    events.push({ categoryId, stageId, enteredAt });
+  }
+  if (!events.length) events.push({ categoryId: input.currentCategoryId, stageId: input.currentStageId, enteredAt: input.currentStageEnteredAt ?? input.createdAt });
+  else if (events.at(-1)?.stageId !== input.currentStageId || events.at(-1)?.categoryId !== input.currentCategoryId) {
+    events.push({ categoryId: input.currentCategoryId, stageId: input.currentStageId, enteredAt: input.currentStageEnteredAt });
+  }
+  const finalAt = input.terminalAt && input.terminalAt > events.at(-1)!.enteredAt ? input.terminalAt : new Date();
+  return events.map((event, index) => {
+    const next = events[index + 1]; const exitedAt = next?.enteredAt ?? (input.terminalAt ? finalAt : null);
+    const durationEnd = exitedAt ?? new Date();
+    return {
+      categoryId: event.categoryId,
+      pipeline: input.pipelines.get(event.categoryId) ?? `Pipeline #${event.categoryId}`,
+      stageId: event.stageId,
+      stage: stageName(event.stageId, input.stages),
+      enteredAt: event.enteredAt.toISOString(),
+      exitedAt: exitedAt?.toISOString() ?? null,
+      durationHours: Math.max(0, (durationEnd.getTime() - event.enteredAt.getTime()) / 3_600_000),
+    };
+  });
+}
+
 export function buildAnalyticsRecords(input: {
   deals: RawDeal[]; activities: RawActivity[]; stageHistories: RawStageHistory[]; callStats: RawCallStat[];
   settings: DashboardSettings; providerRules: Record<string, string>; users: Map<string, string>;
@@ -104,10 +143,18 @@ export function buildAnalyticsRecords(input: {
     const postSaleHistory = histories.find((row) => postSaleIds.has(string(row.CATEGORY_ID)));
     const wonEvent = paymentHistory ?? postSaleHistory; const wonAt = wonEvent ? timestamp(wonEvent.CREATED_TIME)?.toISOString() ?? null : null;
     const currentHistory = [...histories].reverse().find((row) => string(row.STAGE_ID) === currentStageId && (!row.CATEGORY_ID || string(row.CATEGORY_ID) === currentCategoryId));
-    const salesStatus = classifySalesStatus({ stage: currentStage, semantic: string(currentHistory?.STAGE_SEMANTIC_ID), paymentReached: Boolean(paymentHistory), inPostSalePipeline: postSaleIds.has(currentCategoryId) || Boolean(postSaleHistory) });
+    const baseSalesStatus = classifySalesStatus({ stage: currentStage, semantic: string(currentHistory?.STAGE_SEMANTIC_ID), paymentReached: Boolean(paymentHistory), inPostSalePipeline: postSaleIds.has(currentCategoryId) || Boolean(postSaleHistory) });
     const stageEntered = timestamp(currentHistory?.CREATED_TIME ?? deal.MOVED_TIME ?? deal.DATE_MODIFY) ?? created;
     const stageAgeHours = Math.max(0, (Date.now() - stageEntered.getTime()) / 3_600_000);
     const stageLimitHours = Number(input.settings.stageLimits[currentStageId] ?? input.settings.defaultStageLimitHours);
+    const terminalAt = baseSalesStatus === "ACTIVE" ? null : timestamp(deal.CLOSEDATE ?? deal.DATE_MODIFY) ?? (wonAt ? new Date(wonAt) : null);
+    const stageTimeline = buildStageTimeline({ histories, currentCategoryId, currentStageId, currentStageEnteredAt: stageEntered, createdAt: created, terminalAt, pipelines: input.pipelines, stages: input.stages });
+    const qualifiedIds = new Set(input.settings.qualifiedStageIds);
+    const qualifiedEvent = stageTimeline.find((entry) => mainIds.has(entry.categoryId) && (qualifiedIds.has(entry.stageId) || isQualificationStage(entry.stage)));
+    const qualified = Boolean(qualifiedEvent || baseSalesStatus === "LOST" || baseSalesStatus === "WON");
+    const salesStatus = baseSalesStatus === "LOW_QUALITY" && qualified ? "LOST" : baseSalesStatus;
+    const qualifiedFallback = qualified ? stageTimeline.filter((entry) => mainIds.has(entry.categoryId))[1] ?? stageTimeline.find((entry) => mainIds.has(entry.categoryId)) : null;
+    const qualifiedAt = qualifiedEvent?.enteredAt ?? qualifiedFallback?.enteredAt ?? null;
 
     const assignedManagerId = string(deal.ASSIGNED_BY_ID);
     const calls = (activitiesByDeal.get(dealId) ?? []).filter((row) => isOutgoingCall(row, input.providerRules)).filter((row) => { const at = timestamp(row.START_TIME ?? row.CREATED); return at && at >= created; }).sort((a, b) => timestamp(a.START_TIME ?? a.CREATED)!.getTime() - timestamp(b.START_TIME ?? b.CREATED)!.getTime());
@@ -137,13 +184,21 @@ export function buildAnalyticsRecords(input: {
     const customSource = sourceField ? fieldDisplayValue(deal[sourceField], fieldOptions.get(sourceField)) : "";
     const sourceId = customSource || string(deal.SOURCE_ID); const source = customSource || input.sources.get(sourceId) || sourceId || "Ko‘rsatilmagan";
     const opportunity = Number(deal.OPPORTUNITY ?? 0);
+    const effectiveWonAt = snapshot?.wonAt ?? wonAt;
+    const salesCycleHours = effectiveWonAt ? Math.max(0, (new Date(effectiveWonAt).getTime() - created.getTime()) / 3_600_000) : null;
+    const contactId = string(deal.CONTACT_ID) || (Array.isArray(deal.CONTACT_IDS) ? string(deal.CONTACT_IDS[0]) : "");
+    const companyId = string(deal.COMPANY_ID);
+    const effectiveLossReason = lossReason || ((salesStatus === "LOST" || salesStatus === "LOW_QUALITY") ? "Sabab ko‘rsatilmagan" : "");
+    const lossReasonGroup = classifyLossReasonGroup({ status: salesStatus, reason: effectiveLossReason, routingPatterns: input.settings.routingReasonPatterns });
 
     return [{
-      analyticsVersion: 2, dealId, title: string(deal.TITLE) || `Deal #${dealId}`, createdAt: created.toISOString(), creationPeriod: isInsideWorkingTime(created, input.settings) ? "WORK_HOURS" : "AFTER_HOURS", slaStart: slaStart.toISOString(),
+      analyticsVersion: 3, dealId, title: string(deal.TITLE) || `Deal #${dealId}`, createdAt: created.toISOString(), creationPeriod: isInsideWorkingTime(created, input.settings) ? "WORK_HOURS" : "AFTER_HOURS", slaStart: slaStart.toISOString(),
       assignedManagerId, assignedManager: managerName(assignedManagerId, input.users), categoryId: currentCategoryId, pipeline: input.pipelines.get(currentCategoryId) ?? `Pipeline #${currentCategoryId}`,
       originCategoryId, originPipeline: input.pipelines.get(originCategoryId) ?? `Pipeline #${originCategoryId}`, operationalPipeline: mainIds.has(currentCategoryId),
       stageId: currentStageId, stage: currentStage, stageEnteredAt: stageEntered.toISOString(), stageAgeHours, stageLimitHours, stageOverdue: salesStatus === "ACTIVE" && stageAgeHours > stageLimitHours,
-      sourceId, source, salesStatus, qualified: salesStatus !== "LOW_QUALITY", wonAt: snapshot?.wonAt ?? wonAt, opportunity: Number.isFinite(opportunity) ? opportunity : 0, currencyId: string(deal.CURRENCY_ID), lossReason: lossReason || ((salesStatus === "LOST" || salesStatus === "LOW_QUALITY") ? "Sabab ko‘rsatilmagan" : ""),
+      sourceId, source, salesStatus, qualified, qualifiedAt, qualifiedStageId: qualifiedEvent?.stageId ?? qualifiedFallback?.stageId ?? null, qualifiedStage: qualifiedEvent?.stage ?? qualifiedFallback?.stage ?? null,
+      wonAt: effectiveWonAt, salesCycleHours, opportunity: Number.isFinite(opportunity) ? opportunity : 0, currencyId: string(deal.CURRENCY_ID), lossReason: effectiveLossReason, lossReasonGroup,
+      contactId: contactId || null, companyId: companyId || null, customerKey: contactId ? `contact:${contactId}` : companyId ? `company:${companyId}` : null, duplicateOfDealId: null, stageTimeline,
       salesManagerId: salesManagerId || null, salesManager: salesManager || null, salesManagerAttribution,
       firstCallAt: firstCallAt?.toISOString() ?? null, firstCallActivityId: firstCall ? string(firstCall.ID) : null, firstCallManagerId: firstCallManagerId || null, firstCallManager: firstCallManagerId ? managerName(firstCallManagerId, input.users) : null,
       firstCallBusinessMinutes: firstCallMinutes, firstCallOutcome: firstOutcome.outcome, firstCallDuration: firstCall ? firstOutcome.duration : null, outcomeInferred: firstOutcome.inferred,

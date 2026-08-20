@@ -187,4 +187,7 @@ export const defaultSettings: DashboardSettings = {
   salesManagerField: null,
   defaultStageLimitHours: 24,
   stageLimits: {},
+  qualifiedStageIds: [],
+  routingReasonPatterns: ["idoko", "sd", "передан", "перевод", "routing", "yo'naltir", "yo‘naltir", "o'tkaz", "o‘tkaz"],
+  autoSyncMinutes: 15,
 };

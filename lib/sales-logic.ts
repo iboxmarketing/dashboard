@@ -1,5 +1,5 @@
 import { normalizePipelineName } from "./pipelines";
-import type { SalesStatus } from "./types";
+import type { LossReasonGroup, SalesStatus } from "./types";
 
 function normalized(value: unknown) {
   return normalizePipelineName(String(value ?? ""));
@@ -13,6 +13,31 @@ export function isLowQualityStage(stage: string) {
 export function isPaymentStage(stage: string) {
   const value = normalized(stage);
   return (value.includes("oplata") && (value.includes("poluch") || value.includes("olindi"))) || value.includes("оплата получена");
+}
+
+export function isQualificationStage(stage: string) {
+  const value = normalized(stage);
+  return value.includes("обработ") || value.includes("processing") || value.includes("qabul qil") || value.includes("sql");
+}
+
+export function classifyLossReasonGroup(input: {
+  status: SalesStatus;
+  reason: string;
+  routingPatterns?: string[];
+}): LossReasonGroup {
+  if (!input.reason && !["LOW_QUALITY", "LOST"].includes(input.status)) return "NONE";
+  const reason = normalized(input.reason);
+  const patterns = input.routingPatterns ?? [];
+  const isRouting = patterns.some((pattern) => {
+    const value = normalized(pattern);
+    if (!value) return false;
+    if (value === "sd") return /(^|[^a-zа-я0-9])sd([^a-zа-я0-9]|$)/i.test(reason);
+    return reason.includes(value);
+  });
+  if (isRouting) return "ROUTING";
+  if (input.status === "LOW_QUALITY") return "MARKETING";
+  if (input.status === "LOST") return "SALES";
+  return "NONE";
 }
 
 export function isClosedLostStage(stage: string, semantic = "") {

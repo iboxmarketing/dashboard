@@ -43,6 +43,9 @@ export async function getSettings(): Promise<DashboardSettings> {
       postSalePipelineIds: Array.isArray(parsed.postSalePipelineIds) ? parsed.postSalePipelineIds.map(String) : [],
       postSalePipelineNames: Array.isArray(parsed.postSalePipelineNames) ? parsed.postSalePipelineNames.map(String) : defaultSettings.postSalePipelineNames,
       stageLimits: parsed.stageLimits && typeof parsed.stageLimits === "object" ? parsed.stageLimits : {},
+      qualifiedStageIds: Array.isArray(parsed.qualifiedStageIds) ? parsed.qualifiedStageIds.map(String) : [],
+      routingReasonPatterns: Array.isArray(parsed.routingReasonPatterns) ? parsed.routingReasonPatterns.map(String).filter(Boolean) : defaultSettings.routingReasonPatterns,
+      autoSyncMinutes: Number.isFinite(Number(parsed.autoSyncMinutes)) ? Number(parsed.autoSyncMinutes) : defaultSettings.autoSyncMinutes,
     };
   } catch {
     return defaultSettings;

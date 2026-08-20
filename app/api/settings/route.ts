@@ -24,6 +24,9 @@ export async function POST(request: Request) {
       salesManagerField: typeof payload.salesManagerField === "string" && payload.salesManagerField ? payload.salesManagerField : null,
       defaultStageLimitHours: Math.min(720, Math.max(1, Number(payload.defaultStageLimitHours ?? current.defaultStageLimitHours))),
       stageLimits: payload.stageLimits && typeof payload.stageLimits === "object" ? Object.fromEntries(Object.entries(payload.stageLimits).map(([key, value]) => [key, Math.min(720, Math.max(1, Number(value))) ])) : current.stageLimits,
+      qualifiedStageIds: Array.isArray(payload.qualifiedStageIds) ? [...new Set(payload.qualifiedStageIds.map(String))] : current.qualifiedStageIds,
+      routingReasonPatterns: Array.isArray(payload.routingReasonPatterns) ? [...new Set(payload.routingReasonPatterns.map(String).map((value) => value.trim()).filter(Boolean))].slice(0, 30) : current.routingReasonPatterns,
+      autoSyncMinutes: [0, 10, 15, 30, 60].includes(Number(payload.autoSyncMinutes)) ? Number(payload.autoSyncMinutes) : current.autoSyncMinutes,
     };
     await saveSettings(next);
     return Response.json({ settings: next });

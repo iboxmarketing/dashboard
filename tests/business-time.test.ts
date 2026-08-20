@@ -77,3 +77,22 @@ test("unanswered outgoing call still stops SLA", () => {
   assert.equal(row.firstCallOutcome, "Ko‘tarmadi");
 });
 
+test("Obrabotka bosqichiga kirgan Deal keyin Not Relevant bo‘lsa ham SQL va sales loss bo‘lib qoladi", () => {
+  const settings = { ...defaultSettings, selectedPipelineIds: ["0"] };
+  const row = buildAnalyticsRecords({
+    deals: [{ ID: "77", TITLE: "Historical SQL", DATE_CREATE: "2026-08-17T09:00:00+05:00", DATE_MODIFY: "2026-08-18T09:00:00+05:00", ASSIGNED_BY_ID: "7", CATEGORY_ID: "0", STAGE_ID: "NOT_RELEVANT" }],
+    activities: [], callStats: [], providerRules: {}, settings,
+    stageHistories: [
+      { OWNER_ID: "77", CATEGORY_ID: "0", STAGE_ID: "NEW", CREATED_TIME: "2026-08-17T09:00:00+05:00" },
+      { OWNER_ID: "77", CATEGORY_ID: "0", STAGE_ID: "IN_PROCESS", CREATED_TIME: "2026-08-17T09:10:00+05:00" },
+      { OWNER_ID: "77", CATEGORY_ID: "0", STAGE_ID: "NOT_RELEVANT", STAGE_SEMANTIC_ID: "F", CREATED_TIME: "2026-08-18T09:00:00+05:00" },
+    ],
+    users: new Map([["7", "Aziz Karimov"]]), pipelines: new Map([["0", "IBOX Sales"]]),
+    stages: new Map([["NEW", "Yangi"], ["IN_PROCESS", "Обработка"], ["NOT_RELEVANT", "Not Relevant"]]), sources: new Map(),
+    domain: null, activitiesAvailable: true, stageHistoryAvailable: true,
+  })[0];
+  assert.equal(row.qualified, true);
+  assert.equal(row.qualifiedStage, "Обработка");
+  assert.equal(row.salesStatus, "LOST");
+  assert.equal(row.stageTimeline.length, 3);
+});

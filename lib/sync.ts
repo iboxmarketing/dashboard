@@ -202,7 +202,7 @@ async function dealStep(job: StoredSyncJob) {
   const customFields = [settings.failureReasonField, settings.marketingChannelField, settings.salesManagerField].filter((field): field is string => Boolean(field));
   const page = await bitrixPage<RawDeal>("crm.deal.list", {
     order: { DATE_CREATE: "DESC", ID: "DESC" }, filter,
-    select: ["ID", "TITLE", "DATE_CREATE", "DATE_MODIFY", "MOVED_TIME", "MOVED_BY_ID", "ASSIGNED_BY_ID", "CATEGORY_ID", "STAGE_ID", "SOURCE_ID", "OPPORTUNITY", "CURRENCY_ID", ...customFields],
+    select: ["ID", "TITLE", "DATE_CREATE", "DATE_MODIFY", "CLOSEDATE", "MOVED_TIME", "MOVED_BY_ID", "ASSIGNED_BY_ID", "CATEGORY_ID", "STAGE_ID", "SOURCE_ID", "CONTACT_ID", "CONTACT_IDS", "COMPANY_ID", "OPPORTUNITY", "CURRENCY_ID", ...customFields],
   }, job.cursor);
   await upsertRaw("raw_deals", page.items.map((deal) => [value(deal, "ID"), value(deal, "CATEGORY_ID") || "0", value(deal, "DATE_CREATE"), JSON.stringify(deal), job.runId]));
   const counts = { ...job.counts, deals: (job.counts.deals ?? 0) + page.items.length };
@@ -373,6 +373,13 @@ export async function runSyncStep() {
     await saveSyncState({ status: "error", safeError: message, permissions: job.permissions });
     throw error;
   }
+}
+
+export async function runSyncSteps(maxSteps = 4) {
+  let state = await getSyncState();
+  const safeSteps = Math.min(6, Math.max(1, Math.floor(maxSteps)));
+  for (let index = 0; index < safeSteps && state.status === "running"; index += 1) state = await runSyncStep();
+  return state;
 }
 
 export async function pauseSync() {
