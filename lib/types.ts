@@ -12,11 +12,25 @@ export type DashboardSettings = {
   historyDays: number;
   selectedPipelineIds: string[];
   selectedPipelineNames: string[];
+  postSalePipelineIds: string[];
+  postSalePipelineNames: string[];
+  failureReasonField: string | null;
+  marketingChannelField: string | null;
+  salesManagerField: string | null;
+  defaultStageLimitHours: number;
+  stageLimits: Record<string, number>;
 };
 
 export type PipelineOption = {
   id: string;
   name: string;
+};
+
+export type CrmFieldOption = {
+  key: string;
+  title: string;
+  type: string;
+  options: { id: string; value: string }[];
 };
 
 export type SyncPhase = "deals" | "activities" | "stageHistory" | "telephony" | "lookups" | "analytics" | "done";
@@ -51,6 +65,8 @@ export type CallOutcome =
 export type ProcessingSource = "OUTGOING_CALL" | "STAGE_CHANGE" | "NO_PROCESSING";
 export type SlaStatus = "ON_TIME" | "LATE" | "NO_PROCESSING";
 export type CreationPeriod = "WORK_HOURS" | "AFTER_HOURS";
+export type SalesStatus = "ACTIVE" | "LOW_QUALITY" | "LOST" | "WON";
+export type SalesManagerAttribution = "CUSTOM_FIELD" | "FIRST_CALL" | "STAGE_MOVER" | "CURRENT_RESPONSIBLE" | "UNKNOWN";
 
 export type AnalyticsRecord = {
   dealId: string;
@@ -62,10 +78,26 @@ export type AnalyticsRecord = {
   assignedManager: string;
   categoryId: string;
   pipeline: string;
+  originCategoryId: string;
+  originPipeline: string;
+  operationalPipeline: boolean;
   stageId: string;
   stage: string;
+  stageEnteredAt: string;
+  stageAgeHours: number;
+  stageLimitHours: number;
+  stageOverdue: boolean;
   sourceId: string;
   source: string;
+  salesStatus: SalesStatus;
+  qualified: boolean;
+  wonAt: string | null;
+  opportunity: number;
+  currencyId: string;
+  lossReason: string;
+  salesManagerId: string | null;
+  salesManager: string | null;
+  salesManagerAttribution: SalesManagerAttribution;
   firstCallAt: string | null;
   firstCallActivityId: string | null;
   firstCallManagerId: string | null;

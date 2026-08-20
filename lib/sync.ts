@@ -3,12 +3,12 @@ import { buildAnalyticsRecords, discoverProviders, type RawActivity, type RawCal
 import { bitrixCall, bitrixList, bitrixPage, getBitrixDomain, safeBitrixMessage } from "./bitrix";
 import {
   clearUnselectedAnalytics, getDictionary, getProviderRules, getSettings, getSyncJob,
-  getSyncState, saveDictionary, saveProviderDiagnostics, saveSettings, saveSyncJob,
+  getSyncState, getSalesSnapshots, saveDictionary, saveProviderDiagnostics, saveSalesSnapshots, saveSettings, saveSyncJob,
   saveSyncState, upsertAnalyticsRecords, type StoredSyncJob,
 } from "./storage";
-import type { PipelineOption } from "./types";
+import type { CrmFieldOption, PipelineOption } from "./types";
 export { normalizePipelineName, resolvePipelineSelection } from "./pipelines";
-import { resolvePipelineSelection } from "./pipelines";
+import { normalizePipelineName, resolvePipelineSelection, resolvePostSalePipelines } from "./pipelines";
 
 const activitySelect = [
   "ID", "OWNER_ID", "OWNER_TYPE_ID", "BINDINGS", "TYPE_ID", "PROVIDER_ID", "PROVIDER_TYPE_ID",
@@ -30,6 +30,31 @@ function parseRows<T>(rows: { payload: string }[]) {
 export async function listPipelines(): Promise<PipelineOption[]> {
   const rows = await bitrixList<Record<string, unknown>>("crm.dealcategory.list", { order: { SORT: "ASC" } }, { maxPages: 20 });
   return rows.map((row) => ({ id: value(row, "ID"), name: value(row, "NAME") || `Pipeline #${value(row, "ID")}` })).filter((row) => row.id);
+}
+
+function crmFieldRows(result: unknown): CrmFieldOption[] {
+  const raw = result && typeof result === "object" && "result" in result ? (result as { result: unknown }).result : result;
+  const entries = Array.isArray(raw) ? raw.map((row) => [value(row as Record<string, unknown>, "FIELD_NAME"), row]) : Object.entries((raw ?? {}) as Record<string, unknown>);
+  return entries.flatMap(([key, item]) => {
+    const field = item as Record<string, unknown>; const title = value(field, "title") || value(field, "EDIT_FORM_LABEL") || value(field, "LIST_COLUMN_LABEL") || String(key);
+    const type = value(field, "type") || value(field, "USER_TYPE_ID") || "string";
+    const rawOptions = Array.isArray(field.LIST) ? field.LIST : Array.isArray(field.items) ? field.items : [];
+    return key ? [{ key: String(key), title, type, options: rawOptions.map((option) => ({ id: value(option as Record<string, unknown>, "ID") || value(option as Record<string, unknown>, "VALUE"), value: value(option as Record<string, unknown>, "VALUE") || value(option as Record<string, unknown>, "NAME") })).filter((option) => option.id) }] : [];
+  });
+}
+
+export async function listCrmFields(): Promise<CrmFieldOption[]> {
+  const response = await bitrixCall<unknown>("crm.deal.fields", {});
+  const fields = crmFieldRows(response);
+  try {
+    const custom = await bitrixList<Record<string, unknown>>("crm.deal.userfield.list", { order: { SORT: "ASC" } }, { maxPages: 20 });
+    const extras = crmFieldRows(custom);
+    return [...new Map([...fields, ...extras].map((field) => [field.key, field])).values()];
+  } catch { return fields; }
+}
+
+function detectField(fields: CrmFieldOption[], pattern: RegExp, type?: RegExp) {
+  return fields.find((field) => pattern.test(normalizePipelineName(field.title)) && (!type || type.test(field.type)))?.key ?? null;
 }
 
 function query(path: string, filter: Record<string, string>, select: string[] = [], order: Record<string, string> = {}) {
@@ -77,9 +102,18 @@ async function upsertRaw(table: "raw_deals" | "raw_activities" | "raw_stage_hist
 }
 
 export async function startSync(options: { days?: number; full?: boolean } = {}) {
-  const settings = await getSettings();
+  let settings = await getSettings();
   const pipelines = await listPipelines();
   const selected = resolvePipelineSelection(pipelines, settings.selectedPipelineIds, settings.selectedPipelineNames);
+  const reporting = resolvePostSalePipelines(pipelines, settings.postSalePipelineIds, settings.postSalePipelineNames);
+  let crmFields: CrmFieldOption[] = [];
+  try { crmFields = await listCrmFields(); } catch { /* Config remains editable by field code. */ }
+  settings = {
+    ...settings,
+    failureReasonField: settings.failureReasonField ?? detectField(crmFields, /причин.*провал|prichin.*proval|failure.*reason/),
+    marketingChannelField: settings.marketingChannelField ?? detectField(crmFields, /маркет.*канал|marketing.*kanal|marketing.*channel/),
+    salesManagerField: settings.salesManagerField ?? detectField(crmFields, /менеджер.*продаж|sales.*manager|sotuv.*menejer/, /employee|user/),
+  };
   const selectedIds = selected.map((item) => item.id);
   const stateRow = await getD1().prepare("SELECT last_sync_at FROM sync_state WHERE id = 'main'").first<{ last_sync_at: string }>();
   const now = new Date();
@@ -93,8 +127,9 @@ export async function startSync(options: { days?: number; full?: boolean } = {})
   const runId = crypto.randomUUID();
   const permissions = { deals: "ok", activities: "ok", stageHistory: "ok", managers: "ok", telephony: "ok" };
 
-  await saveSettings({ ...settings, selectedPipelineIds: selectedIds, selectedPipelineNames: selected.map((item) => item.name) });
-  await clearUnselectedAnalytics(selectedIds, mode === "full" ? fromIso : undefined);
+  await saveSettings({ ...settings, selectedPipelineIds: selectedIds, selectedPipelineNames: selected.map((item) => item.name), postSalePipelineIds: reporting.map((item) => item.id), postSalePipelineNames: reporting.map((item) => item.name) });
+  await saveDictionary("crmFields", crmFields);
+  await clearUnselectedAnalytics([...selectedIds, ...reporting.map((item) => item.id)], mode === "full" ? fromIso : undefined);
   if (mode === "full") {
     const db = getD1();
     await db.batch([
@@ -107,7 +142,7 @@ export async function startSync(options: { days?: number; full?: boolean } = {})
   const job: StoredSyncJob = {
     status: "running", phase: "deals", progress: 0, message: "Eng yangi Deal’lar yuklanmoqda…",
     processed: 0, total: 0, cursor: 0, fromIso, toIso: timestamp, mode, runId,
-    selectedPipelines: selected, counts: {}, permissions, safeError: null,
+    selectedPipelines: selected, reportingPipelines: reporting, dealScope: "main", counts: {}, permissions, safeError: null,
     heartbeatAt: timestamp, updatedAt: timestamp,
   };
   await saveSyncJob(job);
@@ -116,22 +151,29 @@ export async function startSync(options: { days?: number; full?: boolean } = {})
 }
 
 async function dealStep(job: StoredSyncJob) {
-  const ids = job.selectedPipelines.map((item) => item.id);
+  const ids = (job.dealScope === "postSale" ? job.reportingPipelines : job.selectedPipelines).map((item) => item.id);
+  if (!ids.length && job.dealScope === "postSale") return move(job, "activities", "Sales Deal activity’lari yuklanmoqda…", job.counts.deals ?? 0);
   const filter: Record<string, unknown> = { CATEGORY_ID: ids };
   if (job.mode === "full") {
-    filter[">=DATE_CREATE"] = job.fromIso;
-    filter["<=DATE_CREATE"] = job.toIso;
+    const dateField = job.dealScope === "postSale" ? "MOVED_TIME" : "DATE_CREATE";
+    filter[`>=${dateField}`] = job.fromIso;
+    filter[`<=${dateField}`] = job.toIso;
   } else {
     filter[">=DATE_MODIFY"] = job.fromIso;
     filter["<=DATE_MODIFY"] = job.toIso;
   }
+  const settings = await getSettings();
+  const customFields = [settings.failureReasonField, settings.marketingChannelField, settings.salesManagerField].filter((field): field is string => Boolean(field));
   const page = await bitrixPage<RawDeal>("crm.deal.list", {
     order: { DATE_CREATE: "DESC", ID: "DESC" }, filter,
-    select: ["ID", "TITLE", "DATE_CREATE", "DATE_MODIFY", "ASSIGNED_BY_ID", "CATEGORY_ID", "STAGE_ID", "SOURCE_ID"],
+    select: ["ID", "TITLE", "DATE_CREATE", "DATE_MODIFY", "MOVED_TIME", "MOVED_BY_ID", "ASSIGNED_BY_ID", "CATEGORY_ID", "STAGE_ID", "SOURCE_ID", "OPPORTUNITY", "CURRENCY_ID", ...customFields],
   }, job.cursor);
   await upsertRaw("raw_deals", page.items.map((deal) => [value(deal, "ID"), value(deal, "CATEGORY_ID") || "0", value(deal, "DATE_CREATE"), JSON.stringify(deal), job.runId]));
   const counts = { ...job.counts, deals: (job.counts.deals ?? 0) + page.items.length };
-  if (page.next === null) return move({ ...job, counts }, "activities", "Faqat tanlangan sales Deal’larining activity’lari yuklanmoqda…", counts.deals);
+  if (page.next === null) {
+    if (job.dealScope === "main" && job.reportingPipelines.length) return { ...job, dealScope: "postSale" as const, cursor: 0, processed: counts.deals, total: 0, counts, progress: phaseProgress("deals", counts.deals, Math.max(counts.deals, 1)), message: "Sotilgan Deal’lar post-sale funnel’dan tekshirilmoqda…" };
+    return move({ ...job, counts }, "activities", "Faqat sales Deal’larining activity’lari yuklanmoqda…", counts.deals);
+  }
   const total = page.total ?? Math.max(counts.deals, page.next + 50);
   return { ...job, cursor: page.next, processed: counts.deals, total, counts, progress: phaseProgress("deals", counts.deals, total), message: `${counts.deals} / ${total} ta Deal yuklandi` };
 }
@@ -162,7 +204,7 @@ async function stageStep(job: StoredSyncJob) {
     const activityCount = await getD1().prepare("SELECT COUNT(*) AS count FROM raw_activities WHERE synced_at = ?").bind(job.runId).first<{ count: number }>();
     return move(job, "telephony", "Faqat sales Deal’laridagi qo‘ng‘iroqlar natijasi boyitilmoqda…", Number(activityCount?.count ?? 0));
   }
-  const cmd = Object.fromEntries(ids.map((id) => [`deal_${id}`, query("crm.stagehistory.list", { OWNER_ID: id }, ["ID", "OWNER_ID", "STAGE_ID", "CREATED_TIME"], { ID: "ASC" }).replace("?", "?entityTypeId=2&")]));
+  const cmd = Object.fromEntries(ids.map((id) => [`deal_${id}`, query("crm.stagehistory.list", { OWNER_ID: id }, ["ID", "OWNER_ID", "CATEGORY_ID", "STAGE_ID", "STAGE_SEMANTIC_ID", "TYPE_ID", "CREATED_TIME"], { ID: "ASC" }).replace("?", "?entityTypeId=2&")]));
   const response = await bitrixCall<Record<string, unknown>>("batch", { halt: 0, cmd });
   const placeholders = ids.map(() => "?").join(", ");
   await getD1().prepare(`DELETE FROM raw_stage_history WHERE deal_id IN (${placeholders})`).bind(...ids).run();
@@ -204,7 +246,7 @@ async function lookupStep(job: StoredSyncJob) {
   try { statuses = await bitrixList<Record<string, unknown>>("crm.status.list", { order: { SORT: "ASC" } }, { maxPages: 20 }); } catch { /* Raw IDs remain visible. */ }
   await saveDictionary("users", users);
   await saveDictionary("statuses", statuses);
-  await saveDictionary("pipelines", job.selectedPipelines);
+  await saveDictionary("pipelines", [...job.selectedPipelines, ...job.reportingPipelines]);
   const activityResult = await getD1().prepare("SELECT payload FROM raw_activities WHERE synced_at = ?").bind(job.runId).all<{ payload: string }>();
   const activities = parseRows<RawActivity>(activityResult.results ?? []);
   const providerRules = await getProviderRules();
@@ -237,7 +279,7 @@ async function analyticsStep(job: StoredSyncJob) {
   const userRows = await getDictionary<Record<string, unknown>[]>("users", []);
   const statusRows = await getDictionary<Record<string, unknown>[]>("statuses", []);
   const users = new Map(userRows.map((row) => [value(row, "ID"), [value(row, "NAME"), value(row, "LAST_NAME")].filter(Boolean).join(" ") || `Menejer #${value(row, "ID")}`]));
-  const pipelines = new Map(job.selectedPipelines.map((item) => [item.id, item.name]));
+  const pipelines = new Map([...job.selectedPipelines, ...job.reportingPipelines].map((item) => [item.id, item.name]));
   const stages = new Map<string, string>();
   const sources = new Map<string, string>();
   for (const status of statusRows) {
@@ -249,12 +291,16 @@ async function analyticsStep(job: StoredSyncJob) {
   }
   const settings = await getSettings();
   const providerRules = await getProviderRules();
+  const crmFields = await getDictionary<CrmFieldOption[]>("crmFields", []);
+  const fieldOptions = new Map(crmFields.map((field) => [field.key, new Map(field.options.map((option) => [option.id, option.value]))]));
+  const snapshots = await getSalesSnapshots(ids);
   const records = buildAnalyticsRecords({
     deals: parseRows<RawDeal>(rawDeals), activities, stageHistories: parseRows<RawStageHistory>(historyResult.results ?? []), callStats,
-    settings, providerRules, users, pipelines, stages, sources, domain: getBitrixDomain(),
+    settings, providerRules, users, pipelines, stages, sources, fieldOptions, snapshots, domain: getBitrixDomain(),
     activitiesAvailable: job.permissions.activities === "ok", stageHistoryAvailable: job.permissions.stageHistory === "ok",
   });
   await upsertAnalyticsRecords(records);
+  await saveSalesSnapshots(records);
   const cursor = job.cursor + rawDeals.length;
   const counts = {
     ...job.counts,

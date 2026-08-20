@@ -17,6 +17,13 @@ export async function POST(request: Request) {
       holidays: Array.isArray(payload.holidays) ? payload.holidays.filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value)) : current.holidays,
       selectedPipelineIds: Array.isArray(payload.selectedPipelineIds) ? [...new Set(payload.selectedPipelineIds.map(String))].slice(0, 2) : current.selectedPipelineIds,
       selectedPipelineNames: Array.isArray(payload.selectedPipelineNames) ? [...new Set(payload.selectedPipelineNames.map(String))].slice(0, 2) : current.selectedPipelineNames,
+      postSalePipelineIds: Array.isArray(payload.postSalePipelineIds) ? [...new Set(payload.postSalePipelineIds.map(String))].slice(0, 2) : current.postSalePipelineIds,
+      postSalePipelineNames: Array.isArray(payload.postSalePipelineNames) ? [...new Set(payload.postSalePipelineNames.map(String))].slice(0, 2) : current.postSalePipelineNames,
+      failureReasonField: typeof payload.failureReasonField === "string" && payload.failureReasonField ? payload.failureReasonField : null,
+      marketingChannelField: typeof payload.marketingChannelField === "string" && payload.marketingChannelField ? payload.marketingChannelField : null,
+      salesManagerField: typeof payload.salesManagerField === "string" && payload.salesManagerField ? payload.salesManagerField : null,
+      defaultStageLimitHours: Math.min(720, Math.max(1, Number(payload.defaultStageLimitHours ?? current.defaultStageLimitHours))),
+      stageLimits: payload.stageLimits && typeof payload.stageLimits === "object" ? Object.fromEntries(Object.entries(payload.stageLimits).map(([key, value]) => [key, Math.min(720, Math.max(1, Number(value))) ])) : current.stageLimits,
     };
     await saveSettings(next);
     return Response.json({ settings: next });

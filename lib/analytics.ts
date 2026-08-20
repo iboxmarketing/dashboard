@@ -1,79 +1,47 @@
 import { calculateBusinessMinutes, getSlaStart, isInsideWorkingTime } from "./business-time";
-import type {
-  AnalyticsRecord,
-  CallOutcome,
-  DashboardSettings,
-  ProviderDiagnostic,
-} from "./types";
+import { classifySalesStatus, fieldDisplayValue, isPaymentStage } from "./sales-logic";
+import type { SalesSnapshot } from "./storage";
+import type { AnalyticsRecord, CallOutcome, DashboardSettings, ProviderDiagnostic, SalesManagerAttribution } from "./types";
 
 export type RawDeal = Record<string, unknown>;
 export type RawActivity = Record<string, unknown>;
 export type RawCallStat = Record<string, unknown>;
 export type RawStageHistory = Record<string, unknown>;
 
-function string(value: unknown) {
-  return value === null || value === undefined ? "" : String(value);
-}
-
-function timestamp(value: unknown) {
-  const date = new Date(string(value));
-  return Number.isFinite(date.getTime()) ? date : null;
-}
+function string(value: unknown) { return value === null || value === undefined ? "" : String(value); }
+function timestamp(value: unknown) { const date = new Date(string(value)); return Number.isFinite(date.getTime()) ? date : null; }
+function managerName(id: string, users: Map<string, string>) { return users.get(id) ?? (id ? `Menejer #${id}` : "Aniqlanmagan"); }
+function employeeId(raw: unknown) { const value = Array.isArray(raw) ? raw[0] : raw; return string(value).match(/(?:user_)?(\d+)/i)?.[1] ?? ""; }
 
 export function activityProviderKey(activity: RawActivity) {
-  return [activity.PROVIDER_ID, activity.PROVIDER_TYPE_ID, activity.TYPE_ID, activity.DIRECTION]
-    .map(string)
-    .join("|");
+  return [activity.PROVIDER_ID, activity.PROVIDER_TYPE_ID, activity.TYPE_ID, activity.DIRECTION].map(string).join("|");
 }
 
-export function isOutgoingCall(
-  activity: RawActivity,
-  providerRules: Record<string, string> = {},
-) {
-  const key = activityProviderKey(activity);
-  const rule = providerRules[key];
+export function isOutgoingCall(activity: RawActivity, providerRules: Record<string, string> = {}) {
+  const rule = providerRules[activityProviderKey(activity)];
   if (rule === "IGNORE") return false;
   if (rule === "USE") return true;
-  const direction = string(activity.DIRECTION);
-  const typeId = string(activity.TYPE_ID);
   const provider = `${string(activity.PROVIDER_ID)} ${string(activity.PROVIDER_TYPE_ID)}`.toUpperCase();
-  return direction === "2" && (typeId === "2" || /CALL|VOXIMPLANT|TELEPHON/.test(provider));
+  return string(activity.DIRECTION) === "2" && (string(activity.TYPE_ID) === "2" || /CALL|VOXIMPLANT|TELEPHON/.test(provider));
 }
 
 export function discoverProviders(activities: RawActivity[]): ProviderDiagnostic[] {
   const map = new Map<string, ProviderDiagnostic>();
   for (const activity of activities) {
-    const direction = string(activity.DIRECTION);
-    const typeId = string(activity.TYPE_ID);
-    const providerId = string(activity.PROVIDER_ID);
-    const providerTypeId = string(activity.PROVIDER_TYPE_ID);
+    const direction = string(activity.DIRECTION); const typeId = string(activity.TYPE_ID);
+    const providerId = string(activity.PROVIDER_ID); const providerTypeId = string(activity.PROVIDER_TYPE_ID);
     if (!direction && !providerId && typeId !== "2") continue;
-    const key = activityProviderKey(activity);
-    const current = map.get(key);
+    const key = activityProviderKey(activity); const current = map.get(key);
     if (current) current.count += 1;
-    else {
-      map.set(key, {
-        key,
-        providerId: providerId || "—",
-        providerTypeId: providerTypeId || "—",
-        typeId: typeId || "—",
-        direction: direction || "—",
-        count: 1,
-        sampleSubject: string(activity.SUBJECT).slice(0, 100) || "—",
-        mode: "AUTO",
-      });
-    }
+    else map.set(key, { key, providerId: providerId || "—", providerTypeId: providerTypeId || "—", typeId: typeId || "—", direction: direction || "—", count: 1, sampleSubject: string(activity.SUBJECT).slice(0, 100) || "—", mode: "AUTO" });
   }
   return [...map.values()].sort((a, b) => b.count - a.count);
 }
 
 function activityDealIds(activity: RawActivity) {
-  const ids = new Set<string>();
-  const bindings = Array.isArray(activity.BINDINGS) ? activity.BINDINGS : [];
-  for (const rawBinding of bindings) {
-    const binding = rawBinding as Record<string, unknown>;
-    const type = string(binding.OWNER_TYPE_ID ?? binding.ENTITY_TYPE_ID);
-    const id = string(binding.OWNER_ID ?? binding.ENTITY_ID);
+  const ids = new Set<string>(); const bindings = Array.isArray(activity.BINDINGS) ? activity.BINDINGS : [];
+  for (const raw of bindings) {
+    const binding = raw as Record<string, unknown>; const type = string(binding.OWNER_TYPE_ID ?? binding.ENTITY_TYPE_ID); const id = string(binding.OWNER_ID ?? binding.ENTITY_ID);
     if (type === "2" && id) ids.add(id);
   }
   if (string(activity.OWNER_TYPE_ID) === "2" && activity.OWNER_ID) ids.add(string(activity.OWNER_ID));
@@ -82,188 +50,109 @@ function activityDealIds(activity: RawActivity) {
 
 export function normalizeCallOutcome(codeValue: unknown): CallOutcome {
   const code = string(codeValue).toUpperCase();
-  if (code === "200") return "Ko‘tardi";
-  if (code === "304") return "Ko‘tarmadi";
-  if (code === "486") return "Band";
-  if (code === "603") return "Rad etdi";
-  if (code === "603-S") return "Bekor qilindi";
-  if (code === "404") return "Noto‘g‘ri raqam";
-  if (["480", "484", "503", "403", "402"].includes(code)) return "Ulanmadi";
-  if (code === "423") return "Bloklangan";
+  if (code === "200") return "Ko‘tardi"; if (code === "304") return "Ko‘tarmadi"; if (code === "486") return "Band";
+  if (code === "603") return "Rad etdi"; if (code === "603-S") return "Bekor qilindi"; if (code === "404") return "Noto‘g‘ri raqam";
+  if (["480", "484", "503", "403", "402"].includes(code)) return "Ulanmadi"; if (code === "423") return "Bloklangan";
   return "Noma’lum";
 }
 
 function callOutcome(activity: RawActivity, stat?: RawCallStat) {
-  const code = stat?.CALL_FAILED_CODE ?? activity.RESULT_STATUS ?? activity.RESULT_VALUE;
-  let outcome = normalizeCallOutcome(code);
-  let inferred = false;
+  let outcome = normalizeCallOutcome(stat?.CALL_FAILED_CODE ?? activity.RESULT_STATUS ?? activity.RESULT_VALUE); let inferred = false;
   const duration = Number(stat?.CALL_DURATION ?? 0);
-  if (outcome === "Noma’lum" && duration > 0) {
-    outcome = "Ko‘tardi";
-    inferred = true;
-  }
+  if (outcome === "Noma’lum" && duration > 0) { outcome = "Ko‘tardi"; inferred = true; }
   return { outcome, inferred, duration: Number.isFinite(duration) ? duration : 0 };
 }
 
-function managerName(id: string, users: Map<string, string>) {
-  return users.get(id) ?? (id ? `Menejer #${id}` : "Aniqlanmagan");
+function orderedHistory(histories: RawStageHistory[]) {
+  return histories.filter((row) => timestamp(row.CREATED_TIME)).sort((a, b) => timestamp(a.CREATED_TIME)!.getTime() - timestamp(b.CREATED_TIME)!.getTime());
 }
 
-function firstStageChange(
-  deal: RawDeal,
-  histories: RawStageHistory[],
-) {
-  const createdAt = timestamp(deal.DATE_CREATE);
-  if (!createdAt) return null;
-  const ordered = histories
-    .filter((row) => timestamp(row.CREATED_TIME))
-    .sort((a, b) => timestamp(a.CREATED_TIME)!.getTime() - timestamp(b.CREATED_TIME)!.getTime());
+function firstStageChange(deal: RawDeal, histories: RawStageHistory[]) {
+  const createdAt = timestamp(deal.DATE_CREATE); if (!createdAt) return null;
   const unique: RawStageHistory[] = [];
-  for (const row of ordered) {
-    if (!unique.length || string(unique.at(-1)?.STAGE_ID) !== string(row.STAGE_ID)) unique.push(row);
-  }
+  for (const row of orderedHistory(histories)) if (!unique.length || string(unique.at(-1)?.STAGE_ID) !== string(row.STAGE_ID)) unique.push(row);
   if (!unique.length) return null;
-  const firstAt = timestamp(unique[0].CREATED_TIME)!;
-  const initialLooksLikeCreation = Math.abs(firstAt.getTime() - createdAt.getTime()) <= 120_000;
-  const candidate = initialLooksLikeCreation ? unique[1] : unique[0];
-  if (!candidate) return null;
-  const at = timestamp(candidate.CREATED_TIME);
-  return at && at > createdAt ? { at, stageId: string(candidate.STAGE_ID) } : null;
+  const firstAt = timestamp(unique[0].CREATED_TIME)!; const candidate = Math.abs(firstAt.getTime() - createdAt.getTime()) <= 120_000 ? unique[1] : unique[0];
+  const at = candidate ? timestamp(candidate.CREATED_TIME) : null;
+  return at && at > createdAt ? { at, stageId: string(candidate?.STAGE_ID) } : null;
 }
+
+function stageName(id: string, stages: Map<string, string>) { return stages.get(id) ?? (id || "Aniqlanmagan"); }
 
 export function buildAnalyticsRecords(input: {
-  deals: RawDeal[];
-  activities: RawActivity[];
-  stageHistories: RawStageHistory[];
-  callStats: RawCallStat[];
-  settings: DashboardSettings;
-  providerRules: Record<string, string>;
-  users: Map<string, string>;
-  pipelines: Map<string, string>;
-  stages: Map<string, string>;
-  sources: Map<string, string>;
-  domain: string | null;
-  activitiesAvailable: boolean;
-  stageHistoryAvailable: boolean;
+  deals: RawDeal[]; activities: RawActivity[]; stageHistories: RawStageHistory[]; callStats: RawCallStat[];
+  settings: DashboardSettings; providerRules: Record<string, string>; users: Map<string, string>;
+  pipelines: Map<string, string>; stages: Map<string, string>; sources: Map<string, string>; fieldOptions?: Map<string, Map<string, string>>;
+  snapshots?: Map<string, SalesSnapshot>; domain: string | null; activitiesAvailable: boolean; stageHistoryAvailable: boolean;
 }) {
   const activitiesByDeal = new Map<string, RawActivity[]>();
-  for (const activity of input.activities) {
-    for (const dealId of activityDealIds(activity)) {
-      const rows = activitiesByDeal.get(dealId) ?? [];
-      rows.push(activity);
-      activitiesByDeal.set(dealId, rows);
-    }
-  }
-
+  for (const activity of input.activities) for (const dealId of activityDealIds(activity)) activitiesByDeal.set(dealId, [...(activitiesByDeal.get(dealId) ?? []), activity]);
   const historiesByDeal = new Map<string, RawStageHistory[]>();
-  for (const history of input.stageHistories) {
-    const dealId = string(history.OWNER_ID);
-    if (!dealId) continue;
-    const rows = historiesByDeal.get(dealId) ?? [];
-    rows.push(history);
-    historiesByDeal.set(dealId, rows);
-  }
-
+  for (const history of input.stageHistories) { const id = string(history.OWNER_ID); if (id) historiesByDeal.set(id, [...(historiesByDeal.get(id) ?? []), history]); }
   const statsByActivity = new Map<string, RawCallStat>();
-  for (const stat of input.callStats) {
-    const activityId = string(stat.CRM_ACTIVITY_ID);
-    if (activityId) statsByActivity.set(activityId, stat);
-  }
+  for (const stat of input.callStats) { const id = string(stat.CRM_ACTIVITY_ID); if (id) statsByActivity.set(id, stat); }
+  const mainIds = new Set(input.settings.selectedPipelineIds); const postSaleIds = new Set(input.settings.postSalePipelineIds);
+  const fieldOptions = input.fieldOptions ?? new Map<string, Map<string, string>>(); const snapshots = input.snapshots ?? new Map<string, SalesSnapshot>();
 
   return input.deals.flatMap((deal): AnalyticsRecord[] => {
-    const dealId = string(deal.ID);
-    const created = timestamp(deal.DATE_CREATE);
-    if (!dealId || !created) return [];
-    const assignedManagerId = string(deal.ASSIGNED_BY_ID);
-    const calls = (activitiesByDeal.get(dealId) ?? [])
-      .filter((activity) => isOutgoingCall(activity, input.providerRules))
-      .filter((activity) => {
-        const at = timestamp(activity.START_TIME ?? activity.CREATED);
-        return at && at >= created;
-      })
-      .sort((a, b) => timestamp(a.START_TIME ?? a.CREATED)!.getTime() - timestamp(b.START_TIME ?? b.CREATED)!.getTime());
+    const dealId = string(deal.ID); const created = timestamp(deal.DATE_CREATE); if (!dealId || !created) return [];
+    const histories = orderedHistory(historiesByDeal.get(dealId) ?? []); const currentCategoryId = string(deal.CATEGORY_ID || "0"); const currentStageId = string(deal.STAGE_ID);
+    const currentStage = stageName(currentStageId, input.stages);
+    const firstMainHistory = histories.find((row) => mainIds.has(string(row.CATEGORY_ID)));
+    const originCategoryId = string(firstMainHistory?.CATEGORY_ID) || (mainIds.has(currentCategoryId) ? currentCategoryId : string(histories.find((row) => !postSaleIds.has(string(row.CATEGORY_ID)))?.CATEGORY_ID)) || currentCategoryId;
+    const paymentHistory = histories.find((row) => isPaymentStage(stageName(string(row.STAGE_ID), input.stages)));
+    const postSaleHistory = histories.find((row) => postSaleIds.has(string(row.CATEGORY_ID)));
+    const wonEvent = paymentHistory ?? postSaleHistory; const wonAt = wonEvent ? timestamp(wonEvent.CREATED_TIME)?.toISOString() ?? null : null;
+    const currentHistory = [...histories].reverse().find((row) => string(row.STAGE_ID) === currentStageId && (!row.CATEGORY_ID || string(row.CATEGORY_ID) === currentCategoryId));
+    const salesStatus = classifySalesStatus({ stage: currentStage, semantic: string(currentHistory?.STAGE_SEMANTIC_ID), paymentReached: Boolean(paymentHistory), inPostSalePipeline: postSaleIds.has(currentCategoryId) || Boolean(postSaleHistory) });
+    const stageEntered = timestamp(currentHistory?.CREATED_TIME ?? deal.MOVED_TIME ?? deal.DATE_MODIFY) ?? created;
+    const stageAgeHours = Math.max(0, (Date.now() - stageEntered.getTime()) / 3_600_000);
+    const stageLimitHours = Number(input.settings.stageLimits[currentStageId] ?? input.settings.defaultStageLimitHours);
 
-    const firstCall = calls[0] ?? null;
-    const firstCallAt = firstCall ? timestamp(firstCall.START_TIME ?? firstCall.CREATED) : null;
+    const assignedManagerId = string(deal.ASSIGNED_BY_ID);
+    const calls = (activitiesByDeal.get(dealId) ?? []).filter((row) => isOutgoingCall(row, input.providerRules)).filter((row) => { const at = timestamp(row.START_TIME ?? row.CREATED); return at && at >= created; }).sort((a, b) => timestamp(a.START_TIME ?? a.CREATED)!.getTime() - timestamp(b.START_TIME ?? b.CREATED)!.getTime());
+    const firstCall = calls[0] ?? null; const firstCallAt = firstCall ? timestamp(firstCall.START_TIME ?? firstCall.CREATED) : null;
     const firstCallStat = firstCall ? statsByActivity.get(string(firstCall.ID)) : undefined;
     const firstOutcome = firstCall ? callOutcome(firstCall, firstCallStat) : { outcome: "Noma’lum" as CallOutcome, inferred: false, duration: 0 };
-    const latestCall = calls.at(-1);
-    const latestOutcome = latestCall
-      ? callOutcome(latestCall, statsByActivity.get(string(latestCall.ID))).outcome
-      : "Noma’lum";
-
-    const successfulCalls = calls.flatMap((activity) => {
-      const at = timestamp(activity.START_TIME ?? activity.CREATED);
-      const outcome = callOutcome(activity, statsByActivity.get(string(activity.ID))).outcome;
-      return at && outcome === "Ko‘tardi" ? [{ at, activity }] : [];
-    });
-    const firstSuccess = successfulCalls[0] ?? null;
-    const outcomes = calls.map((activity) => callOutcome(activity, statsByActivity.get(string(activity.ID))).outcome);
-    const stageChange = firstStageChange(deal, historiesByDeal.get(dealId) ?? []);
-    const slaStart = getSlaStart(created, input.settings);
-    const firstCallMinutes = firstCallAt
-      ? calculateBusinessMinutes(slaStart, firstCallAt, input.settings)
-      : null;
-    const stageMinutes = stageChange
-      ? calculateBusinessMinutes(slaStart, stageChange.at, input.settings)
-      : null;
-    const processingAt = firstCallAt ?? stageChange?.at ?? null;
-    const processingMinutes = processingAt
-      ? calculateBusinessMinutes(slaStart, processingAt, input.settings)
-      : null;
-    const processingSource = firstCallAt
-      ? "OUTGOING_CALL"
-      : stageChange
-        ? "STAGE_CHANGE"
-        : "NO_PROCESSING";
+    const latestCall = calls.at(-1); const latestOutcome = latestCall ? callOutcome(latestCall, statsByActivity.get(string(latestCall.ID))).outcome : "Noma’lum";
+    const successes = calls.flatMap((activity) => { const at = timestamp(activity.START_TIME ?? activity.CREATED); return at && callOutcome(activity, statsByActivity.get(string(activity.ID))).outcome === "Ko‘tardi" ? [{ at }] : []; });
+    const stageChange = firstStageChange(deal, histories); const slaStart = getSlaStart(created, input.settings);
+    const firstCallMinutes = firstCallAt ? calculateBusinessMinutes(slaStart, firstCallAt, input.settings) : null;
+    const stageMinutes = stageChange ? calculateBusinessMinutes(slaStart, stageChange.at, input.settings) : null;
+    const processingAt = firstCallAt ?? stageChange?.at ?? null; const processingMinutes = processingAt ? calculateBusinessMinutes(slaStart, processingAt, input.settings) : null;
+    const processingSource = firstCallAt ? "OUTGOING_CALL" : stageChange ? "STAGE_CHANGE" : "NO_PROCESSING";
     const stageChangedBeforeCall = Boolean(stageChange && firstCallAt && stageChange.at < firstCallAt);
-    const categoryId = string(deal.CATEGORY_ID || "0");
-    const stageId = string(deal.STAGE_ID);
-    const sourceId = string(deal.SOURCE_ID);
+
+    const snapshot = snapshots.get(dealId); const customManagerId = input.settings.salesManagerField ? employeeId(deal[input.settings.salesManagerField]) : "";
+    const firstCallManagerId = firstCall ? string(firstCall.RESPONSIBLE_ID) : ""; const moverId = string(deal.MOVED_BY_ID);
+    let salesManagerId = snapshot?.managerId ?? ""; let salesManager = snapshot?.managerName ?? ""; let salesManagerAttribution = (snapshot?.attributionSource as SalesManagerAttribution | undefined) ?? "UNKNOWN";
+    if (!snapshot && customManagerId) { salesManagerId = customManagerId; salesManagerAttribution = "CUSTOM_FIELD"; }
+    else if (!snapshot && firstCallManagerId) { salesManagerId = firstCallManagerId; salesManagerAttribution = "FIRST_CALL"; }
+    else if (!snapshot && moverId) { salesManagerId = moverId; salesManagerAttribution = "STAGE_MOVER"; }
+    else if (!snapshot && assignedManagerId) { salesManagerId = assignedManagerId; salesManagerAttribution = "CURRENT_RESPONSIBLE"; }
+    if (!salesManager && salesManagerId) salesManager = managerName(salesManagerId, input.users);
+
+    const reasonField = input.settings.failureReasonField; const sourceField = input.settings.marketingChannelField;
+    const lossReason = reasonField ? fieldDisplayValue(deal[reasonField], fieldOptions.get(reasonField)) : "";
+    const customSource = sourceField ? fieldDisplayValue(deal[sourceField], fieldOptions.get(sourceField)) : "";
+    const sourceId = customSource || string(deal.SOURCE_ID); const source = customSource || input.sources.get(sourceId) || sourceId || "Ko‘rsatilmagan";
+    const opportunity = Number(deal.OPPORTUNITY ?? 0);
 
     return [{
-      dealId,
-      title: string(deal.TITLE) || `Deal #${dealId}`,
-      createdAt: created.toISOString(),
-      creationPeriod: isInsideWorkingTime(created, input.settings) ? "WORK_HOURS" : "AFTER_HOURS",
-      slaStart: slaStart.toISOString(),
-      assignedManagerId,
-      assignedManager: managerName(assignedManagerId, input.users),
-      categoryId,
-      pipeline: input.pipelines.get(categoryId) ?? `Pipeline #${categoryId}`,
-      stageId,
-      stage: input.stages.get(stageId) ?? (stageId || "Aniqlanmagan"),
-      sourceId,
-      source: input.sources.get(sourceId) ?? (sourceId || "Ko‘rsatilmagan"),
-      firstCallAt: firstCallAt?.toISOString() ?? null,
-      firstCallActivityId: firstCall ? string(firstCall.ID) : null,
-      firstCallManagerId: firstCall ? string(firstCall.RESPONSIBLE_ID) : null,
-      firstCallManager: firstCall ? managerName(string(firstCall.RESPONSIBLE_ID), input.users) : null,
-      firstCallBusinessMinutes: firstCallMinutes,
-      firstCallOutcome: firstOutcome.outcome,
-      firstCallDuration: firstCall ? firstOutcome.duration : null,
-      outcomeInferred: firstOutcome.inferred,
-      firstSuccessfulCallAt: firstSuccess?.at.toISOString() ?? null,
-      firstSuccessfulCallBusinessMinutes: firstSuccess
-        ? calculateBusinessMinutes(slaStart, firstSuccess.at, input.settings)
-        : null,
-      firstStageChangeAt: stageChange?.at.toISOString() ?? null,
-      firstStageChangeTo: stageChange ? input.stages.get(stageChange.stageId) ?? stageChange.stageId : null,
-      firstStageChangeBusinessMinutes: stageMinutes,
-      stageChangedBeforeCall,
-      stageAttributionInferred: Boolean(stageChange),
-      processingSource,
-      processingAt: processingAt?.toISOString() ?? null,
-      processingBusinessMinutes: processingMinutes,
-      slaStatus: processingMinutes === null
-        ? "NO_PROCESSING"
-        : processingMinutes <= input.settings.slaMinutes
-          ? "ON_TIME"
-          : "LATE",
-      outgoingCallCount: calls.length,
-      answeredCallCount: outcomes.filter((value) => value === "Ko‘tardi").length,
-      unansweredCallCount: outcomes.filter((value) => value !== "Ko‘tardi" && value !== "Noma’lum").length,
-      latestCallOutcome: latestOutcome,
+      dealId, title: string(deal.TITLE) || `Deal #${dealId}`, createdAt: created.toISOString(), creationPeriod: isInsideWorkingTime(created, input.settings) ? "WORK_HOURS" : "AFTER_HOURS", slaStart: slaStart.toISOString(),
+      assignedManagerId, assignedManager: managerName(assignedManagerId, input.users), categoryId: currentCategoryId, pipeline: input.pipelines.get(currentCategoryId) ?? `Pipeline #${currentCategoryId}`,
+      originCategoryId, originPipeline: input.pipelines.get(originCategoryId) ?? `Pipeline #${originCategoryId}`, operationalPipeline: mainIds.has(currentCategoryId),
+      stageId: currentStageId, stage: currentStage, stageEnteredAt: stageEntered.toISOString(), stageAgeHours, stageLimitHours, stageOverdue: salesStatus === "ACTIVE" && stageAgeHours > stageLimitHours,
+      sourceId, source, salesStatus, qualified: salesStatus !== "LOW_QUALITY", wonAt: snapshot?.wonAt ?? wonAt, opportunity: Number.isFinite(opportunity) ? opportunity : 0, currencyId: string(deal.CURRENCY_ID), lossReason: lossReason || ((salesStatus === "LOST" || salesStatus === "LOW_QUALITY") ? "Sabab ko‘rsatilmagan" : ""),
+      salesManagerId: salesManagerId || null, salesManager: salesManager || null, salesManagerAttribution,
+      firstCallAt: firstCallAt?.toISOString() ?? null, firstCallActivityId: firstCall ? string(firstCall.ID) : null, firstCallManagerId: firstCallManagerId || null, firstCallManager: firstCallManagerId ? managerName(firstCallManagerId, input.users) : null,
+      firstCallBusinessMinutes: firstCallMinutes, firstCallOutcome: firstOutcome.outcome, firstCallDuration: firstCall ? firstOutcome.duration : null, outcomeInferred: firstOutcome.inferred,
+      firstSuccessfulCallAt: successes[0]?.at.toISOString() ?? null, firstSuccessfulCallBusinessMinutes: successes[0] ? calculateBusinessMinutes(slaStart, successes[0].at, input.settings) : null,
+      firstStageChangeAt: stageChange?.at.toISOString() ?? null, firstStageChangeTo: stageChange ? stageName(stageChange.stageId, input.stages) : null, firstStageChangeBusinessMinutes: stageMinutes,
+      stageChangedBeforeCall, stageAttributionInferred: Boolean(stageChange), processingSource, processingAt: processingAt?.toISOString() ?? null, processingBusinessMinutes: processingMinutes,
+      slaStatus: processingMinutes === null ? "NO_PROCESSING" : processingMinutes <= input.settings.slaMinutes ? "ON_TIME" : "LATE",
+      outgoingCallCount: calls.length, answeredCallCount: calls.filter((row) => callOutcome(row, statsByActivity.get(string(row.ID))).outcome === "Ko‘tardi").length,
+      unansweredCallCount: calls.filter((row) => !["Ko‘tardi", "Noma’lum"].includes(callOutcome(row, statsByActivity.get(string(row.ID))).outcome)).length, latestCallOutcome: latestOutcome,
       dataUnavailable: (!input.activitiesAvailable || !input.stageHistoryAvailable) && !processingAt,
       bitrixUrl: input.domain ? `https://${input.domain}/crm/deal/details/${encodeURIComponent(dealId)}/` : null,
     }];

@@ -23,6 +23,7 @@ export async function ensureSchema() {
     db.prepare("CREATE TABLE IF NOT EXISTS raw_call_stats (row_key TEXT PRIMARY KEY, activity_id TEXT NOT NULL, payload TEXT NOT NULL, synced_at TEXT NOT NULL)"),
     db.prepare("CREATE INDEX IF NOT EXISTS raw_call_activity_idx ON raw_call_stats(activity_id)"),
     db.prepare("CREATE TABLE IF NOT EXISTS crm_dictionaries (key TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS deal_sales_snapshots (deal_id TEXT PRIMARY KEY, won_at TEXT NOT NULL, manager_id TEXT, manager_name TEXT, attribution_source TEXT NOT NULL, created_at TEXT NOT NULL)"),
   ]);
 }
 
@@ -39,6 +40,9 @@ export async function getSettings(): Promise<DashboardSettings> {
       holidays: Array.isArray(parsed.holidays) ? parsed.holidays : [],
       selectedPipelineIds: Array.isArray(parsed.selectedPipelineIds) ? parsed.selectedPipelineIds.map(String) : [],
       selectedPipelineNames: Array.isArray(parsed.selectedPipelineNames) ? parsed.selectedPipelineNames.map(String) : defaultSettings.selectedPipelineNames,
+      postSalePipelineIds: Array.isArray(parsed.postSalePipelineIds) ? parsed.postSalePipelineIds.map(String) : [],
+      postSalePipelineNames: Array.isArray(parsed.postSalePipelineNames) ? parsed.postSalePipelineNames.map(String) : defaultSettings.postSalePipelineNames,
+      stageLimits: parsed.stageLimits && typeof parsed.stageLimits === "object" ? parsed.stageLimits : {},
     };
   } catch {
     return defaultSettings;
@@ -114,13 +118,7 @@ export async function clearUnselectedAnalytics(selectedIds: string[], fromIso?: 
 
 export async function listAnalyticsRecords() {
   await ensureSchema();
-  const settings = await getSettings();
-  const ids = settings.selectedPipelineIds;
-  const placeholders = ids.map(() => "?").join(", ");
-  const statement = ids.length
-    ? getD1().prepare(`SELECT payload FROM analytics_records WHERE category_id IN (${placeholders}) ORDER BY created_at DESC`).bind(...ids)
-    : getD1().prepare("SELECT payload FROM analytics_records ORDER BY created_at DESC");
-  const result = await statement.all<{ payload: string }>();
+  const result = await getD1().prepare("SELECT payload FROM analytics_records ORDER BY created_at DESC").all<{ payload: string }>();
   return ((result.results ?? []) as { payload: string }[]).flatMap((row) => {
     try {
       return [JSON.parse(row.payload) as AnalyticsRecord];
@@ -128,6 +126,41 @@ export async function listAnalyticsRecords() {
       return [];
     }
   });
+}
+
+export type SalesSnapshot = {
+  dealId: string;
+  wonAt: string;
+  managerId: string | null;
+  managerName: string | null;
+  attributionSource: string;
+};
+
+export async function getSalesSnapshots(dealIds: string[]) {
+  await ensureSchema();
+  if (!dealIds.length) return new Map<string, SalesSnapshot>();
+  const result = new Map<string, SalesSnapshot>();
+  for (let index = 0; index < dealIds.length; index += 80) {
+    const ids = dealIds.slice(index, index + 80);
+    const placeholders = ids.map(() => "?").join(", ");
+    const rows = await getD1().prepare(`SELECT deal_id, won_at, manager_id, manager_name, attribution_source FROM deal_sales_snapshots WHERE deal_id IN (${placeholders})`).bind(...ids).all<Record<string, string | null>>();
+    for (const row of rows.results ?? []) result.set(String(row.deal_id), {
+      dealId: String(row.deal_id), wonAt: String(row.won_at), managerId: row.manager_id ? String(row.manager_id) : null,
+      managerName: row.manager_name ? String(row.manager_name) : null, attributionSource: String(row.attribution_source),
+    });
+  }
+  return result;
+}
+
+export async function saveSalesSnapshots(records: AnalyticsRecord[]) {
+  await ensureSchema();
+  const won = records.filter((record) => record.salesStatus === "WON" && record.wonAt);
+  const db = getD1();
+  for (let index = 0; index < won.length; index += 40) {
+    const statements = won.slice(index, index + 40).map((record) => db.prepare("INSERT OR IGNORE INTO deal_sales_snapshots(deal_id, won_at, manager_id, manager_name, attribution_source, created_at) VALUES(?, ?, ?, ?, ?, ?)")
+      .bind(record.dealId, record.wonAt, record.salesManagerId, record.salesManager, record.salesManagerAttribution, new Date().toISOString()));
+    if (statements.length) await db.batch(statements);
+  }
 }
 
 export async function saveProviderDiagnostics(providers: ProviderDiagnostic[]) {
@@ -240,6 +273,8 @@ export type StoredSyncJob = {
   mode: "full" | "incremental";
   runId: string;
   selectedPipelines: { id: string; name: string }[];
+  reportingPipelines: { id: string; name: string }[];
+  dealScope: "main" | "postSale";
   counts: Record<string, number>;
   permissions: Record<string, string>;
   safeError: string | null;
@@ -251,7 +286,10 @@ export async function getSyncJob() {
   await ensureSchema();
   const row = await getD1().prepare("SELECT payload FROM sync_jobs WHERE id = 'main'").first<{ payload: string }>();
   if (!row?.payload) return null;
-  try { return JSON.parse(row.payload) as StoredSyncJob; } catch { return null; }
+  try {
+    const parsed = JSON.parse(row.payload) as StoredSyncJob;
+    return { ...parsed, reportingPipelines: parsed.reportingPipelines ?? [], dealScope: parsed.dealScope ?? "main" };
+  } catch { return null; }
 }
 
 export async function saveSyncJob(job: StoredSyncJob) {

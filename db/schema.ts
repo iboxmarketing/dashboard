@@ -95,3 +95,12 @@ export const crmDictionaries = sqliteTable("crm_dictionaries", {
   payload: text("payload").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
+
+export const dealSalesSnapshots = sqliteTable("deal_sales_snapshots", {
+  dealId: text("deal_id").primaryKey(),
+  wonAt: text("won_at").notNull(),
+  managerId: text("manager_id"),
+  managerName: text("manager_name"),
+  attributionSource: text("attribution_source").notNull(),
+  createdAt: text("created_at").notNull(),
+});

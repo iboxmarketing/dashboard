@@ -15,6 +15,13 @@
       "when": 1787236090596,
       "tag": "0001_tired_meltdown",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1787239350284,
+      "tag": "0002_flawless_king_cobra",
+      "breakpoints": true
     }
   ]
 }

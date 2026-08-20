@@ -180,4 +180,11 @@ export const defaultSettings: DashboardSettings = {
   historyDays: 90,
   selectedPipelineIds: [],
   selectedPipelineNames: ["IBOX Sales", "SD Sales"],
+  postSalePipelineIds: [],
+  postSalePipelineNames: ["IBOX Обучение Сопровождение", "SD Обучение Сопровождение"],
+  failureReasonField: null,
+  marketingChannelField: null,
+  salesManagerField: null,
+  defaultStageLimitHours: 24,
+  stageLimits: {},
 };
