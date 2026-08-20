@@ -35,6 +35,34 @@ export type PipelineStageOption = PipelineOption & {
   semantics: string;
 };
 
+export type CurrentStageRecord = {
+  dealId: string;
+  title: string;
+  createdAt: string;
+  assignedManagerId: string;
+  assignedManager: string;
+  categoryId: string;
+  pipeline: string;
+  stageId: string;
+  stage: string;
+  stageEnteredAt: string;
+  stageAgeHours: number;
+  stageLimitHours: number;
+  stageOverdue: boolean;
+  bitrixUrl: string | null;
+};
+
+export type StageReconciliation = {
+  liveCount: number;
+  cachedCount: number;
+  missingCount: number;
+  staleCount: number;
+  stageMismatchCount: number;
+  missingDealIds: string[];
+  staleDealIds: string[];
+  fetchedAt: string;
+};
+
 export type CrmFieldOption = {
   key: string;
   title: string;

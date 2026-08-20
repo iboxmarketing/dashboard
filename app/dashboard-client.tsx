@@ -7,7 +7,7 @@ import {
   SlidersHorizontal, TimerReset, Users, X, XCircle, CircleDollarSign, ClipboardList, Layers3,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AnalyticsRecord, CrmFieldOption, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, SyncProgressState } from "@/lib/types";
+import type { AnalyticsRecord, CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, StageReconciliation, SyncProgressState } from "@/lib/types";
 
 type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "calls" | "diagnostics" | "settings";
 type SyncState = SyncProgressState;
@@ -274,7 +274,7 @@ function ManagerTable({ rows, onSelect }: { rows: ManagerRow[]; onSelect: (manag
   const header = (label: string, key: keyof ManagerRow) => <button onClick={() => setColumn(key)}>{label}{sort === key && (direction === "asc" ? " ↑" : " ↓")}</button>;
   return <div className="table-wrap"><table className="data-table manager-table"><thead><tr>
     <th>{header("Sotuvchi", "name")}</th><th>{header("Lead", "deals")}</th><th>{header("Davr sotuv", "sales")}</th><th>{header("Cohort sotuv", "cohortSales")}</th><th>{header("Summa", "amount")}</th>
-    <th>{header("Konversiya", "conversion")}</th><th>{header("Sifatsiz", "lowQuality")}</th><th>{header("Sotilmadi", "lost")}</th><th>{header("Aktiv", "active")}</th>
+    <th>{header("Konversiya", "conversion")}</th><th>{header("Sifatsiz", "lowQuality")}</th><th>{header("Sotilmadi", "lost")}</th><th>{header("Cohort aktiv", "active")}</th>
     <th>{header("Avg obrabotka", "avg")}</th><th>{header("Call %", "callPct")}</th><th>{header("No processing", "noProcessing")}</th>
   </tr></thead><tbody>{sorted.map((row) => <tr key={row.id} onClick={() => onSelect(row)}>
     <td><div className="manager-cell"><span>{row.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span><strong>{row.name}</strong></div></td>
@@ -285,14 +285,26 @@ function ManagerTable({ rows, onSelect }: { rows: ManagerRow[]; onSelect: (manag
   </tr>)}</tbody></table>{!rows.length && <div className="empty-table">Tanlangan filtr bo‘yicha menejerlar topilmadi.</div>}</div>;
 }
 
-function FiltersBar({ filters, setFilters, records }: { filters: Filters; setFilters: React.Dispatch<React.SetStateAction<Filters>>; records: AnalyticsRecord[] }) {
+function FiltersBar({ filters, setFilters, records, currentStages, mode = "cohort" }: { filters: Filters; setFilters: React.Dispatch<React.SetStateAction<Filters>>; records: AnalyticsRecord[]; currentStages?: CurrentStageRecord[]; mode?: "cohort" | "current" }) {
   const [expanded, setExpanded] = useState(false);
-  const managers = [...new Map(records.flatMap((row) => [[row.assignedManagerId, row.assignedManager] as const, ...(row.salesManagerId ? [[row.salesManagerId, row.salesManager ?? "Aniqlanmagan"] as const] : [])])).entries()];
-  const pipelines = [...new Set(records.map((row) => row.originPipeline))].sort();
+  const managers = mode === "current"
+    ? [...new Map((currentStages ?? []).map((row) => [row.assignedManagerId, row.assignedManager] as const)).entries()]
+    : [...new Map(records.flatMap((row) => [[row.assignedManagerId, row.assignedManager] as const, ...(row.salesManagerId ? [[row.salesManagerId, row.salesManager ?? "Aniqlanmagan"] as const] : [])])).entries()];
+  const pipelines = mode === "current" ? [...new Set((currentStages ?? []).map((row) => row.pipeline))].sort() : [...new Set(records.map((row) => row.originPipeline))].sort();
   const sources = [...new Set(records.map((row) => row.source))].sort();
-  const stages = [...new Set(records.map((row) => row.stage))].sort();
+  const stages = mode === "current" ? [...new Set((currentStages ?? []).map((row) => row.stage))].sort() : [...new Set(records.map((row) => row.stage))].sort();
   const set = (key: keyof Filters, value: string) => setFilters((current) => ({ ...current, [key]: value }));
   const activeCount = Object.entries(filters).filter(([key, value]) => !["range", "search", "from", "to"].includes(key) && value).length;
+  if (mode === "current") {
+    const currentActiveCount = [filters.manager, filters.pipeline, filters.stage].filter(Boolean).length;
+    return <div className="filters-shell current-stage-filters"><div className="filters-main">
+      <div className="search-box"><Search size={16} /><input value={filters.search} onChange={(event) => set("search", event.target.value)} placeholder="Deal ID yoki nomi…" /></div>
+      <Select label="Menejer" value={filters.manager} onChange={(value) => set("manager", value)}><option value="">Barcha menejerlar</option>{managers.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</Select>
+      <Select label="Pipeline" value={filters.pipeline} onChange={(value) => set("pipeline", value)}><option value="">Barcha pipeline</option>{pipelines.map((pipeline) => <option key={pipeline}>{pipeline}</option>)}</Select>
+      <Select label="Joriy stage" value={filters.stage} onChange={(value) => set("stage", value)}><option value="">Barcha stage’lar</option>{stages.map((stage) => <option key={stage}>{stage}</option>)}</Select>
+      {(currentActiveCount > 0 || filters.search) && <button className="clear-filter" onClick={() => setFilters((current) => ({ ...emptyFilters, range: current.range }))}><X size={15} />Tozalash</button>}
+    </div><div className="current-filter-note"><Clock3 size={15} /><span>Joriy stage sonlariga sana filtri qo‘llanmaydi — Bitrix’dagi hozirgi ochiq deal’lar ko‘rsatiladi.</span></div></div>;
+  }
   return <div className="filters-shell">
     <div className="filters-main">
       <div className="search-box"><Search size={16} /><input value={filters.search} onChange={(event) => set("search", event.target.value)} placeholder="Deal ID yoki nomi…" /></div>
@@ -350,7 +362,7 @@ function DashboardView({ records, salesRecords, previousRecords, previousSalesRe
       <KpiCard label="Marketing sifatsiz" value={String(lowQuality.length)} detail="Not Relevant · routing kirmaydi" icon={AlertTriangle} tone="amber" />
       <KpiCard label="Routing" value={String(routing.length)} detail="IDOKO / SD / boshqa yo‘naltirish" icon={RefreshCw} tone="slate" />
       <KpiCard label="Sotilmadi" value={String(lost.length)} detail="Sifatli deb qabul qilingan, yopilgan" icon={XCircle} tone="red" />
-      <KpiCard label="Aktiv lead" value={String(active.length)} detail="Hozir sales bosqichlarida" icon={Layers3} tone="violet" />
+      <KpiCard label="Cohort aktiv lead" value={String(active.length)} detail="Tanlangan davrda kelib, hali yopilmagan" icon={Layers3} tone="violet" />
       <KpiCard label="Cohort sotuv" value={String(cohortSales.length)} detail={`${pct(cohortSales.length, records.length)}% shu davr lead → sotuv`} icon={CircleDollarSign} tone="green" />
       <KpiCard label="Davr sotuv" value={String(salesRecords.length)} detail={<><MetricDelta current={salesRecords.length} previous={previousSalesRecords.length} /> · Oplata sanasi</>} icon={CircleDollarSign} tone="cyan" />
       <KpiCard label="Sotuv summasi" value={salesAmount.toLocaleString("uz-UZ")} detail={<><MetricDelta current={salesAmount} previous={previousAmount} /> · {salesRecords[0]?.currencyId || "Bitrix valyutasi"}</>} icon={CircleDollarSign} tone="indigo" />
@@ -427,10 +439,10 @@ function TrendChart({ records }: { records: AnalyticsRecord[] }) {
   </section>;
 }
 
-function ManagerDetailView({ manager, cohortRecords, salesRecords, onBack }: { manager: ManagerRow; cohortRecords: AnalyticsRecord[]; salesRecords: AnalyticsRecord[]; onBack: () => void }) {
+function ManagerDetailView({ manager, cohortRecords, salesRecords, currentStages, onBack }: { manager: ManagerRow; cohortRecords: AnalyticsRecord[]; salesRecords: AnalyticsRecord[]; currentStages: CurrentStageRecord[] | null; onBack: () => void }) {
   const belongs = (row: AnalyticsRecord) => (row.salesManagerId || "unknown") === manager.id;
   const leads = cohortRecords.filter(belongs); const sales = salesRecords.filter(belongs);
-  const qualified = leads.filter((row) => row.qualified); const active = leads.filter((row) => row.salesStatus === "ACTIVE");
+  const qualified = leads.filter((row) => row.qualified); const active = currentStages?.filter((row) => (row.assignedManagerId || "unknown") === manager.id) ?? leads.filter((row) => row.salesStatus === "ACTIVE");
   const marketing = leads.filter((row) => row.lossReasonGroup === "MARKETING"); const lost = leads.filter((row) => row.lossReasonGroup === "SALES");
   const amount = sales.reduce((sum, row) => sum + row.opportunity, 0);
   const sources = groupedCount(leads, (row) => row.source).map((source) => ({
@@ -444,7 +456,7 @@ function ManagerDetailView({ manager, cohortRecords, salesRecords, onBack }: { m
   const stageRows = groupedCount(active, (row) => row.stage).map((stage) => ({ ...stage, overdue: active.filter((row) => row.stage === stage.label && row.stageOverdue).length }));
   return <><div className="page-title manager-detail-title"><div><button className="back-button" onClick={onBack}><ArrowLeft size={16} />Menejerlarga qaytish</button><p className="eyebrow">INDIVIDUAL PERFORMANCE</p><h1>{manager.name}</h1><p>Lead manbasi, SQL, sotuv, yo‘qotish, stage yuklamasi va tezlik bitta profilga jamlandi.</p></div><div className="manager-identity"><span>{manager.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span><div><strong>{manager.name}</strong><small>{manager.id === "unknown" ? "Sotuvchi aniqlanmagan" : `Bitrix user #${manager.id}`}</small></div></div></div>
     <section className="kpi-grid sales-kpis"><KpiCard label="Yangi lead" value={String(leads.length)} detail="Tanlangan cohort" icon={Database} /><KpiCard label="SQL" value={String(qualified.length)} detail={`${pct(qualified.length, leads.length)}% qabul qilingan`} icon={Check} tone="green" /><KpiCard label="Davr sotuv" value={String(sales.length)} detail={`${pct(leads.filter((row) => row.salesStatus === "WON").length, leads.length)}% cohort konversiya`} icon={CircleDollarSign} tone="cyan" /><KpiCard label="Sotuv summasi" value={amount.toLocaleString("uz-UZ")} detail={sales[0]?.currencyId || "Bitrix valyutasi"} icon={CircleDollarSign} tone="indigo" /><KpiCard label="Marketing sifatsiz" value={String(marketing.length)} detail={`${pct(marketing.length, leads.length)}% lead’dan`} icon={AlertTriangle} tone="amber" /><KpiCard label="Sales loss" value={String(lost.length)} detail={`${pct(lost.length, qualified.length)}% SQL’dan`} icon={XCircle} tone="red" /><KpiCard label="Savdo sikli" value={fmtHours(average(sales.map((row) => row.salesCycleHours)))} detail="Yaratilishdan Oplata’gacha" icon={TimerReset} tone="violet" /><KpiCard label="First contact" value={fmtMinutes(average(leads.map((row) => row.processingBusinessMinutes)))} detail={`${leads.filter((row) => row.processingSource === "NO_PROCESSING").length} ta harakatsiz lead`} icon={PhoneCall} tone="slate" /></section>
-    <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Qaysi source’dan nechta lead" subtitle="Sotuv — Oplata sanasi, qolganlari lead yaratilgan sanasi" /><div className="table-wrap"><table className="data-table"><thead><tr><th>Source</th><th>Lead</th><th>SQL</th><th>Sifatsiz</th><th>Sales loss</th><th>Sotuv</th></tr></thead><tbody>{sources.map((row) => <tr key={row.label}><td><strong>{row.label}</strong></td><td>{row.value}</td><td>{row.sql}</td><td>{row.low}</td><td>{row.lost}</td><td><strong className="success-text">{row.sales}</strong></td></tr>)}</tbody></table></div></article><article className="panel"><SectionHeader title="Aktiv stage yuklamasi" subtitle="Qizil raqam — limitdan oshgan" /><div className="stage-load-list">{stageRows.map((row) => <div key={row.label}><span>{row.label}</span><strong>{row.value}</strong><small className={row.overdue ? "danger-text" : ""}>{row.overdue} overdue</small></div>)}{!stageRows.length && <div className="empty-table">Aktiv lead yo‘q.</div>}</div></article></section>
+    <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Qaysi source’dan nechta lead" subtitle="Sotuv — Oplata sanasi, qolganlari lead yaratilgan sanasi" /><div className="table-wrap"><table className="data-table"><thead><tr><th>Source</th><th>Lead</th><th>SQL</th><th>Sifatsiz</th><th>Sales loss</th><th>Sotuv</th></tr></thead><tbody>{sources.map((row) => <tr key={row.label}><td><strong>{row.label}</strong></td><td>{row.value}</td><td>{row.sql}</td><td>{row.low}</td><td>{row.lost}</td><td><strong className="success-text">{row.sales}</strong></td></tr>)}</tbody></table></div></article><article className="panel"><SectionHeader title="Joriy stage yuklamasi" subtitle={currentStages ? "Bitrix live · Assigned by ID" : "Sync bazasi · qizil raqam limitdan oshgan"} /><div className="stage-load-list">{stageRows.map((row) => <div key={row.label}><span>{row.label}</span><strong>{row.value}</strong><small className={row.overdue ? "danger-text" : ""}>{row.overdue} overdue</small></div>)}{!stageRows.length && <div className="empty-table">Aktiv lead yo‘q.</div>}</div></article></section>
     <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Sabablar profili" subtitle="Marketing / Sales / Routing alohida" /><BarList rows={reasons.slice(0, 15).map((row) => ({ ...row, total: reasons.reduce((sum, item) => sum + item.value, 0), color: row.label.startsWith("Marketing") ? "#f59e0b" : row.label.startsWith("Routing") ? "#8a5dd1" : "#ef5962" }))} /></article><article className="panel compact-kpis"><SectionHeader title="Chek va aloqa sifati" /><div><span>O‘rtacha chek</span><strong>{(average(sales.map((row) => row.opportunity)) ?? 0).toLocaleString("uz-UZ", { maximumFractionDigits: 0 })}</strong></div><div><span>Median chek</span><strong>{(median(sales.map((row) => row.opportunity)) ?? 0).toLocaleString("uz-UZ", { maximumFractionDigits: 0 })}</strong></div><div><span>Call attempted</span><strong>{pct(leads.filter((row) => row.outgoingCallCount > 0).length, leads.length)}%</strong></div><div><span>SLA ichida</span><strong>{pct(leads.filter((row) => row.slaStatus === "ON_TIME").length, leads.filter((row) => row.processingBusinessMinutes !== null).length)}%</strong></div></article></section>
   </>;
 }
@@ -512,7 +524,7 @@ function DealsTable({ records }: { records: AnalyticsRecord[] }) {
   </section>;
 }
 
-function groupedCount(records: AnalyticsRecord[], key: (row: AnalyticsRecord) => string) {
+function groupedCount<T>(records: T[], key: (row: T) => string) {
   const counts = new Map<string, number>();
   for (const row of records) { const label = key(row) || "Ko‘rsatilmagan"; counts.set(label, (counts.get(label) ?? 0) + 1); }
   return [...counts.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value);
@@ -534,13 +546,13 @@ function QualityView({ records }: { records: AnalyticsRecord[] }) {
   </>;
 }
 
-function StageControlView({ records }: { records: AnalyticsRecord[] }) {
-  const active = records.filter((row) => row.salesStatus === "ACTIVE" && row.operationalPipeline);
+function StageControlView({ records, historicalRecords, reconciliation, loading, error, onRefresh }: { records: CurrentStageRecord[]; historicalRecords: AnalyticsRecord[]; reconciliation: StageReconciliation | null; loading: boolean; error: string | null; onRefresh: () => void }) {
+  const active = records;
   const overdue = active.filter((row) => row.stageOverdue);
-  const stages = [...new Set(active.map((row) => row.stage))].sort(); const managers = [...new Set(active.map((row) => row.salesManager ?? "Aniqlanmagan"))].sort();
+  const stages = [...new Set(active.map((row) => row.stage))].sort(); const managers = [...new Set(active.map((row) => row.assignedManager || "Aniqlanmagan"))].sort();
   const stageStats = groupedCount(active, (row) => row.stage);
   const funnelMap = new Map<string, { pipeline: string; stage: string; entered: number; advanced: number; dropOff: number; durations: number[]; order: number[] }>();
-  for (const row of records) {
+  for (const row of historicalRecords) {
     const timeline = row.stageTimeline.filter((entry) => entry.categoryId === row.originCategoryId);
     timeline.forEach((entry, index) => {
       const key = `${entry.categoryId}:${entry.stageId}`; const current = funnelMap.get(key) ?? { pipeline: entry.pipeline, stage: entry.stage, entered: 0, advanced: 0, dropOff: 0, durations: [], order: [] };
@@ -552,15 +564,18 @@ function StageControlView({ records }: { records: AnalyticsRecord[] }) {
     });
   }
   const funnelRows = [...funnelMap.values()].sort((a, b) => a.pipeline.localeCompare(b.pipeline) || (average(a.order) ?? 0) - (average(b.order) ?? 0));
-  return <><div className="page-title"><div><p className="eyebrow">PIPELINE CONTROL</p><h1>Stage nazorati</h1><p>Har bir menejerda qaysi bosqichda nechta lead turgani va limitdan oshganlari.</p></div></div>
-    <section className="kpi-grid"><KpiCard label="Aktiv lead" value={String(active.length)} detail="IBOX Sales + SD Sales" icon={Layers3} /><KpiCard label="Limitdan oshgan" value={String(overdue.length)} detail={`${pct(overdue.length, active.length)}% aktiv lead`} icon={AlertTriangle} tone="red" /><KpiCard label="Eng eski lead" value={active.length ? `${Math.round(Math.max(...active.map((row) => row.stageAgeHours)))} soat` : "—"} detail="Joriy stage’da" icon={Clock3} tone="amber" /></section>
-    <section className="panel"><SectionHeader title="Sotuvchi × stage" subtitle="Custom sales manager → first call → stage mover → current responsible attribution’i" /><div className="table-wrap"><table className="data-table stage-matrix"><thead><tr><th>Sotuvchi</th>{stages.map((stage) => <th key={stage}>{stage}</th>)}<th>Jami</th></tr></thead><tbody>{managers.map((manager) => { const rows = active.filter((row) => (row.salesManager ?? "Aniqlanmagan") === manager); return <tr key={manager}><td><strong>{manager}</strong></td>{stages.map((stage) => { const cell = rows.filter((row) => row.stage === stage); return <td key={stage}><span className={cell.some((row) => row.stageOverdue) ? "pill danger" : "pill neutral"}>{cell.length}</span></td>; })}<td><strong>{rows.length}</strong></td></tr>; })}</tbody></table></div></section>
+  return <><div className="page-title"><div><p className="eyebrow">PIPELINE CONTROL</p><h1>Stage nazorati</h1><p>Bitrix’dagi joriy ochiq deal’lar. Yaratilgan sanaga cheklanmaydi va og‘ir activity/history sync talab qilmaydi.</p></div><button className="button secondary" onClick={onRefresh} disabled={loading}>{loading ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}Joriy holatni yangilash</button></div>
+    {loading && !reconciliation && <div className="notice page-notice"><Loader2 size={17} className="spin" />Bitrix’dagi joriy stage’lar olinmoqda…</div>}
+    {error && <div className="notice warning page-notice"><AlertTriangle size={17} /><span>Bitrix live snapshot olinmadi: {error}. Vaqtincha oxirgi sync bazasi ko‘rsatilmoqda.</span></div>}
+    {reconciliation && <div className={`reconciliation-banner ${reconciliation.missingCount || reconciliation.staleCount || reconciliation.stageMismatchCount ? "warning" : "ok"}`}><div><ShieldCheck size={18} /><span><strong>Bitrix joriy: {reconciliation.liveCount}</strong><small>Analytics bazasi: {reconciliation.cachedCount} · yetishmaydi: {reconciliation.missingCount} · eskirgan: {reconciliation.staleCount} · stage farqi: {reconciliation.stageMismatchCount}</small></span></div>{(reconciliation.missingCount > 0 || reconciliation.staleCount > 0) && <details><summary>Farqli Deal ID’larni ko‘rish</summary><p>{reconciliation.missingDealIds.length ? `Bitrix’da bor, analytics’da yo‘q: ${reconciliation.missingDealIds.join(", ")}` : ""}{reconciliation.missingDealIds.length && reconciliation.staleDealIds.length ? " · " : ""}{reconciliation.staleDealIds.length ? `Analytics’da bor, Bitrix joriy holatida yo‘q: ${reconciliation.staleDealIds.join(", ")}` : ""}</p></details>}</div>}
+    <section className="kpi-grid"><KpiCard label="Joriy aktiv lead" value={String(active.length)} detail={reconciliation ? "Bitrix live snapshot" : "Oxirgi sync bazasi"} icon={Layers3} /><KpiCard label="Limitdan oshgan" value={String(overdue.length)} detail={`${pct(overdue.length, active.length)}% aktiv lead`} icon={AlertTriangle} tone="red" /><KpiCard label="Eng eski lead" value={active.length ? `${Math.round(Math.max(...active.map((row) => row.stageAgeHours)))} soat` : "—"} detail="Joriy stage’da" icon={Clock3} tone="amber" /></section>
+    <section className="panel"><SectionHeader title="Sotuvchi × joriy stage" subtitle="Bitrix ASSIGNED_BY_ID bo‘yicha" /><div className="table-wrap"><table className="data-table stage-matrix"><thead><tr><th>Sotuvchi</th>{stages.map((stage) => <th key={stage}>{stage}</th>)}<th>Jami</th></tr></thead><tbody>{managers.map((manager) => { const rows = active.filter((row) => (row.assignedManager || "Aniqlanmagan") === manager); return <tr key={manager}><td><strong>{manager}</strong></td>{stages.map((stage) => { const cell = rows.filter((row) => row.stage === stage); return <td key={stage}><span className={cell.some((row) => row.stageOverdue) ? "pill danger" : "pill neutral"}>{cell.length}</span></td>; })}<td><strong>{rows.length}</strong></td></tr>; })}</tbody></table></div></section>
     <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Stage bo‘yicha yuklama" /><BarList rows={stageStats.map((row) => ({ ...row, total: active.length, color: "#246bfd" }))} /></article><article className="panel"><SectionHeader title="Limitdan oshgan Deal’lar" subtitle="Sozlamadagi har bir stage limiti bo‘yicha" /><div className="stuck-list">{overdue.sort((a, b) => b.stageAgeHours - a.stageAgeHours).slice(0, 20).map((row) => <a key={row.dealId} href={row.bitrixUrl ?? undefined} target="_blank" rel="noreferrer"><span><strong>{row.title}</strong><small>{row.assignedManager} · {row.stage}</small></span><b>{Math.round(row.stageAgeHours)} / {row.stageLimitHours} soat</b></a>)}{!overdue.length && <div className="empty-table">Limitdan oshgan aktiv Deal yo‘q.</div>}</div></article></section>
-    <section className="panel"><SectionHeader title="To‘liq stage funnel" subtitle="Bosqichga kirgan, keyingisiga o‘tgan, tushib qolgan va shu bosqichda sarflangan vaqt" /><div className="table-wrap"><table className="data-table"><thead><tr><th>Pipeline</th><th>Stage</th><th>Kirgan</th><th>Keyingi / sotuv</th><th>Konversiya</th><th>Drop-off</th><th>Avg vaqt</th><th>Median vaqt</th></tr></thead><tbody>{funnelRows.map((row) => <tr key={`${row.pipeline}:${row.stage}`}><td>{row.pipeline}</td><td><strong>{row.stage}</strong></td><td>{row.entered}</td><td>{row.advanced}</td><td><span className="pill success">{pct(row.advanced, row.entered)}%</span></td><td><span className={row.dropOff ? "pill danger" : "pill neutral"}>{row.dropOff}</span></td><td>{fmtHours(average(row.durations))}</td><td>{fmtHours(median(row.durations))}</td></tr>)}</tbody></table>{!funnelRows.length && <div className="empty-table">Stage history sync qilingandan keyin funnel ko‘rinadi.</div>}</div></section>
+    <section className="panel"><SectionHeader title="Tarixiy stage funnel" subtitle="Tanlangan import oralig‘idagi history: bosqichga kirgan, keyingisiga o‘tgan, drop-off va sarflangan vaqt" /><div className="table-wrap"><table className="data-table"><thead><tr><th>Pipeline</th><th>Stage</th><th>Kirgan</th><th>Keyingi / sotuv</th><th>Konversiya</th><th>Drop-off</th><th>Avg vaqt</th><th>Median vaqt</th></tr></thead><tbody>{funnelRows.map((row) => <tr key={`${row.pipeline}:${row.stage}`}><td>{row.pipeline}</td><td><strong>{row.stage}</strong></td><td>{row.entered}</td><td>{row.advanced}</td><td><span className="pill success">{pct(row.advanced, row.entered)}%</span></td><td><span className={row.dropOff ? "pill danger" : "pill neutral"}>{row.dropOff}</span></td><td>{fmtHours(average(row.durations))}</td><td>{fmtHours(median(row.durations))}</td></tr>)}</tbody></table>{!funnelRows.length && <div className="empty-table">Stage history sync qilingandan keyin funnel ko‘rinadi.</div>}</div></section>
   </>;
 }
 
-function DiagnosticsView({ sync, providers, records, onProviderChange }: { sync: SyncState; providers: ProviderDiagnostic[]; records: AnalyticsRecord[]; onProviderChange: (key: string, mode: string) => void }) {
+function DiagnosticsView({ sync, providers, records, reconciliation, onProviderChange }: { sync: SyncState; providers: ProviderDiagnostic[]; records: AnalyticsRecord[]; reconciliation: StageReconciliation | null; onProviderChange: (key: string, mode: string) => void }) {
   const permissions = [["Deal API", sync.permissions.deals], ["Activity API", sync.permissions.activities], ["Stage history", sync.permissions.stageHistory], ["User API", sync.permissions.managers], ["Telephony / Call Statistics", sync.permissions.telephony]];
   const qualities = [["Deals without activities", records.filter((row) => row.outgoingCallCount === 0).length], ["Deals without stage history", records.filter((row) => !row.stageTimeline.length).length], ["Calls without outcome data", records.filter((row) => row.outgoingCallCount > 0 && row.firstCallOutcome === "Noma’lum").length], ["Missing sales manager", records.filter((row) => !row.salesManagerId).length], ["Missing failure reason", records.filter((row) => ["LOW_QUALITY", "LOST"].includes(row.salesStatus) && row.lossReason === "Sabab ko‘rsatilmagan").length], ["Seller fallback: current responsible", records.filter((row) => row.salesManagerAttribution === "CURRENT_RESPONSIBLE").length], ["Duplicate leads", records.filter((row) => row.duplicateOfDealId).length], ["Data unavailable", records.filter((row) => row.dataUnavailable).length]] as const;
   return <><div className="page-title"><div><p className="eyebrow">ADMIN</p><h1>Diagnostika</h1><p>API ruxsatlari, call provider’lar va data quality nazorati.</p></div></div>
@@ -570,6 +585,7 @@ function DiagnosticsView({ sync, providers, records, onProviderChange }: { sync:
     </section>
     <section className="panel"><SectionHeader title="Call providers" subtitle="AUTO — Bitrix type va direction bo‘yicha aniqlaydi. USE / IGNORE keyingi sync’da qo‘llanadi." /><div className="table-wrap"><table className="data-table"><thead><tr><th>PROVIDER_ID</th><th>PROVIDER_TYPE_ID</th><th>TYPE_ID</th><th>DIRECTION</th><th>Count</th><th>Sample subject</th><th>Holat</th></tr></thead><tbody>{providers.map((provider) => <tr key={provider.key}><td><code>{provider.providerId}</code></td><td><code>{provider.providerTypeId}</code></td><td>{provider.typeId}</td><td>{provider.direction}</td><td>{provider.count}</td><td>{provider.sampleSubject}</td><td><Select label="Provider holati" value={provider.mode} onChange={(mode) => onProviderChange(provider.key, mode)}><option value="AUTO">Auto</option><option value="USE">Use</option><option value="IGNORE">Ignore</option></Select></td></tr>)}</tbody></table>{!providers.length && <div className="empty-table">Providerlar birinchi sync’dan keyin ko‘rinadi.</div>}</div></section>
     <section className="panel"><SectionHeader title="Data Quality" subtitle="No processing va data unavailable alohida hisoblanadi" /><div className="quality-grid">{qualities.map(([label, count]) => <div key={label}><span>{label}</span><strong>{count}</strong></div>)}</div></section>
+    {reconciliation && <section className="panel"><SectionHeader title="Bitrix ↔ analytics reconciliation" subtitle="Joriy ochiq deal’lar tarixiy sync bazasidan alohida tekshiriladi" /><div className="quality-grid reconciliation-grid"><div><span>Bitrix joriy</span><strong>{reconciliation.liveCount}</strong></div><div><span>Analytics cache</span><strong>{reconciliation.cachedCount}</strong></div><div><span>Cache’da yetishmaydi</span><strong>{reconciliation.missingCount}</strong></div><div><span>Cache’da eskirgan</span><strong>{reconciliation.staleCount}</strong></div><div><span>Stage farqi</span><strong>{reconciliation.stageMismatchCount}</strong></div></div></section>}
     {sync.safeError && <div className="notice error page-notice"><XCircle size={18} />{sync.safeError}</div>}
   </>;
 }
@@ -664,6 +680,10 @@ export default function DashboardClient() {
   const [loading, setLoading] = useState(true);
   const [configured, setConfigured] = useState(false);
   const [records, setRecords] = useState<AnalyticsRecord[]>([]);
+  const [currentStageRecords, setCurrentStageRecords] = useState<CurrentStageRecord[] | null>(null);
+  const [stageReconciliation, setStageReconciliation] = useState<StageReconciliation | null>(null);
+  const [currentStageLoading, setCurrentStageLoading] = useState(false);
+  const [currentStageError, setCurrentStageError] = useState<string | null>(null);
   const [settings, setSettings] = useState<DashboardSettings | null>(null);
   const [sync, setSync] = useState<SyncState>(idleSync);
   const [providers, setProviders] = useState<ProviderDiagnostic[]>([]);
@@ -677,6 +697,18 @@ export default function DashboardClient() {
   const syncLoopRef = useRef(false);
   const autoSyncIndexRef = useRef(0);
   const syncRunnerRef = useRef<((mode: "start" | "resume", full?: boolean, daysOverride?: number, pipelineId?: string) => Promise<void>) | null>(null);
+
+  const loadCurrentStages = useCallback(async () => {
+    setCurrentStageLoading(true); setCurrentStageError(null);
+    try {
+      const response = await fetch("/api/current-stages", { cache: "no-store" });
+      const payload = await response.json() as { records?: CurrentStageRecord[]; reconciliation?: StageReconciliation | null; error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Joriy stage’lar yuklanmadi");
+      setCurrentStageRecords(payload.records ?? []); setStageReconciliation(payload.reconciliation ?? null);
+    } catch (caught) {
+      setCurrentStageError(caught instanceof Error ? caught.message : "Joriy stage’lar yuklanmadi");
+    } finally { setCurrentStageLoading(false); }
+  }, []);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -693,16 +725,22 @@ export default function DashboardClient() {
         const selectedProjectCategories = new Set([...payload.settings.selectedPipelineIds, ...payload.settings.postSalePipelineIds].map(String));
         const projectRecords = (payload.records ?? []).map(hydrateRecord).filter((row) => !selectedOrigins.size || selectedOrigins.has(String(row.originCategoryId)) || selectedProjectCategories.has(String(row.categoryId)));
         setRecords(markDuplicates(projectRecords)); setSettings(payload.settings); setSync(payload.sync); setProviders(payload.providers ?? []);
+        void loadCurrentStages();
       }
     } catch (caught) { setLoadError(caught instanceof Error ? caught.message : "Dashboard yuklanmadi"); }
     finally { setLoading(false); }
-  }, []);
+  }, [loadCurrentStages]);
   useEffect(() => {
     const timer = window.setTimeout(() => { void load(); }, 0);
     return () => window.clearTimeout(timer);
   }, [load]);
+  useEffect(() => {
+    if (!configured) return;
+    const interval = window.setInterval(() => { void loadCurrentStages(); }, 120_000);
+    return () => window.clearInterval(interval);
+  }, [configured, loadCurrentStages]);
 
-  const { baseFiltered, cohortFiltered, wonFiltered, previousCohortFiltered, previousWonFiltered, detailFiltered } = useMemo(() => {
+  const { cohortFiltered, wonFiltered, previousCohortFiltered, previousWonFiltered, detailFiltered } = useMemo(() => {
     const bounds = rangeBounds(filters); const search = filters.search.trim().toLowerCase();
     const from = bounds.from ? new Date(`${bounds.from}T00:00:00+05:00`).getTime() : -Infinity;
     const to = bounds.to ? new Date(`${bounds.to}T23:59:59+05:00`).getTime() : Infinity;
@@ -726,8 +764,36 @@ export default function DashboardClient() {
     const previousTo = from - 1; const previousFrom = previousTo - span + 1;
     const previousCohort = span ? base.filter((row) => { const created = new Date(row.createdAt).getTime(); return created >= previousFrom && created <= previousTo; }) : [];
     const previousWon = span ? base.filter((row) => row.salesStatus === "WON" && row.wonAt && new Date(row.wonAt).getTime() >= previousFrom && new Date(row.wonAt).getTime() <= previousTo) : [];
-    return { baseFiltered: base, cohortFiltered: cohort, wonFiltered: won, previousCohortFiltered: previousCohort, previousWonFiltered: previousWon, detailFiltered: [...new Map([...cohort, ...won].map((row) => [row.dealId, row])).values()] };
+    return { cohortFiltered: cohort, wonFiltered: won, previousCohortFiltered: previousCohort, previousWonFiltered: previousWon, detailFiltered: [...new Map([...cohort, ...won].map((row) => [row.dealId, row])).values()] };
   }, [records, filters]);
+
+  const cachedCurrentStages = useMemo<CurrentStageRecord[]>(() => records.filter((row) => row.salesStatus === "ACTIVE" && row.operationalPipeline).map((row) => ({
+    dealId: row.dealId, title: row.title, createdAt: row.createdAt,
+    assignedManagerId: row.assignedManagerId, assignedManager: row.assignedManager,
+    categoryId: row.categoryId, pipeline: row.pipeline, stageId: row.stageId, stage: row.stage,
+    stageEnteredAt: row.stageEnteredAt, stageAgeHours: row.stageAgeHours, stageLimitHours: row.stageLimitHours,
+    stageOverdue: row.stageOverdue, bitrixUrl: row.bitrixUrl,
+  })), [records]);
+  const effectiveCurrentStages = currentStageRecords ?? cachedCurrentStages;
+  const filteredCurrentStages = useMemo(() => {
+    const search = filters.search.trim().toLowerCase();
+    return effectiveCurrentStages.filter((row) => {
+      if (filters.manager && row.assignedManagerId !== filters.manager) return false;
+      if (filters.pipeline && row.pipeline !== filters.pipeline) return false;
+      if (filters.stage && row.stage !== filters.stage) return false;
+      if (search && !`${row.dealId} ${row.title}`.toLowerCase().includes(search)) return false;
+      return true;
+    });
+  }, [effectiveCurrentStages, filters.manager, filters.pipeline, filters.stage, filters.search]);
+  const stageHistoricalRecords = useMemo(() => {
+    const search = filters.search.trim().toLowerCase();
+    return records.filter((row) => {
+      if (filters.manager && row.assignedManagerId !== filters.manager && row.salesManagerId !== filters.manager) return false;
+      if (filters.pipeline && row.originPipeline !== filters.pipeline) return false;
+      if (search && !`${row.dealId} ${row.title}`.toLowerCase().includes(search)) return false;
+      return true;
+    });
+  }, [records, filters.manager, filters.pipeline, filters.search]);
 
   async function postSync(body: Record<string, unknown>) {
     const response = await fetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -765,7 +831,7 @@ export default function DashboardClient() {
   async function saveSettings(next: DashboardSettings) {
     const response = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next) });
     const payload = await response.json() as { settings?: DashboardSettings; error?: string };
-    if (!response.ok || !payload.settings) throw new Error(payload.error ?? "Sozlamalar saqlanmadi"); setSettings(payload.settings);
+    if (!response.ok || !payload.settings) throw new Error(payload.error ?? "Sozlamalar saqlanmadi"); setSettings(payload.settings); void loadCurrentStages();
   }
   async function saveAndFullSync(next: DashboardSettings, pipelineId: string) {
     await saveSettings(next);
@@ -807,7 +873,7 @@ export default function DashboardClient() {
   return <div className="app-shell">
     <aside className={menuOpen ? "open" : ""}>
       <div className="brand"><div className="brand-mark">B24</div><div><strong>Deal Processing</strong><small>Sales analytics</small></div><button className="mobile-close" onClick={() => setMenuOpen(false)}><X size={18} /></button></div>
-      <nav>{navItems.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => { setView(item.id); setMenuOpen(false); }}><item.icon size={18} /><span>{item.label}</span>{item.id === "diagnostics" && sync.permissions.telephony === "warning" && <i />}</button>)}</nav>
+      <nav>{navItems.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => { if (item.id === "stages") setFilters((current) => ({ ...current, source: "", period: "", sla: "", processing: "", outcome: "", called: "", stageBeforeCall: "" })); setView(item.id); setMenuOpen(false); }}><item.icon size={18} /><span>{item.label}</span>{item.id === "diagnostics" && sync.permissions.telephony === "warning" && <i />}</button>)}</nav>
       <div className="sidebar-status"><div><span className="live-dot" /><strong>Bitrix24 ulangan</strong></div><small>Oxirgi sync</small><p>{fmtDate(sync.lastSyncAt)}</p></div>
       <div className="sidebar-foot"><ShieldCheck size={16} /><span>Webhook server secret’da himoyalangan</span></div>
     </aside>
@@ -818,16 +884,16 @@ export default function DashboardClient() {
         {loadError && <div className="notice error page-notice"><XCircle size={18} />{loadError}<button onClick={() => setLoadError(null)}><X size={14} /></button></div>}
         {hasLegacyData && sync.status !== "running" && <div className="notice warning page-notice"><AlertTriangle size={18} /><span>Eski sync ma’lumotlari bor. Yangi sales analytics to‘liq ishlashi uchun Sozlamalarda CRM field’larini tekshirib, <strong>“To‘liq qayta sync”</strong>ni bosing.</span><button onClick={() => setView("settings")}>Sozlamalar</button></div>}
         {["running", "paused", "error"].includes(sync.status) && <SyncProgress sync={sync} busy={refreshing} onPause={() => void pauseCurrentSync()} onResume={() => void syncLoop("resume")} />}
-        {view !== "settings" && view !== "diagnostics" && <FiltersBar filters={filters} setFilters={setFilters} records={records} />}
+        {view !== "settings" && view !== "diagnostics" && <FiltersBar filters={filters} setFilters={setFilters} records={records} currentStages={effectiveCurrentStages} mode={view === "stages" ? "current" : "cohort"} />}
         {view === "dashboard" && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{cohortFiltered.length} unique lead</strong></div></div><DashboardView records={cohortFiltered} salesRecords={wonFiltered} previousRecords={previousCohortFiltered} previousSalesRecords={previousWonFiltered} onManager={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /><TrendChart records={cohortFiltered} /></>}
         {view === "managers" && <><div className="page-title"><div><p className="eyebrow">TEAM PERFORMANCE</p><h1>Menejerlar</h1><p>Lead, sifatsizlik, sales loss, sotuv soni va Opportunity kesimida.</p></div></div><section className="panel"><SectionHeader title="Menejerlar reytingi" subtitle="Lead va cohort konversiya — yaratilgan sana; davr sotuv — Oplata sanasi bo‘yicha" /><ManagerTable rows={buildManagers(cohortFiltered, wonFiltered)} onSelect={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /></section></>}
-        {view === "managerDetail" && selectedManager && <ManagerDetailView manager={selectedManager} cohortRecords={cohortFiltered} salesRecords={wonFiltered} onBack={() => setView("managers")} />}
+        {view === "managerDetail" && selectedManager && <ManagerDetailView manager={selectedManager} cohortRecords={cohortFiltered} salesRecords={wonFiltered} currentStages={currentStageRecords} onBack={() => setView("managers")} />}
         {view === "leadFlow" && <LeadFlowView records={cohortFiltered} />}
         {view === "quality" && <QualityView records={cohortFiltered} />}
-        {view === "stages" && <StageControlView records={baseFiltered} />}
+        {view === "stages" && <StageControlView records={filteredCurrentStages} historicalRecords={stageHistoricalRecords} reconciliation={stageReconciliation} loading={currentStageLoading} error={currentStageError} onRefresh={() => void loadCurrentStages()} />}
         {view === "deals" && <><div className="page-title"><div><p className="eyebrow">DETAIL REPORT</p><h1>Deal’lar</h1><p>Sotuv holati, sotuvchi attribution’i, stage yoshi va processing yagona jadvalda.</p></div></div><DealsTable records={detailFiltered} /></>}
         {view === "calls" && <CallsView records={cohortFiltered.filter((row) => row.operationalPipeline)} />}
-        {view === "diagnostics" && <DiagnosticsView sync={sync} providers={providers} records={records} onProviderChange={changeProvider} />}
+        {view === "diagnostics" && <DiagnosticsView sync={sync} providers={providers} records={records} reconciliation={stageReconciliation} onProviderChange={changeProvider} />}
         {view === "settings" && <SettingsView settings={settings} syncing={refreshing || sync.status === "running"} onSave={saveSettings} onFullSync={saveAndFullSync} />}
         <footer><span>Bitrix24 Deal Processing Dashboard</span><span>Timezone: Asia/Tashkent · Business minutes only</span></footer>
       </div>

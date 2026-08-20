@@ -267,6 +267,20 @@ aside nav button i { margin-left: auto; width: 7px; height: 7px; border-radius: 
 .pipeline-selection-note { margin-top: 10px; padding: 8px 10px; border-radius: 8px; font-size: 9px; }
 .pipeline-selection-note.ok { color: #167253; background: #e8f7f0; }
 .pipeline-selection-note.warning { color: #875c16; background: #fff4dc; }
+.current-stage-filters .search-box { flex: 1 1 260px; }
+.current-stage-filters .select-wrap { flex: 0 1 210px; }
+.current-filter-note { padding: 9px 13px; display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--line); color: #315fba; background: #f3f7ff; font-size: 9px; }
+.reconciliation-banner { margin: 0 0 12px; padding: 12px 14px; border: 1px solid; border-radius: 11px; }
+.reconciliation-banner.ok { border-color: #bce5d3; color: #157253; background: #edf9f4; }
+.reconciliation-banner.warning { border-color: #f1d49a; color: #805412; background: #fff8e9; }
+.reconciliation-banner > div { display: flex; align-items: center; gap: 9px; }
+.reconciliation-banner span { display: grid; gap: 3px; }
+.reconciliation-banner strong { font-size: 10px; }
+.reconciliation-banner small { color: inherit; opacity: .8; font-size: 8px; }
+.reconciliation-banner details { margin-top: 9px; padding-top: 8px; border-top: 1px solid currentColor; font-size: 8px; }
+.reconciliation-banner summary { cursor: pointer; font-weight: 800; }
+.reconciliation-banner p { margin-top: 7px; line-height: 1.6; overflow-wrap: anywhere; }
+.reconciliation-grid { grid-template-columns: repeat(5, 1fr); }
 .scoped-sync-grid { margin-top: 13px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .scoped-sync-grid article { padding: 14px; border: 1px solid #d9e3f7; border-radius: 12px; background: #f8faff; }
 .scoped-sync-grid article > div { display: flex; align-items: center; gap: 10px; }
