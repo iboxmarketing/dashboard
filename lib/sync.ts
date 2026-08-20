@@ -32,25 +32,60 @@ export async function listPipelines(): Promise<PipelineOption[]> {
   return rows.map((row) => ({ id: value(row, "ID"), name: value(row, "NAME") || `Pipeline #${value(row, "ID")}` })).filter((row) => row.id);
 }
 
-function crmFieldRows(result: unknown): CrmFieldOption[] {
-  const raw = result && typeof result === "object" && "result" in result ? (result as { result: unknown }).result : result;
-  const entries = Array.isArray(raw) ? raw.map((row) => [value(row as Record<string, unknown>, "FIELD_NAME"), row]) : Object.entries((raw ?? {}) as Record<string, unknown>);
+function localizedValue(raw: unknown) {
+  if (raw === null || raw === undefined) return "";
+  if (typeof raw !== "object") return String(raw);
+  const labels = raw as Record<string, unknown>;
+  return String(labels.ru ?? labels.uz ?? labels.en ?? Object.values(labels).find(Boolean) ?? "");
+}
+
+function crmFieldRows(result: unknown, discoverySource: CrmFieldOption["discoverySource"]): CrmFieldOption[] {
+  let raw = result && typeof result === "object" && "result" in result ? (result as { result: unknown }).result : result;
+  if (raw && typeof raw === "object" && !Array.isArray(raw) && "fields" in raw) raw = (raw as { fields: unknown }).fields;
+  const entries = Array.isArray(raw) ? raw.map((row) => [value(row as Record<string, unknown>, "FIELD_NAME") || value(row as Record<string, unknown>, "fieldName"), row]) : Object.entries((raw ?? {}) as Record<string, unknown>);
   return entries.flatMap(([key, item]) => {
-    const field = item as Record<string, unknown>; const title = value(field, "title") || value(field, "EDIT_FORM_LABEL") || value(field, "LIST_COLUMN_LABEL") || String(key);
-    const type = value(field, "type") || value(field, "USER_TYPE_ID") || "string";
+    const field = item as Record<string, unknown>;
+    const title = localizedValue(field.title ?? field.formLabel ?? field.listLabel ?? field.EDIT_FORM_LABEL ?? field.LIST_COLUMN_LABEL) || String(key);
+    const type = value(field, "type") || value(field, "USER_TYPE_ID") || value(field, "userTypeId") || "string";
     const rawOptions = Array.isArray(field.LIST) ? field.LIST : Array.isArray(field.items) ? field.items : [];
-    return key ? [{ key: String(key), title, type, options: rawOptions.map((option) => ({ id: value(option as Record<string, unknown>, "ID") || value(option as Record<string, unknown>, "VALUE"), value: value(option as Record<string, unknown>, "VALUE") || value(option as Record<string, unknown>, "NAME") })).filter((option) => option.id) }] : [];
+    return key ? [{ key: String(key), title, type, discoverySource, options: rawOptions.map((option) => {
+      const row = option as Record<string, unknown>;
+      return { id: value(row, "ID") || value(row, "id") || value(row, "VALUE") || value(row, "value"), value: value(row, "VALUE") || value(row, "value") || value(row, "NAME") || value(row, "name") };
+    }).filter((option) => option.id) }] : [];
   });
 }
 
-export async function listCrmFields(): Promise<CrmFieldOption[]> {
-  const response = await bitrixCall<unknown>("crm.deal.fields", {});
-  const fields = crmFieldRows(response);
+async function sampleCustomFields(categoryIds: string[] = []): Promise<CrmFieldOption[]> {
   try {
-    const custom = await bitrixList<Record<string, unknown>>("crm.deal.userfield.list", { order: { SORT: "ASC" } }, { maxPages: 20 });
-    const extras = crmFieldRows(custom);
-    return [...new Map([...fields, ...extras].map((field) => [field.key, field])).values()];
-  } catch { return fields; }
+    const page = await bitrixPage<RawDeal>("crm.deal.list", {
+      order: { DATE_MODIFY: "DESC", ID: "DESC" },
+      ...(categoryIds.length ? { filter: { CATEGORY_ID: categoryIds } } : {}),
+      select: ["ID", "TITLE", "UF_*"],
+    }, 0);
+    const samples = new Map<string, string>();
+    for (const deal of page.items) for (const [key, raw] of Object.entries(deal)) {
+      if (!/^UF_CRM_/i.test(key)) continue;
+      const shown = Array.isArray(raw) ? raw.map(String).join(", ") : raw === null || raw === undefined ? "" : String(raw);
+      if (!samples.has(key) || shown) samples.set(key, shown.slice(0, 80));
+    }
+    return [...samples.entries()].map(([key, sampleValue]) => ({ key, title: `Custom field ${key}`, type: "unknown", options: [], sampleValue, discoverySource: "DEAL_SAMPLE" as const }));
+  } catch { return []; }
+}
+
+export async function listCrmFields(categoryIds: string[] = []): Promise<CrmFieldOption[]> {
+  const response = await bitrixCall<unknown>("crm.deal.fields", {});
+  const fields = crmFieldRows(response, "DEAL_FIELDS");
+  const [itemFields, custom, samples] = await Promise.all([
+    bitrixCall<unknown>("crm.item.fields", { entityTypeId: 2 }).then((result) => crmFieldRows(result, "ITEM_FIELDS")).catch(() => []),
+    bitrixList<Record<string, unknown>>("crm.deal.userfield.list", { order: { SORT: "ASC" } }, { maxPages: 20 }).then((result) => crmFieldRows(result, "USERFIELD_LIST")).catch(() => []),
+    sampleCustomFields(categoryIds),
+  ]);
+  const merged = new Map<string, CrmFieldOption>();
+  for (const field of [...samples, ...fields, ...itemFields, ...custom]) {
+    const previous = merged.get(field.key);
+    merged.set(field.key, { ...previous, ...field, sampleValue: field.sampleValue || previous?.sampleValue, options: field.options.length ? field.options : previous?.options ?? [] });
+  }
+  return [...merged.values()].sort((a, b) => (a.key.startsWith("UF_") === b.key.startsWith("UF_") ? a.title.localeCompare(b.title) : a.key.startsWith("UF_") ? -1 : 1));
 }
 
 function detectField(fields: CrmFieldOption[], pattern: RegExp, type?: RegExp) {
@@ -107,7 +142,7 @@ export async function startSync(options: { days?: number; full?: boolean } = {})
   const selected = resolvePipelineSelection(pipelines, settings.selectedPipelineIds, settings.selectedPipelineNames);
   const reporting = resolvePostSalePipelines(pipelines, settings.postSalePipelineIds, settings.postSalePipelineNames);
   let crmFields: CrmFieldOption[] = [];
-  try { crmFields = await listCrmFields(); } catch { /* Config remains editable by field code. */ }
+  try { crmFields = await listCrmFields(selected.map((item) => item.id)); } catch { /* Config remains editable by field code. */ }
   settings = {
     ...settings,
     failureReasonField: settings.failureReasonField ?? detectField(crmFields, /причин.*провал|prichin.*proval|failure.*reason/),
@@ -133,6 +168,7 @@ export async function startSync(options: { days?: number; full?: boolean } = {})
   if (mode === "full") {
     const db = getD1();
     await db.batch([
+      db.prepare("DELETE FROM analytics_records"),
       db.prepare("DELETE FROM raw_deals"), db.prepare("DELETE FROM raw_activities"),
       db.prepare("DELETE FROM raw_stage_history"), db.prepare("DELETE FROM raw_call_stats"),
     ]);

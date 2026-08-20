@@ -75,6 +75,7 @@ function fmtDate(value: string | null, withTime = true) {
 function hydrateRecord(row: AnalyticsRecord): AnalyticsRecord {
   return {
     ...row,
+    analyticsVersion: Number(row.analyticsVersion ?? 1),
     originCategoryId: row.originCategoryId ?? row.categoryId,
     originPipeline: row.originPipeline ?? row.pipeline,
     operationalPipeline: row.operationalPipeline ?? true,
@@ -460,19 +461,20 @@ function DiagnosticsView({ sync, providers, records, onProviderChange }: { sync:
   </>;
 }
 
-function SettingsView({ settings, onSave }: { settings: DashboardSettings; onSave: (settings: DashboardSettings) => Promise<void> }) {
+function SettingsView({ settings, syncing, onSave, onFullSync }: { settings: DashboardSettings; syncing: boolean; onSave: (settings: DashboardSettings) => Promise<void>; onFullSync: (settings: DashboardSettings) => Promise<void> }) {
   const [draft, setDraft] = useState(settings); const [holiday, setHoliday] = useState("");
   const [saving, setSaving] = useState(false); const [saved, setSaved] = useState(false);
   const [pipelines, setPipelines] = useState<PipelineOption[]>([]); const [pipelineError, setPipelineError] = useState<string | null>(null);
   const [fields, setFields] = useState<CrmFieldOption[]>([]); const [stages, setStages] = useState<PipelineOption[]>([]);
+  const [customFieldCount, setCustomFieldCount] = useState(0);
   const days = [[1, "Dushanba"], [2, "Seshanba"], [3, "Chorshanba"], [4, "Payshanba"], [5, "Juma"], [6, "Shanba"], [0, "Yakshanba"]] as const;
   useEffect(() => {
     void fetch("/api/pipelines", { cache: "no-store" }).then(async (response) => {
-      const payload = await response.json() as { pipelines?: PipelineOption[]; selectedIds?: string[]; reportingIds?: string[]; fields?: CrmFieldOption[]; stages?: PipelineOption[]; error?: string };
+      const payload = await response.json() as { pipelines?: PipelineOption[]; selectedIds?: string[]; reportingIds?: string[]; fields?: CrmFieldOption[]; customFieldCount?: number; stages?: PipelineOption[]; error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Pipeline’lar yuklanmadi");
       const options = payload.pipelines ?? [];
       setPipelines(options);
-      setFields(payload.fields ?? []); setStages(payload.stages ?? []);
+      setFields(payload.fields ?? []); setCustomFieldCount(payload.customFieldCount ?? 0); setStages(payload.stages ?? []);
       if (!settings.selectedPipelineIds.length && payload.selectedIds?.length) {
         const selected = options.filter((item) => payload.selectedIds?.includes(item.id));
         setDraft((current) => ({ ...current, selectedPipelineIds: selected.map((item) => item.id), selectedPipelineNames: selected.map((item) => item.name) }));
@@ -496,7 +498,10 @@ function SettingsView({ settings, onSave }: { settings: DashboardSettings; onSav
     setDraft({ ...draft, postSalePipelineIds: unique.map((item) => item.id), postSalePipelineNames: unique.map((item) => item.name) });
   }
   async function save() { setSaving(true); setSaved(false); await onSave(draft); setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 2500); }
-  return <><div className="page-title"><div><p className="eyebrow">ADMIN</p><h1>Sozlamalar</h1><p>Sales pipeline, ish jadvali va SLA hisoblash qoidalari.</p></div><button className="button primary" onClick={save} disabled={saving || draft.selectedPipelineIds.length !== 2}>{saving ? <Loader2 size={17} className="spin" /> : saved ? <Check size={17} /> : <Settings size={17} />}{saved ? "Saqlandi" : "Sozlamalarni saqlash"}</button></div>
+  async function fullSync() { setSaving(true); setSaved(false); try { await onFullSync(draft); } finally { setSaving(false); } }
+  const fieldOptions = fields.map((field) => <option key={field.key} value={field.key}>{field.title}{field.sampleValue ? ` · namuna: ${field.sampleValue}` : ""}</option>);
+  const validConfig = draft.selectedPipelineIds.length === 2 && draft.postSalePipelineIds.length === 2;
+  return <><div className="page-title"><div><p className="eyebrow">ADMIN</p><h1>Sozlamalar</h1><p>Sales pipeline, CRM field’lari va hisoblash qoidalari.</p></div><div className="settings-actions"><button className="button secondary" onClick={fullSync} disabled={saving || syncing || !validConfig}>{syncing ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}To‘liq qayta sync</button><button className="button primary" onClick={save} disabled={saving || !validConfig}>{saving ? <Loader2 size={17} className="spin" /> : saved ? <Check size={17} /> : <Settings size={17} />}{saved ? "Saqlandi" : "Sozlamalarni saqlash"}</button></div></div>
     <section className="panel pipeline-settings"><SectionHeader title="Sales pipeline’lar" subtitle="Aynan 2 ta funnel tanlanadi. Qolganlari, jumladan call center pipeline’lari sync qilinmaydi." />
       {pipelineError && <div className="notice error"><XCircle size={17} />{pipelineError}</div>}
       <div className="pipeline-options">{pipelines.map((pipeline) => { const checked = draft.selectedPipelineIds.includes(pipeline.id); return <label key={pipeline.id} className={checked ? "selected" : ""}><input type="checkbox" checked={checked} disabled={!checked && draft.selectedPipelineIds.length >= 2} onChange={(event) => togglePipeline(pipeline, event.target.checked)} /><span><Check size={15} /></span><div><strong>{pipeline.name}</strong><small>ID: {pipeline.id}</small></div></label>; })}{!pipelines.length && !pipelineError && <small>Bitrix’dan pipeline’lar yuklanmoqda…</small>}</div>
@@ -506,10 +511,12 @@ function SettingsView({ settings, onSave }: { settings: DashboardSettings; onSav
       <div className="pipeline-options">{pipelines.map((pipeline) => { const checked = draft.postSalePipelineIds.includes(pipeline.id); return <label key={pipeline.id} className={checked ? "selected" : ""}><input type="checkbox" checked={checked} disabled={!checked && draft.postSalePipelineIds.length >= 2} onChange={(event) => toggleReporting(pipeline, event.target.checked)} /><span><Check size={15} /></span><div><strong>{pipeline.name}</strong><small>ID: {pipeline.id}</small></div></label>; })}</div>
       <div className={`pipeline-selection-note ${draft.postSalePipelineIds.length === 2 ? "ok" : "warning"}`}>{draft.postSalePipelineIds.length === 2 ? `Tanlangan: ${draft.postSalePipelineNames.join(" + ")}` : "Sotuvni to‘liq sanash uchun 2 ta post-sale funnel tanlang."}</div>
     </section>
-    <section className="panel"><SectionHeader title="Bitrix custom field’lari" subtitle="Avtomatik topiladi; bu yerda tekshirib yoki aniq field’ni tanlab qo‘ying." /><div className="config-fields">
-      <label>Причина провала<select value={draft.failureReasonField ?? ""} onChange={(event) => setDraft({ ...draft, failureReasonField: event.target.value || null })}><option value="">Tanlanmagan</option>{fields.map((field) => <option key={field.key} value={field.key}>{field.title} · {field.key}</option>)}</select></label>
-      <label>Marketing kanal<select value={draft.marketingChannelField ?? ""} onChange={(event) => setDraft({ ...draft, marketingChannelField: event.target.value || null })}><option value="">Standart Source</option>{fields.map((field) => <option key={field.key} value={field.key}>{field.title} · {field.key}</option>)}</select></label>
-      <label>Sales manager field<select value={draft.salesManagerField ?? ""} onChange={(event) => setDraft({ ...draft, salesManagerField: event.target.value || null })}><option value="">Avtomatik attribution</option>{fields.map((field) => <option key={field.key} value={field.key}>{field.title} · {field.key}</option>)}</select></label>
+    <section className="panel"><SectionHeader title="Bitrix custom field’lari" subtitle="Ro‘yxatdan qidiring yoki Bitrix’dagi UF_CRM_... kodini qo‘lda kiriting." />
+      <div className={`field-discovery ${customFieldCount ? "ok" : "warning"}`}>{customFieldCount ? `${customFieldCount} ta custom field topildi. Input ichida nom yoki kod bo‘yicha qidiring.` : "Webhook custom field nomlarini bermadi. UF_CRM_... kodini qo‘lda kiritish mumkin."}</div>
+      <datalist id="crm-field-options">{fieldOptions}</datalist><div className="config-fields">
+      <label>Причина провала<input list="crm-field-options" value={draft.failureReasonField ?? ""} placeholder="UF_CRM_..." onChange={(event) => setDraft({ ...draft, failureReasonField: event.target.value.trim() || null })} /><small>Not Relevant va Sales loss sabablarini olish uchun</small></label>
+      <label>Marketing kanal<input list="crm-field-options" value={draft.marketingChannelField ?? ""} placeholder="Bo‘sh bo‘lsa standart SOURCE_ID" onChange={(event) => setDraft({ ...draft, marketingChannelField: event.target.value.trim() || null })} /><small>Custom marketing kanal field kodi</small></label>
+      <label>Sales manager field<input list="crm-field-options" value={draft.salesManagerField ?? ""} placeholder="Bo‘sh bo‘lsa avtomatik attribution" onChange={(event) => setDraft({ ...draft, salesManagerField: event.target.value.trim() || null })} /><small>Sotuvchi yozilgan employee field bo‘lsa</small></label>
     </div></section>
     <section className="panel"><SectionHeader title="Har bir stage uchun limit" subtitle="Aktiv Deal shu stage’da limitdan ko‘p tursa Stage nazoratida qizil ko‘rinadi." /><div className="stage-limits"><label className="field-label">Default limit<input type="number" min="1" max="720" value={draft.defaultStageLimitHours} onChange={(event) => setDraft({ ...draft, defaultStageLimitHours: Number(event.target.value) })} /><span>soat</span></label>{stages.map((stage) => <label key={stage.id}><span>{stage.name}</span><input type="number" min="1" max="720" value={draft.stageLimits[stage.id] ?? draft.defaultStageLimitHours} onChange={(event) => setDraft({ ...draft, stageLimits: { ...draft.stageLimits, [stage.id]: Number(event.target.value) } })} /><small>soat</small></label>)}</div></section>
     <section className="settings-grid"><article className="panel"><SectionHeader title="Ish vaqti" subtitle={`Timezone: ${draft.timezone}`} /><div className="schedule-list">{days.map(([key, label]) => { const day = draft.schedule[key]; return <div key={key} className={!day.enabled ? "disabled" : ""}><label className="check-label"><input type="checkbox" checked={day.enabled} onChange={(event) => setDraft({ ...draft, schedule: { ...draft.schedule, [key]: { ...day, enabled: event.target.checked } } })} /><span><Check size={13} /></span><strong>{label}</strong></label><input type="time" value={day.start} disabled={!day.enabled} onChange={(event) => setDraft({ ...draft, schedule: { ...draft.schedule, [key]: { ...day, start: event.target.value } } })} /><span>—</span><input type="time" value={day.end} disabled={!day.enabled} onChange={(event) => setDraft({ ...draft, schedule: { ...draft.schedule, [key]: { ...day, end: event.target.value } } })} /></div>; })}</div></article>
@@ -584,11 +591,11 @@ export default function DashboardClient() {
     setSync(payload);
     return payload;
   }
-  async function syncLoop(mode: "start" | "resume", full = false) {
+  async function syncLoop(mode: "start" | "resume", full = false, daysOverride?: number) {
     if (!settings || syncLoopRef.current) return;
     syncLoopRef.current = true; setRefreshing(true); setLoadError(null);
     try {
-      let state = await postSync(mode === "start" ? { action: "start", days: settings.historyDays, full } : { action: "resume" });
+      let state = await postSync(mode === "start" ? { action: "start", days: daysOverride ?? settings.historyDays, full } : { action: "resume" });
       while (syncLoopRef.current && state.status === "running") {
         state = await postSync({ action: "step" });
         if (state.status === "running") await new Promise((resolve) => window.setTimeout(resolve, 120));
@@ -612,6 +619,10 @@ export default function DashboardClient() {
     const payload = await response.json() as { settings?: DashboardSettings; error?: string };
     if (!response.ok || !payload.settings) throw new Error(payload.error ?? "Sozlamalar saqlanmadi"); setSettings(payload.settings);
   }
+  async function saveAndFullSync(next: DashboardSettings) {
+    await saveSettings(next);
+    await syncLoop("start", true, next.historyDays);
+  }
   async function changeProvider(key: string, mode: string) {
     const response = await fetch("/api/providers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, mode }) });
     if (response.ok) setProviders((current) => current.map((provider) => provider.key === key ? { ...provider, mode: mode as ProviderDiagnostic["mode"] } : provider));
@@ -621,6 +632,7 @@ export default function DashboardClient() {
   if (!configured || (configured && !records.length && sync.status !== "success")) return <SetupScreen configured={configured} sync={sync} syncing={refreshing} externalError={loadError} onStart={() => void syncLoop("start", true)} onPause={() => void pauseCurrentSync()} onResume={() => void syncLoop("resume")} />;
   if (!settings) return <div className="fatal-error"><XCircle /><p>Sozlamalar yuklanmadi.</p></div>;
   const title = navItems.find((item) => item.id === view)?.label ?? "Dashboard";
+  const hasLegacyData = records.some((record) => record.analyticsVersion < 2);
 
   return <div className="app-shell">
     <aside className={menuOpen ? "open" : ""}>
@@ -634,6 +646,7 @@ export default function DashboardClient() {
       <header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)}><Menu size={20} /></button><div><span>Bitrix24</span><small>/</small><strong>{title}</strong></div><div className="top-actions"><span className="sync-time">Oxirgi sync: <strong>{fmtDate(sync.lastSyncAt)}</strong></span><button className="button secondary refresh" onClick={refresh}>{sync.status === "running" ? <TimerReset size={17} /> : refreshing ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}{sync.status === "running" ? "Pauza" : sync.status === "paused" || sync.status === "error" ? "Davom ettirish" : "Ma’lumotlarni yangilash"}</button><div className="avatar">IM</div></div></header>
       <div className="content-inner">
         {loadError && <div className="notice error page-notice"><XCircle size={18} />{loadError}<button onClick={() => setLoadError(null)}><X size={14} /></button></div>}
+        {hasLegacyData && sync.status !== "running" && <div className="notice warning page-notice"><AlertTriangle size={18} /><span>Eski sync ma’lumotlari bor. Yangi sales analytics to‘liq ishlashi uchun Sozlamalarda CRM field’larini tekshirib, <strong>“To‘liq qayta sync”</strong>ni bosing.</span><button onClick={() => setView("settings")}>Sozlamalar</button></div>}
         {["running", "paused", "error"].includes(sync.status) && <SyncProgress sync={sync} busy={refreshing} onPause={() => void pauseCurrentSync()} onResume={() => void syncLoop("resume")} />}
         {view !== "settings" && view !== "diagnostics" && <FiltersBar filters={filters} setFilters={setFilters} records={records} />}
         {view === "dashboard" && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Lead sifati, sotuv, menejer va processing muammolarini bitta joyda kuzating.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{cohortFiltered.length} yangi lead</strong></div></div><DashboardView records={cohortFiltered.filter((row) => row.operationalPipeline || row.salesStatus !== "WON")} salesRecords={wonFiltered} onManager={(manager) => setFilters((current) => ({ ...current, manager: manager.id }))} /><TrendChart records={cohortFiltered.filter((row) => row.operationalPipeline)} /></>}
@@ -643,7 +656,7 @@ export default function DashboardClient() {
         {view === "deals" && <><div className="page-title"><div><p className="eyebrow">DETAIL REPORT</p><h1>Deal’lar</h1><p>Sotuv holati, sotuvchi attribution’i, stage yoshi va processing yagona jadvalda.</p></div></div><DealsTable records={detailFiltered} /></>}
         {view === "calls" && <CallsView records={cohortFiltered.filter((row) => row.operationalPipeline)} />}
         {view === "diagnostics" && <DiagnosticsView sync={sync} providers={providers} records={records} onProviderChange={changeProvider} />}
-        {view === "settings" && <SettingsView settings={settings} onSave={saveSettings} />}
+        {view === "settings" && <SettingsView settings={settings} syncing={refreshing || sync.status === "running"} onSave={saveSettings} onFullSync={saveAndFullSync} />}
         <footer><span>Bitrix24 Deal Processing Dashboard</span><span>Timezone: Asia/Tashkent · Business minutes only</span></footer>
       </div>
     </main>

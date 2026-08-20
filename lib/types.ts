@@ -31,6 +31,8 @@ export type CrmFieldOption = {
   title: string;
   type: string;
   options: { id: string; value: string }[];
+  sampleValue?: string;
+  discoverySource?: "DEAL_FIELDS" | "ITEM_FIELDS" | "USERFIELD_LIST" | "DEAL_SAMPLE";
 };
 
 export type SyncPhase = "deals" | "activities" | "stageHistory" | "telephony" | "lookups" | "analytics" | "done";
@@ -69,6 +71,7 @@ export type SalesStatus = "ACTIVE" | "LOW_QUALITY" | "LOST" | "WON";
 export type SalesManagerAttribution = "CUSTOM_FIELD" | "FIRST_CALL" | "STAGE_MOVER" | "CURRENT_RESPONSIBLE" | "UNKNOWN";
 
 export type AnalyticsRecord = {
+  analyticsVersion: number;
   dealId: string;
   title: string;
   createdAt: string;
