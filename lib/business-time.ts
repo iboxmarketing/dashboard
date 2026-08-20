@@ -178,5 +178,6 @@ export const defaultSettings: DashboardSettings = {
   holidays: [],
   slaMinutes: 10,
   historyDays: 90,
+  selectedPipelineIds: [],
+  selectedPipelineNames: ["IBOX Sales", "SD Sales"],
 };
-

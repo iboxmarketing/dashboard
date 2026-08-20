@@ -51,3 +51,47 @@ export const syncState = sqliteTable("sync_state", {
   updatedAt: text("updated_at").notNull(),
 });
 
+export const syncJobs = sqliteTable("sync_jobs", {
+  id: text("id").primaryKey(),
+  status: text("status").notNull(),
+  payload: text("payload").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const rawDeals = sqliteTable("raw_deals", {
+  dealId: text("deal_id").primaryKey(),
+  categoryId: text("category_id").notNull(),
+  createdAt: text("created_at").notNull(),
+  payload: text("payload").notNull(),
+  syncedAt: text("synced_at").notNull(),
+});
+
+export const rawActivities = sqliteTable("raw_activities", {
+  rowKey: text("row_key").primaryKey(),
+  dealId: text("deal_id").notNull(),
+  activityId: text("activity_id").notNull(),
+  createdAt: text("created_at").notNull(),
+  payload: text("payload").notNull(),
+  syncedAt: text("synced_at").notNull(),
+});
+
+export const rawStageHistory = sqliteTable("raw_stage_history", {
+  rowKey: text("row_key").primaryKey(),
+  dealId: text("deal_id").notNull(),
+  createdAt: text("created_at").notNull(),
+  payload: text("payload").notNull(),
+  syncedAt: text("synced_at").notNull(),
+});
+
+export const rawCallStats = sqliteTable("raw_call_stats", {
+  rowKey: text("row_key").primaryKey(),
+  activityId: text("activity_id").notNull(),
+  payload: text("payload").notNull(),
+  syncedAt: text("synced_at").notNull(),
+});
+
+export const crmDictionaries = sqliteTable("crm_dictionaries", {
+  key: text("key").primaryKey(),
+  payload: text("payload").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});

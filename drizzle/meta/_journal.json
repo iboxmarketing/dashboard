@@ -8,6 +8,13 @@
       "when": 1787231527919,
       "tag": "0000_fat_gauntlet",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1787236090596,
+      "tag": "0001_tired_meltdown",
+      "breakpoints": true
     }
   ]
 }

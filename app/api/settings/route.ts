@@ -15,6 +15,8 @@ export async function POST(request: Request) {
       slaMinutes: Math.min(240, Math.max(1, Number(payload.slaMinutes ?? current.slaMinutes))),
       historyDays: Math.min(365, Math.max(1, Number(payload.historyDays ?? current.historyDays))),
       holidays: Array.isArray(payload.holidays) ? payload.holidays.filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value)) : current.holidays,
+      selectedPipelineIds: Array.isArray(payload.selectedPipelineIds) ? [...new Set(payload.selectedPipelineIds.map(String))].slice(0, 2) : current.selectedPipelineIds,
+      selectedPipelineNames: Array.isArray(payload.selectedPipelineNames) ? [...new Set(payload.selectedPipelineNames.map(String))].slice(0, 2) : current.selectedPipelineNames,
     };
     await saveSettings(next);
     return Response.json({ settings: next });
@@ -22,4 +24,3 @@ export async function POST(request: Request) {
     return Response.json({ error: "Sozlamalarni saqlab bo‘lmadi" }, { status: 400 });
   }
 }
-

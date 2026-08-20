@@ -38,6 +38,8 @@ export async function bitrixCall<T>(method: string, params: Record<string, unkno
   if (!webhook) throw new SafeBitrixError("NOT_CONFIGURED", "Bitrix24 webhook ulanmagan");
   const endpoint = new URL(method, webhook);
   let response: Response;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 25_000);
   try {
     response = await fetch(endpoint, {
       method: "POST",
@@ -47,9 +49,12 @@ export async function bitrixCall<T>(method: string, params: Record<string, unkno
         "User-Agent": "IBOX-Deal-Processing-Dashboard/1.0",
       },
       body: JSON.stringify(params),
+      signal: controller.signal,
     });
   } catch {
-    throw new SafeBitrixError("NETWORK_ERROR", "Bitrix24 bilan aloqa o‘rnatilmadi");
+    throw new SafeBitrixError("NETWORK_ERROR", controller.signal.aborted ? "Bitrix24 so‘rovi 25 soniyada javob bermadi" : "Bitrix24 bilan aloqa o‘rnatilmadi");
+  } finally {
+    clearTimeout(timeout);
   }
 
   let payload: BitrixResponse<T>;
@@ -66,6 +71,20 @@ export async function bitrixCall<T>(method: string, params: Record<string, unkno
     throw new SafeBitrixError(safeCode, safeMessage);
   }
   return payload;
+}
+
+export async function bitrixPage<T>(
+  method: string,
+  params: Record<string, unknown>,
+  start = 0,
+  startKey = "start",
+) {
+  const response = await bitrixCall<unknown>(method, { ...params, [startKey]: start });
+  return {
+    items: unwrapList<T>(response.result),
+    next: response.next === undefined || response.next === null ? null : Number(response.next),
+    total: response.total === undefined || response.total === null ? null : Number(response.total),
+  };
 }
 
 function unwrapList<T>(result: unknown): T[] {
@@ -100,4 +119,3 @@ export function safeBitrixMessage(error: unknown) {
   if (error instanceof SafeBitrixError) return error.message;
   return "Kutilmagan xavfsiz server xatosi";
 }
-

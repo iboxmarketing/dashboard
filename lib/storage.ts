@@ -1,6 +1,6 @@
 import { getD1 } from "@/db";
 import { defaultSettings } from "./business-time";
-import type { AnalyticsRecord, DashboardSettings, ProviderDiagnostic } from "./types";
+import type { AnalyticsRecord, DashboardSettings, ProviderDiagnostic, SyncProgressState } from "./types";
 
 export async function ensureSchema() {
   const db = getD1();
@@ -12,6 +12,17 @@ export async function ensureSchema() {
     db.prepare("CREATE TABLE IF NOT EXISTS provider_rules (provider_key TEXT PRIMARY KEY, mode TEXT NOT NULL, updated_at TEXT NOT NULL)"),
     db.prepare("CREATE TABLE IF NOT EXISTS provider_diagnostics (provider_key TEXT PRIMARY KEY, provider_id TEXT NOT NULL, provider_type_id TEXT NOT NULL, type_id TEXT NOT NULL, direction TEXT NOT NULL, count INTEGER NOT NULL, sample_subject TEXT NOT NULL, updated_at TEXT NOT NULL)"),
     db.prepare("CREATE TABLE IF NOT EXISTS sync_state (id TEXT PRIMARY KEY, status TEXT NOT NULL, last_sync_at TEXT, last_from TEXT, counts TEXT NOT NULL, permissions TEXT NOT NULL, safe_error TEXT, updated_at TEXT NOT NULL)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS sync_jobs (id TEXT PRIMARY KEY, status TEXT NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS raw_deals (deal_id TEXT PRIMARY KEY, category_id TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL, synced_at TEXT NOT NULL)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS raw_deals_category_idx ON raw_deals(category_id)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS raw_activities (row_key TEXT PRIMARY KEY, deal_id TEXT NOT NULL, activity_id TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL, synced_at TEXT NOT NULL)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS raw_activities_deal_idx ON raw_activities(deal_id)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS raw_activities_id_idx ON raw_activities(activity_id)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS raw_stage_history (row_key TEXT PRIMARY KEY, deal_id TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL, synced_at TEXT NOT NULL)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS raw_stage_deal_idx ON raw_stage_history(deal_id)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS raw_call_stats (row_key TEXT PRIMARY KEY, activity_id TEXT NOT NULL, payload TEXT NOT NULL, synced_at TEXT NOT NULL)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS raw_call_activity_idx ON raw_call_stats(activity_id)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS crm_dictionaries (key TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL)"),
   ]);
 }
 
@@ -26,6 +37,8 @@ export async function getSettings(): Promise<DashboardSettings> {
       ...parsed,
       schedule: { ...defaultSettings.schedule, ...(parsed.schedule ?? {}) },
       holidays: Array.isArray(parsed.holidays) ? parsed.holidays : [],
+      selectedPipelineIds: Array.isArray(parsed.selectedPipelineIds) ? parsed.selectedPipelineIds.map(String) : [],
+      selectedPipelineNames: Array.isArray(parsed.selectedPipelineNames) ? parsed.selectedPipelineNames.map(String) : defaultSettings.selectedPipelineNames,
     };
   } catch {
     return defaultSettings;
@@ -57,9 +70,14 @@ export async function saveProviderRule(providerKey: string, mode: "AUTO" | "USE"
 
 export async function replaceAnalyticsRecords(records: AnalyticsRecord[], fromIso: string) {
   await ensureSchema();
+  await getD1().prepare("DELETE FROM analytics_records WHERE created_at >= ?").bind(fromIso).run();
+  await upsertAnalyticsRecords(records);
+}
+
+export async function upsertAnalyticsRecords(records: AnalyticsRecord[]) {
+  await ensureSchema();
   const db = getD1();
   const syncedAt = new Date().toISOString();
-  await db.prepare("DELETE FROM analytics_records WHERE created_at >= ?").bind(fromIso).run();
   for (let index = 0; index < records.length; index += 40) {
     const statements = records.slice(index, index + 40).map((record) =>
       db
@@ -85,9 +103,24 @@ export async function replaceAnalyticsRecords(records: AnalyticsRecord[], fromIs
   }
 }
 
+export async function clearUnselectedAnalytics(selectedIds: string[], fromIso?: string) {
+  await ensureSchema();
+  const db = getD1();
+  if (!selectedIds.length) return;
+  const placeholders = selectedIds.map(() => "?").join(", ");
+  await db.prepare(`DELETE FROM analytics_records WHERE category_id NOT IN (${placeholders})`).bind(...selectedIds).run();
+  if (fromIso) await db.prepare(`DELETE FROM analytics_records WHERE category_id IN (${placeholders}) AND created_at >= ?`).bind(...selectedIds, fromIso).run();
+}
+
 export async function listAnalyticsRecords() {
   await ensureSchema();
-  const result = await getD1().prepare("SELECT payload FROM analytics_records ORDER BY created_at DESC").all<{ payload: string }>();
+  const settings = await getSettings();
+  const ids = settings.selectedPipelineIds;
+  const placeholders = ids.map(() => "?").join(", ");
+  const statement = ids.length
+    ? getD1().prepare(`SELECT payload FROM analytics_records WHERE category_id IN (${placeholders}) ORDER BY created_at DESC`).bind(...ids)
+    : getD1().prepare("SELECT payload FROM analytics_records ORDER BY created_at DESC");
+  const result = await statement.all<{ payload: string }>();
   return ((result.results ?? []) as { payload: string }[]).flatMap((row) => {
     try {
       return [JSON.parse(row.payload) as AnalyticsRecord];
@@ -156,12 +189,90 @@ export async function saveSyncState(state: {
 export async function getSyncState() {
   await ensureSchema();
   const row = await getD1().prepare("SELECT * FROM sync_state WHERE id = 'main'").first<Record<string, string | null>>();
-  return {
-    status: row?.status ?? "idle",
+  const storedStatus = row?.status && ["idle", "running", "paused", "success", "error"].includes(row.status) ? row.status : "idle";
+  const base = {
+    status: storedStatus as SyncProgressState["status"],
     lastSyncAt: row?.last_sync_at ?? null,
     lastFrom: row?.last_from ?? null,
     counts: row?.counts ? (JSON.parse(row.counts) as Record<string, number>) : {},
     permissions: row?.permissions ? (JSON.parse(row.permissions) as Record<string, string>) : {},
     safeError: row?.safe_error ?? null,
   };
+  const job = await getSyncJob();
+  if (!job) return {
+    ...base,
+    status: base.status === "running" ? "error" : base.status,
+    phase: null,
+    progress: base.status === "success" ? 100 : 0,
+    message: base.status === "running" ? "Avvalgi uzun sync uzilib qolgan. Yangi paketli sync’ni boshlang." : null,
+    processed: 0,
+    total: 0,
+    stale: false,
+    selectedPipelines: [],
+    safeError: base.status === "running" ? "Avvalgi sync server timeout’i sabab yakunlanmagan." : base.safeError,
+  } satisfies SyncProgressState;
+  const heartbeat = Date.parse(job.heartbeatAt ?? job.updatedAt ?? "");
+  const stale = job.status === "running" && (!Number.isFinite(heartbeat) || Date.now() - heartbeat > 180_000);
+  return {
+    ...base,
+    status: job.status,
+    phase: job.phase,
+    progress: job.progress,
+    message: job.message,
+    processed: job.processed,
+    total: job.total,
+    stale,
+    selectedPipelines: job.selectedPipelines,
+    safeError: job.safeError ?? base.safeError,
+  } satisfies SyncProgressState;
+}
+
+export type StoredSyncJob = {
+  status: SyncProgressState["status"];
+  phase: NonNullable<SyncProgressState["phase"]>;
+  progress: number;
+  message: string;
+  processed: number;
+  total: number;
+  cursor: number;
+  fromIso: string;
+  toIso: string;
+  mode: "full" | "incremental";
+  runId: string;
+  selectedPipelines: { id: string; name: string }[];
+  counts: Record<string, number>;
+  permissions: Record<string, string>;
+  safeError: string | null;
+  heartbeatAt: string;
+  updatedAt: string;
+};
+
+export async function getSyncJob() {
+  await ensureSchema();
+  const row = await getD1().prepare("SELECT payload FROM sync_jobs WHERE id = 'main'").first<{ payload: string }>();
+  if (!row?.payload) return null;
+  try { return JSON.parse(row.payload) as StoredSyncJob; } catch { return null; }
+}
+
+export async function saveSyncJob(job: StoredSyncJob) {
+  await ensureSchema();
+  const updatedAt = new Date().toISOString();
+  const next = { ...job, updatedAt, heartbeatAt: job.status === "running" ? updatedAt : job.heartbeatAt };
+  await getD1().prepare("INSERT INTO sync_jobs(id, status, payload, updated_at) VALUES('main', ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status, payload = excluded.payload, updated_at = excluded.updated_at")
+    .bind(next.status, JSON.stringify(next), updatedAt).run();
+  return next;
+}
+
+export async function saveDictionary(key: string, payload: unknown) {
+  await ensureSchema();
+  const now = new Date().toISOString();
+  await getD1().prepare("INSERT INTO crm_dictionaries(key, payload, updated_at) VALUES(?, ?, ?) ON CONFLICT(key) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at")
+    .bind(key, JSON.stringify(payload), now).run();
+}
+
+export async function getDictionary<T>(key: string, fallback: T): Promise<T> {
+  await ensureSchema();
+  const row = await getD1().prepare("SELECT payload FROM crm_dictionaries WHERE key = ?").bind(key).first<{ payload: string }>();
+  if (!row?.payload) return fallback;
+  try { return JSON.parse(row.payload) as T; } catch { return fallback; }
 }

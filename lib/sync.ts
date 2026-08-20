@@ -1,176 +1,312 @@
+import { getD1 } from "@/db";
 import { buildAnalyticsRecords, discoverProviders, type RawActivity, type RawCallStat, type RawDeal, type RawStageHistory } from "./analytics";
-import { bitrixCall, bitrixList, getBitrixDomain, safeBitrixMessage } from "./bitrix";
-import { getProviderRules, getSettings, replaceAnalyticsRecords, saveProviderDiagnostics, saveSyncState } from "./storage";
+import { bitrixCall, bitrixList, bitrixPage, getBitrixDomain, safeBitrixMessage } from "./bitrix";
+import {
+  clearUnselectedAnalytics, getDictionary, getProviderRules, getSettings, getSyncJob,
+  getSyncState, saveDictionary, saveProviderDiagnostics, saveSettings, saveSyncJob,
+  saveSyncState, upsertAnalyticsRecords, type StoredSyncJob,
+} from "./storage";
+import type { PipelineOption } from "./types";
+export { normalizePipelineName, resolvePipelineSelection } from "./pipelines";
+import { resolvePipelineSelection } from "./pipelines";
 
-type PermissionState = "ok" | "warning" | "error";
+const activitySelect = [
+  "ID", "OWNER_ID", "OWNER_TYPE_ID", "BINDINGS", "TYPE_ID", "PROVIDER_ID", "PROVIDER_TYPE_ID",
+  "DIRECTION", "CREATED", "START_TIME", "END_TIME", "COMPLETED", "STATUS", "RESPONSIBLE_ID",
+  "SUBJECT", "SETTINGS", "RESULT_STATUS", "RESULT_VALUE",
+];
 
 function value(row: Record<string, unknown>, key: string) {
   const raw = row[key];
   return raw === null || raw === undefined ? "" : String(raw);
 }
 
-function stageHistoryQuery(dealId: string) {
-  const query = new URLSearchParams();
-  query.set("entityTypeId", "2");
-  query.set("order[ID]", "ASC");
-  query.set("filter[OWNER_ID]", dealId);
-  for (const field of ["ID", "OWNER_ID", "STAGE_ID", "CREATED_TIME"]) query.append("select[]", field);
-  return `crm.stagehistory.list?${query.toString()}`;
+function parseRows<T>(rows: { payload: string }[]) {
+  return rows.flatMap((row) => {
+    try { return [JSON.parse(row.payload) as T]; } catch { return []; }
+  });
 }
 
-async function loadStageHistories(dealIds: string[]) {
-  const rows: RawStageHistory[] = [];
-  for (let index = 0; index < dealIds.length; index += 50) {
-    const chunk = dealIds.slice(index, index + 50);
-    const cmd = Object.fromEntries(chunk.map((id) => [`deal_${id}`, stageHistoryQuery(id)]));
-    const response = await bitrixCall<Record<string, unknown>>("batch", { halt: 0, cmd });
-    const outer = response.result as Record<string, unknown> | undefined;
-    const results = (outer?.result ?? outer) as Record<string, unknown> | undefined;
-    if (!results) continue;
-    for (const id of chunk) {
-      const raw = results[`deal_${id}`];
-      const items = Array.isArray(raw)
-        ? raw
-        : raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>).items)
-          ? ((raw as Record<string, unknown>).items as unknown[])
-          : [];
-      for (const item of items) rows.push({ ...(item as RawStageHistory), OWNER_ID: id });
-    }
-  }
-  return rows;
+export async function listPipelines(): Promise<PipelineOption[]> {
+  const rows = await bitrixList<Record<string, unknown>>("crm.dealcategory.list", { order: { SORT: "ASC" } }, { maxPages: 20 });
+  return rows.map((row) => ({ id: value(row, "ID"), name: value(row, "NAME") || `Pipeline #${value(row, "ID")}` })).filter((row) => row.id);
 }
 
-export async function runSync(options: { days?: number; full?: boolean } = {}) {
-  const settings = await getSettings();
-  const days = Math.min(365, Math.max(1, Number(options.days ?? settings.historyDays)));
-  const now = new Date();
-  const from = new Date(now.getTime() - days * 86_400_000);
-  const fromIso = from.toISOString();
-  await saveSyncState({ status: "running", lastFrom: fromIso, safeError: null });
+function query(path: string, filter: Record<string, string>, select: string[] = [], order: Record<string, string> = {}) {
+  const params = new URLSearchParams();
+  for (const [key, raw] of Object.entries(filter)) params.set(`filter[${key}]`, raw);
+  for (const [key, raw] of Object.entries(order)) params.set(`order[${key}]`, raw);
+  for (const field of select) params.append("select[]", field);
+  return `${path}?${params.toString()}`;
+}
 
-  const permissions: Record<string, PermissionState> = {
-    deals: "ok",
-    activities: "ok",
-    stageHistory: "ok",
-    managers: "ok",
-    telephony: "ok",
+function batchItems(response: Record<string, unknown>, key: string) {
+  const outer = response.result as Record<string, unknown> | undefined;
+  const results = (outer?.result ?? outer) as Record<string, unknown> | undefined;
+  const raw = results?.[key];
+  if (Array.isArray(raw)) return raw as Record<string, unknown>[];
+  if (raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>).items)) return (raw as { items: Record<string, unknown>[] }).items;
+  return [];
+}
+
+function phaseProgress(phase: StoredSyncJob["phase"], processed: number, total: number) {
+  const ranges: Record<StoredSyncJob["phase"], [number, number]> = {
+    deals: [0, 20], activities: [20, 43], stageHistory: [43, 63], telephony: [63, 76],
+    lookups: [76, 82], analytics: [82, 100], done: [100, 100],
   };
+  const [start, end] = ranges[phase];
+  const fraction = total > 0 ? Math.min(1, processed / total) : 0;
+  return Math.round(start + (end - start) * fraction);
+}
 
-  try {
-    const deals = await bitrixList<RawDeal>("crm.deal.list", {
-      order: { DATE_CREATE: "ASC", ID: "ASC" },
-      filter: { ">=DATE_CREATE": fromIso },
-      select: ["ID", "TITLE", "DATE_CREATE", "ASSIGNED_BY_ID", "CATEGORY_ID", "STAGE_ID", "SOURCE_ID"],
+function move(job: StoredSyncJob, phase: StoredSyncJob["phase"], message: string, total = job.counts.deals ?? 0) {
+  return { ...job, phase, cursor: 0, processed: 0, total, progress: phaseProgress(phase, 0, total), message };
+}
+
+async function upsertRaw(table: "raw_deals" | "raw_activities" | "raw_stage_history" | "raw_call_stats", rows: unknown[][]) {
+  const db = getD1();
+  for (let index = 0; index < rows.length; index += 40) {
+    const statements = rows.slice(index, index + 40).map((bindings) => {
+      if (table === "raw_deals") return db.prepare("INSERT OR REPLACE INTO raw_deals(deal_id, category_id, created_at, payload, synced_at) VALUES(?, ?, ?, ?, ?)").bind(...bindings);
+      if (table === "raw_activities") return db.prepare("INSERT OR REPLACE INTO raw_activities(row_key, deal_id, activity_id, created_at, payload, synced_at) VALUES(?, ?, ?, ?, ?, ?)").bind(...bindings);
+      if (table === "raw_stage_history") return db.prepare("INSERT OR REPLACE INTO raw_stage_history(row_key, deal_id, created_at, payload, synced_at) VALUES(?, ?, ?, ?, ?)").bind(...bindings);
+      return db.prepare("INSERT OR REPLACE INTO raw_call_stats(row_key, activity_id, payload, synced_at) VALUES(?, ?, ?, ?)").bind(...bindings);
     });
+    if (statements.length) await db.batch(statements);
+  }
+}
 
-    let activities: RawActivity[] = [];
-    try {
-      activities = await bitrixList<RawActivity>("crm.activity.list", {
-        order: { ID: "ASC" },
-        filter: { ">=CREATED": fromIso },
-        select: [
-          "ID", "OWNER_ID", "OWNER_TYPE_ID", "BINDINGS", "TYPE_ID", "PROVIDER_ID", "PROVIDER_TYPE_ID",
-          "DIRECTION", "CREATED", "START_TIME", "END_TIME", "COMPLETED", "STATUS", "RESPONSIBLE_ID",
-          "SUBJECT", "SETTINGS", "RESULT_STATUS", "RESULT_VALUE",
-        ],
-      }, { maxPages: 400 });
-    } catch {
-      permissions.activities = "error";
-    }
+export async function startSync(options: { days?: number; full?: boolean } = {}) {
+  const settings = await getSettings();
+  const pipelines = await listPipelines();
+  const selected = resolvePipelineSelection(pipelines, settings.selectedPipelineIds, settings.selectedPipelineNames);
+  const selectedIds = selected.map((item) => item.id);
+  const stateRow = await getD1().prepare("SELECT last_sync_at FROM sync_state WHERE id = 'main'").first<{ last_sync_at: string }>();
+  const now = new Date();
+  const days = Math.min(365, Math.max(1, Number(options.days ?? settings.historyDays)));
+  const mode = options.full || !stateRow?.last_sync_at ? "full" : "incremental";
+  const lastSyncMs = Date.parse(stateRow?.last_sync_at ?? "");
+  const from = mode === "full"
+    ? new Date(now.getTime() - days * 86_400_000)
+    : new Date(Math.max(now.getTime() - 86_400_000, (Number.isFinite(lastSyncMs) ? lastSyncMs : now.getTime()) - 10 * 60_000));
+  const fromIso = from.toISOString();
+  const runId = crypto.randomUUID();
+  const permissions = { deals: "ok", activities: "ok", stageHistory: "ok", managers: "ok", telephony: "ok" };
 
-    let histories: RawStageHistory[] = [];
-    try {
-      histories = await loadStageHistories(deals.map((deal) => value(deal, "ID")));
-    } catch {
-      permissions.stageHistory = "error";
-    }
+  await saveSettings({ ...settings, selectedPipelineIds: selectedIds, selectedPipelineNames: selected.map((item) => item.name) });
+  await clearUnselectedAnalytics(selectedIds, mode === "full" ? fromIso : undefined);
+  if (mode === "full") {
+    const db = getD1();
+    await db.batch([
+      db.prepare("DELETE FROM raw_deals"), db.prepare("DELETE FROM raw_activities"),
+      db.prepare("DELETE FROM raw_stage_history"), db.prepare("DELETE FROM raw_call_stats"),
+    ]);
+  }
 
-    let callStats: RawCallStat[] = [];
-    try {
-      callStats = await bitrixList<RawCallStat>("voximplant.statistic.get", {
-        FILTER: { ">=CALL_START_DATE": fromIso },
-        SORT: "ID",
-        ORDER: "ASC",
-      }, { maxPages: 400 });
-    } catch {
-      permissions.telephony = "warning";
-    }
+  const timestamp = now.toISOString();
+  const job: StoredSyncJob = {
+    status: "running", phase: "deals", progress: 0, message: "Eng yangi Deal’lar yuklanmoqda…",
+    processed: 0, total: 0, cursor: 0, fromIso, toIso: timestamp, mode, runId,
+    selectedPipelines: selected, counts: {}, permissions, safeError: null,
+    heartbeatAt: timestamp, updatedAt: timestamp,
+  };
+  await saveSyncJob(job);
+  await saveSyncState({ status: "running", lastFrom: fromIso, counts: {}, permissions, safeError: null });
+  return await getSyncState();
+}
 
-    const users = new Map<string, string>();
-    try {
-      const userRows = await bitrixList<Record<string, unknown>>("user.get", { FILTER: { ACTIVE: true } }, { maxPages: 100 });
-      for (const user of userRows) {
-        const id = value(user, "ID");
-        const name = [value(user, "NAME"), value(user, "LAST_NAME")].filter(Boolean).join(" ");
-        if (id) users.set(id, name || `Menejer #${id}`);
-      }
-    } catch {
-      permissions.managers = "error";
-    }
+async function dealStep(job: StoredSyncJob) {
+  const ids = job.selectedPipelines.map((item) => item.id);
+  const filter: Record<string, unknown> = { CATEGORY_ID: ids };
+  if (job.mode === "full") {
+    filter[">=DATE_CREATE"] = job.fromIso;
+    filter["<=DATE_CREATE"] = job.toIso;
+  } else {
+    filter[">=DATE_MODIFY"] = job.fromIso;
+    filter["<=DATE_MODIFY"] = job.toIso;
+  }
+  const page = await bitrixPage<RawDeal>("crm.deal.list", {
+    order: { DATE_CREATE: "DESC", ID: "DESC" }, filter,
+    select: ["ID", "TITLE", "DATE_CREATE", "DATE_MODIFY", "ASSIGNED_BY_ID", "CATEGORY_ID", "STAGE_ID", "SOURCE_ID"],
+  }, job.cursor);
+  await upsertRaw("raw_deals", page.items.map((deal) => [value(deal, "ID"), value(deal, "CATEGORY_ID") || "0", value(deal, "DATE_CREATE"), JSON.stringify(deal), job.runId]));
+  const counts = { ...job.counts, deals: (job.counts.deals ?? 0) + page.items.length };
+  if (page.next === null) return move({ ...job, counts }, "activities", "Faqat tanlangan sales Deal’larining activity’lari yuklanmoqda…", counts.deals);
+  const total = page.total ?? Math.max(counts.deals, page.next + 50);
+  return { ...job, cursor: page.next, processed: counts.deals, total, counts, progress: phaseProgress("deals", counts.deals, total), message: `${counts.deals} / ${total} ta Deal yuklandi` };
+}
 
-    const pipelines = new Map<string, string>([["0", "Asosiy pipeline"]]);
-    try {
-      const categories = await bitrixList<Record<string, unknown>>("crm.dealcategory.list", { order: { SORT: "ASC" } }, { maxPages: 20 });
-      for (const category of categories) pipelines.set(value(category, "ID"), value(category, "NAME") || `Pipeline #${value(category, "ID")}`);
-    } catch {
-      // The default pipeline remains usable.
-    }
+async function activityStep(job: StoredSyncJob) {
+  const result = await getD1().prepare("SELECT deal_id FROM raw_deals WHERE synced_at = ? ORDER BY created_at DESC LIMIT 10 OFFSET ?").bind(job.runId, job.cursor).all<{ deal_id: string }>();
+  const ids = (result.results ?? []).map((row) => String(row.deal_id));
+  if (!ids.length) return move(job, "stageHistory", "Deal stage history ma’lumotlari yuklanmoqda…", job.counts.deals);
+  const cmd = Object.fromEntries(ids.map((id) => [`deal_${id}`, query("crm.activity.list", { OWNER_TYPE_ID: "2", OWNER_ID: id }, activitySelect, { ID: "ASC" })]));
+  const response = await bitrixCall<Record<string, unknown>>("batch", { halt: 0, cmd });
+  const placeholders = ids.map(() => "?").join(", ");
+  await getD1().prepare(`DELETE FROM raw_activities WHERE deal_id IN (${placeholders})`).bind(...ids).run();
+  const rows: unknown[][] = [];
+  for (const id of ids) for (const activity of batchItems(response as unknown as Record<string, unknown>, `deal_${id}`)) {
+    const activityId = value(activity, "ID");
+    rows.push([`${id}:${activityId}`, id, activityId, value(activity, "CREATED"), JSON.stringify(activity), job.runId]);
+  }
+  await upsertRaw("raw_activities", rows);
+  const cursor = job.cursor + ids.length;
+  const counts = { ...job.counts, activities: (job.counts.activities ?? 0) + rows.length };
+  return { ...job, cursor, processed: cursor, total: job.counts.deals, counts, progress: phaseProgress("activities", cursor, job.counts.deals), message: `${Math.min(cursor, job.counts.deals)} / ${job.counts.deals} ta Deal activity’si tekshirildi` };
+}
 
-    const stages = new Map<string, string>();
-    const sources = new Map<string, string>();
-    try {
-      const statuses = await bitrixList<Record<string, unknown>>("crm.status.list", { order: { SORT: "ASC" } }, { maxPages: 100 });
-      for (const status of statuses) {
-        const id = value(status, "STATUS_ID");
-        const name = value(status, "NAME") || id;
-        const entity = value(status, "ENTITY_ID");
-        if (entity.startsWith("DEAL_STAGE")) stages.set(id, name);
-        if (entity === "SOURCE") sources.set(id, name);
-      }
-    } catch {
-      // Raw IDs are shown when names cannot be retrieved.
-    }
+async function stageStep(job: StoredSyncJob) {
+  const result = await getD1().prepare("SELECT deal_id FROM raw_deals WHERE synced_at = ? ORDER BY created_at DESC LIMIT 20 OFFSET ?").bind(job.runId, job.cursor).all<{ deal_id: string }>();
+  const ids = (result.results ?? []).map((row) => String(row.deal_id));
+  if (!ids.length) {
+    const activityCount = await getD1().prepare("SELECT COUNT(*) AS count FROM raw_activities WHERE synced_at = ?").bind(job.runId).first<{ count: number }>();
+    return move(job, "telephony", "Faqat sales Deal’laridagi qo‘ng‘iroqlar natijasi boyitilmoqda…", Number(activityCount?.count ?? 0));
+  }
+  const cmd = Object.fromEntries(ids.map((id) => [`deal_${id}`, query("crm.stagehistory.list", { OWNER_ID: id }, ["ID", "OWNER_ID", "STAGE_ID", "CREATED_TIME"], { ID: "ASC" }).replace("?", "?entityTypeId=2&")]));
+  const response = await bitrixCall<Record<string, unknown>>("batch", { halt: 0, cmd });
+  const placeholders = ids.map(() => "?").join(", ");
+  await getD1().prepare(`DELETE FROM raw_stage_history WHERE deal_id IN (${placeholders})`).bind(...ids).run();
+  const rows: unknown[][] = [];
+  for (const id of ids) for (const history of batchItems(response as unknown as Record<string, unknown>, `deal_${id}`)) {
+    const createdAt = value(history, "CREATED_TIME");
+    history.OWNER_ID = id;
+    rows.push([`${id}:${value(history, "ID") || `${value(history, "STAGE_ID")}:${createdAt}`}`, id, createdAt, JSON.stringify(history), job.runId]);
+  }
+  await upsertRaw("raw_stage_history", rows);
+  const cursor = job.cursor + ids.length;
+  const counts = { ...job.counts, stageHistory: (job.counts.stageHistory ?? 0) + rows.length };
+  return { ...job, cursor, processed: cursor, total: job.counts.deals, counts, progress: phaseProgress("stageHistory", cursor, job.counts.deals), message: `${Math.min(cursor, job.counts.deals)} / ${job.counts.deals} ta Deal stage history’si tekshirildi` };
+}
 
-    const providerRules = await getProviderRules();
-    const providers = discoverProviders(activities).map((provider) => ({
-      ...provider,
-      mode: (providerRules[provider.key] ?? "AUTO") as "AUTO" | "USE" | "IGNORE",
-    }));
-    await saveProviderDiagnostics(providers);
+async function telephonyStep(job: StoredSyncJob) {
+  const result = await getD1().prepare("SELECT DISTINCT activity_id FROM raw_activities WHERE synced_at = ? AND activity_id != '' ORDER BY activity_id LIMIT 20 OFFSET ?").bind(job.runId, job.cursor).all<{ activity_id: string }>();
+  const ids = (result.results ?? []).map((row) => String(row.activity_id));
+  if (!ids.length) return move(job, "lookups", "Menejer, pipeline va status nomlari yangilanmoqda…", 1);
+  const cmd = Object.fromEntries(ids.map((id) => [`activity_${id}`, `voximplant.statistic.get?FILTER%5BCRM_ACTIVITY_ID%5D=${encodeURIComponent(id)}`]));
+  const response = await bitrixCall<Record<string, unknown>>("batch", { halt: 0, cmd });
+  const placeholders = ids.map(() => "?").join(", ");
+  await getD1().prepare(`DELETE FROM raw_call_stats WHERE activity_id IN (${placeholders})`).bind(...ids).run();
+  const rows: unknown[][] = [];
+  for (const id of ids) for (const stat of batchItems(response as unknown as Record<string, unknown>, `activity_${id}`)) {
+    rows.push([`${id}:${value(stat, "ID") || "stat"}`, id, JSON.stringify(stat), job.runId]);
+  }
+  await upsertRaw("raw_call_stats", rows);
+  const cursor = job.cursor + ids.length;
+  const counts = { ...job.counts, telephony: (job.counts.telephony ?? 0) + rows.length };
+  return { ...job, cursor, processed: cursor, counts, progress: phaseProgress("telephony", cursor, Math.max(job.total, cursor)), message: `${cursor} ta activity qo‘ng‘iroq natijasi bilan tekshirildi` };
+}
 
-    const records = buildAnalyticsRecords({
-      deals,
-      activities,
-      stageHistories: histories,
-      callStats,
-      settings,
-      providerRules,
-      users,
-      pipelines,
-      stages,
-      sources,
-      domain: getBitrixDomain(),
-      activitiesAvailable: permissions.activities === "ok",
-      stageHistoryAvailable: permissions.stageHistory === "ok",
-    });
+async function lookupStep(job: StoredSyncJob) {
+  let users: Record<string, unknown>[] = [];
+  let statuses: Record<string, unknown>[] = [];
+  const permissions = { ...job.permissions };
+  try { users = await bitrixList<Record<string, unknown>>("user.get", { FILTER: { ACTIVE: true } }, { maxPages: 20 }); } catch { permissions.managers = "error"; }
+  try { statuses = await bitrixList<Record<string, unknown>>("crm.status.list", { order: { SORT: "ASC" } }, { maxPages: 20 }); } catch { /* Raw IDs remain visible. */ }
+  await saveDictionary("users", users);
+  await saveDictionary("statuses", statuses);
+  await saveDictionary("pipelines", job.selectedPipelines);
+  const activityResult = await getD1().prepare("SELECT payload FROM raw_activities WHERE synced_at = ?").bind(job.runId).all<{ payload: string }>();
+  const activities = parseRows<RawActivity>(activityResult.results ?? []);
+  const providerRules = await getProviderRules();
+  await saveProviderDiagnostics(discoverProviders(activities).map((provider) => ({ ...provider, mode: (providerRules[provider.key] ?? "AUTO") as "AUTO" | "USE" | "IGNORE" })));
+  return move({ ...job, permissions }, "analytics", "Dashboard ko‘rsatkichlari kichik paketlarda hisoblanmoqda…", job.counts.deals);
+}
 
-    await replaceAnalyticsRecords(records, fromIso);
-    const counts = {
-      deals: deals.length,
-      activities: activities.length,
-      outgoingCalls: records.reduce((sum, row) => sum + row.outgoingCallCount, 0),
-      stageHistory: histories.length,
-      telephony: callStats.length,
-      noProcessing: records.filter((row) => row.processingSource === "NO_PROCESSING").length,
-      stageBeforeCall: records.filter((row) => row.stageChangedBeforeCall).length,
-    };
+async function analyticsStep(job: StoredSyncJob) {
+  const dealResult = await getD1().prepare("SELECT deal_id, payload FROM raw_deals WHERE synced_at = ? ORDER BY created_at DESC LIMIT 100 OFFSET ?").bind(job.runId, job.cursor).all<{ deal_id: string; payload: string }>();
+  const rawDeals = dealResult.results ?? [];
+  if (!rawDeals.length) {
     const completedAt = new Date().toISOString();
-    await saveSyncState({ status: "success", lastSyncAt: completedAt, lastFrom: fromIso, counts, permissions, safeError: null });
-    return { records: records.length, counts, permissions, completedAt };
+    const finished: StoredSyncJob = { ...job, status: "success", phase: "done", progress: 100, processed: job.counts.deals ?? 0, total: job.counts.deals ?? 0, cursor: 0, message: "Sinxronizatsiya yakunlandi", safeError: null };
+    await saveSyncJob(finished);
+    await saveSyncState({ status: "success", lastSyncAt: completedAt, lastFrom: job.fromIso, counts: job.counts, permissions: job.permissions, safeError: null });
+    return finished;
+  }
+  const ids = rawDeals.map((row) => row.deal_id);
+  const placeholders = ids.map(() => "?").join(", ");
+  const activityResult = await getD1().prepare(`SELECT payload, activity_id FROM raw_activities WHERE deal_id IN (${placeholders})`).bind(...ids).all<{ payload: string; activity_id: string }>();
+  const historyResult = await getD1().prepare(`SELECT payload FROM raw_stage_history WHERE deal_id IN (${placeholders})`).bind(...ids).all<{ payload: string }>();
+  const activities = parseRows<RawActivity>(activityResult.results ?? []);
+  const activityIds = [...new Set((activityResult.results ?? []).map((row) => row.activity_id).filter(Boolean))];
+  let callStats: RawCallStat[] = [];
+  if (activityIds.length) {
+    const activityPlaceholders = activityIds.map(() => "?").join(", ");
+    const callResult = await getD1().prepare(`SELECT payload FROM raw_call_stats WHERE activity_id IN (${activityPlaceholders})`).bind(...activityIds).all<{ payload: string }>();
+    callStats = parseRows<RawCallStat>(callResult.results ?? []);
+  }
+  const userRows = await getDictionary<Record<string, unknown>[]>("users", []);
+  const statusRows = await getDictionary<Record<string, unknown>[]>("statuses", []);
+  const users = new Map(userRows.map((row) => [value(row, "ID"), [value(row, "NAME"), value(row, "LAST_NAME")].filter(Boolean).join(" ") || `Menejer #${value(row, "ID")}`]));
+  const pipelines = new Map(job.selectedPipelines.map((item) => [item.id, item.name]));
+  const stages = new Map<string, string>();
+  const sources = new Map<string, string>();
+  for (const status of statusRows) {
+    const id = value(status, "STATUS_ID");
+    const name = value(status, "NAME") || id;
+    const entity = value(status, "ENTITY_ID");
+    if (entity.startsWith("DEAL_STAGE")) stages.set(id, name);
+    if (entity === "SOURCE") sources.set(id, name);
+  }
+  const settings = await getSettings();
+  const providerRules = await getProviderRules();
+  const records = buildAnalyticsRecords({
+    deals: parseRows<RawDeal>(rawDeals), activities, stageHistories: parseRows<RawStageHistory>(historyResult.results ?? []), callStats,
+    settings, providerRules, users, pipelines, stages, sources, domain: getBitrixDomain(),
+    activitiesAvailable: job.permissions.activities === "ok", stageHistoryAvailable: job.permissions.stageHistory === "ok",
+  });
+  await upsertAnalyticsRecords(records);
+  const cursor = job.cursor + rawDeals.length;
+  const counts = {
+    ...job.counts,
+    outgoingCalls: (job.counts.outgoingCalls ?? 0) + records.reduce((sum, row) => sum + row.outgoingCallCount, 0),
+    noProcessing: (job.counts.noProcessing ?? 0) + records.filter((row) => row.processingSource === "NO_PROCESSING").length,
+    stageBeforeCall: (job.counts.stageBeforeCall ?? 0) + records.filter((row) => row.stageChangedBeforeCall).length,
+  };
+  return { ...job, cursor, processed: cursor, total: job.counts.deals, counts, progress: phaseProgress("analytics", cursor, job.counts.deals), message: `${Math.min(cursor, job.counts.deals)} / ${job.counts.deals} ta Deal ko‘rsatkichi hisoblandi` };
+}
+
+export async function runSyncStep() {
+  const job = await getSyncJob();
+  if (!job) throw new Error("Boshlanmagan sync topilmadi");
+  if (job.status === "paused" || job.status === "success") return await getSyncState();
+  if (job.status === "error") throw new Error(job.safeError ?? "Sync xatolikda to‘xtagan");
+  try {
+    let next: StoredSyncJob;
+    if (job.phase === "deals") next = await dealStep(job);
+    else if (job.phase === "activities") {
+      try { next = await activityStep(job); } catch { next = move({ ...job, permissions: { ...job.permissions, activities: "error" } }, "stageHistory", "Activity API cheklangan; stage history davom etmoqda…", job.counts.deals); }
+    } else if (job.phase === "stageHistory") {
+      try { next = await stageStep(job); } catch { next = move({ ...job, permissions: { ...job.permissions, stageHistory: "error" } }, "telephony", "Stage history cheklangan; telephony davom etmoqda…", job.total); }
+    } else if (job.phase === "telephony") {
+      try { next = await telephonyStep(job); } catch { next = move({ ...job, permissions: { ...job.permissions, telephony: "warning" } }, "lookups", "Telephony cheklangan; asosiy SLA hisoblanmoqda…", 1); }
+    } else if (job.phase === "lookups") next = await lookupStep(job);
+    else if (job.phase === "analytics") next = await analyticsStep(job);
+    else next = job;
+    if (next.status === "running") await saveSyncJob(next);
+    return await getSyncState();
   } catch (error) {
-    const message = safeBitrixMessage(error);
-    await saveSyncState({ status: "error", safeError: message, permissions });
+    const safe = safeBitrixMessage(error);
+    const message = safe === "Kutilmagan xavfsiz server xatosi" && error instanceof Error ? error.message.slice(0, 240) : safe;
+    await saveSyncJob({ ...job, status: "error", safeError: message, message: "Sync xatolik sabab to‘xtadi" });
+    await saveSyncState({ status: "error", safeError: message, permissions: job.permissions });
     throw error;
   }
 }
 
+export async function pauseSync() {
+  const job = await getSyncJob();
+  if (job?.status === "running") await saveSyncJob({ ...job, status: "paused", message: "Sinxronizatsiya pauzada" });
+  return await getSyncState();
+}
+
+export async function resumeSync() {
+  const job = await getSyncJob();
+  if (!job) throw new Error("Davom ettiriladigan sync topilmadi");
+  if (job.status === "success") return await getSyncState();
+  await saveSyncJob({ ...job, status: "running", safeError: null, message: `${job.message.replace(/\s*\(.*\)$/, "")} (davom etmoqda)` });
+  return await getSyncState();
+}
+
+export async function runSync(options: { days?: number; full?: boolean } = {}) {
+  return await startSync(options);
+}

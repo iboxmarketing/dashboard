@@ -10,6 +10,31 @@ export type DashboardSettings = {
   holidays: string[];
   slaMinutes: number;
   historyDays: number;
+  selectedPipelineIds: string[];
+  selectedPipelineNames: string[];
+};
+
+export type PipelineOption = {
+  id: string;
+  name: string;
+};
+
+export type SyncPhase = "deals" | "activities" | "stageHistory" | "telephony" | "lookups" | "analytics" | "done";
+
+export type SyncProgressState = {
+  status: "idle" | "running" | "paused" | "success" | "error";
+  phase: SyncPhase | null;
+  progress: number;
+  message: string | null;
+  processed: number;
+  total: number;
+  stale: boolean;
+  selectedPipelines: PipelineOption[];
+  lastSyncAt: string | null;
+  lastFrom: string | null;
+  counts: Record<string, number>;
+  permissions: Record<string, string>;
+  safeError: string | null;
 };
 
 export type CallOutcome =
@@ -92,4 +117,3 @@ export type ProviderDiagnostic = {
   sampleSubject: string;
   mode: "AUTO" | "USE" | "IGNORE";
 };
-
