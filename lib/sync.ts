@@ -16,6 +16,11 @@ const activitySelect = [
   "SUBJECT", "SETTINGS", "RESULT_STATUS", "RESULT_VALUE",
 ];
 
+const activityDealBatchSize = 25;
+const stageDealBatchSize = 25;
+const telephonyBatchSize = 30;
+const analyticsDealBatchSize = 80;
+
 function value(row: Record<string, unknown>, key: string) {
   const raw = row[key];
   return raw === null || raw === undefined ? "" : String(raw);
@@ -198,20 +203,65 @@ export async function startSync(options: { days?: number; full?: boolean; pipeli
 async function dealStep(job: StoredSyncJob) {
   const ids = (job.dealScope === "postSale" ? job.reportingPipelines : job.selectedPipelines).map((item) => item.id);
   if (!ids.length && job.dealScope === "postSale") return move(job, "activities", "Sales Deal activity’lari yuklanmoqda…", job.counts.deals ?? 0);
+  const settings = await getSettings();
+  const customFields = [settings.failureReasonField, settings.marketingChannelField, settings.salesManagerField].filter((field): field is string => Boolean(field));
+  const select = ["ID", "TITLE", "DATE_CREATE", "DATE_MODIFY", "CLOSEDATE", "MOVED_TIME", "MOVED_BY_ID", "ASSIGNED_BY_ID", "CATEGORY_ID", "STAGE_ID", "SOURCE_ID", "CONTACT_ID", "CONTACT_IDS", "COMPANY_ID", "OPPORTUNITY", "CURRENCY_ID", ...customFields];
+
+  if (job.dealScope === "postSale") {
+    // TYPE_ID=5 is the exact Bitrix event for a funnel change. Querying these
+    // transitions avoids scanning every old card merely moved inside support.
+    const historyPage = await bitrixPage<RawStageHistory>("crm.stagehistory.list", {
+      entityTypeId: 2,
+      order: { ID: "ASC" },
+      filter: {
+        ...(ids.length === 1 ? { CATEGORY_ID: ids[0] } : { "@CATEGORY_ID": ids }),
+        TYPE_ID: 5,
+        ">=CREATED_TIME": job.fromIso,
+        "<=CREATED_TIME": job.toIso,
+      },
+      select: ["ID", "OWNER_ID", "CATEGORY_ID", "STAGE_ID", "TYPE_ID", "CREATED_TIME"],
+    }, job.cursor);
+    const ownerIds = [...new Set(historyPage.items.map((row) => value(row, "OWNER_ID")).filter(Boolean))];
+    let pendingIds = ownerIds;
+    if (ownerIds.length) {
+      const placeholders = ownerIds.map(() => "?").join(", ");
+      const existing = await getD1().prepare(`SELECT deal_id FROM raw_deals WHERE synced_at = ? AND deal_id IN (${placeholders})`).bind(job.runId, ...ownerIds).all<{ deal_id: string }>();
+      const seen = new Set((existing.results ?? []).map((row) => String(row.deal_id)));
+      pendingIds = ownerIds.filter((id) => !seen.has(id));
+    }
+    let deals: RawDeal[] = [];
+    if (pendingIds.length) {
+      const dealPage = await bitrixPage<RawDeal>("crm.deal.list", {
+        order: { ID: "ASC" }, filter: { "@ID": pendingIds }, select,
+      }, 0);
+      deals = dealPage.items;
+      await upsertRaw("raw_deals", deals.map((deal) => [value(deal, "ID"), value(deal, "CATEGORY_ID") || "0", value(deal, "DATE_CREATE"), JSON.stringify(deal), job.runId]));
+    }
+    const counts = { ...job.counts, deals: (job.counts.deals ?? 0) + deals.length, postSaleDeals: (job.counts.postSaleDeals ?? 0) + deals.length };
+    if (historyPage.next === null) return move({ ...job, counts }, "activities", "Faqat sales Deal’larining activity’lari yuklanmoqda…", counts.deals);
+    const total = historyPage.total ?? Math.max(job.processed + historyPage.items.length, historyPage.next + 50);
+    return {
+      ...job,
+      cursor: historyPage.next,
+      processed: job.processed + historyPage.items.length,
+      total,
+      counts,
+      progress: phaseProgress("deals", job.processed + historyPage.items.length, total),
+      message: `${counts.postSaleDeals ?? 0} ta sotilgan Deal topildi; post-sale kirishlari tekshirilmoqda…`,
+    };
+  }
+
   const filter: Record<string, unknown> = { CATEGORY_ID: ids };
   if (job.mode === "full") {
-    const dateField = job.dealScope === "postSale" ? "MOVED_TIME" : "DATE_CREATE";
-    filter[`>=${dateField}`] = job.fromIso;
-    filter[`<=${dateField}`] = job.toIso;
+    filter[">=DATE_CREATE"] = job.fromIso;
+    filter["<=DATE_CREATE"] = job.toIso;
   } else {
     filter[">=DATE_MODIFY"] = job.fromIso;
     filter["<=DATE_MODIFY"] = job.toIso;
   }
-  const settings = await getSettings();
-  const customFields = [settings.failureReasonField, settings.marketingChannelField, settings.salesManagerField].filter((field): field is string => Boolean(field));
   const page = await bitrixPage<RawDeal>("crm.deal.list", {
     order: { DATE_CREATE: "DESC", ID: "DESC" }, filter,
-    select: ["ID", "TITLE", "DATE_CREATE", "DATE_MODIFY", "CLOSEDATE", "MOVED_TIME", "MOVED_BY_ID", "ASSIGNED_BY_ID", "CATEGORY_ID", "STAGE_ID", "SOURCE_ID", "CONTACT_ID", "CONTACT_IDS", "COMPANY_ID", "OPPORTUNITY", "CURRENCY_ID", ...customFields],
+    select,
   }, job.cursor);
   await upsertRaw("raw_deals", page.items.map((deal) => [value(deal, "ID"), value(deal, "CATEGORY_ID") || "0", value(deal, "DATE_CREATE"), JSON.stringify(deal), job.runId]));
   const counts = { ...job.counts, deals: (job.counts.deals ?? 0) + page.items.length };
@@ -224,10 +274,10 @@ async function dealStep(job: StoredSyncJob) {
 }
 
 async function activityStep(job: StoredSyncJob) {
-  const result = await getD1().prepare("SELECT deal_id FROM raw_deals WHERE synced_at = ? ORDER BY created_at DESC LIMIT 10 OFFSET ?").bind(job.runId, job.cursor).all<{ deal_id: string }>();
+  const result = await getD1().prepare(`SELECT deal_id FROM raw_deals WHERE synced_at = ? ORDER BY created_at DESC LIMIT ${activityDealBatchSize} OFFSET ?`).bind(job.runId, job.cursor).all<{ deal_id: string }>();
   const ids = (result.results ?? []).map((row) => String(row.deal_id));
   if (!ids.length) return move(job, "stageHistory", "Deal stage history ma’lumotlari yuklanmoqda…", job.counts.deals);
-  const cmd = Object.fromEntries(ids.map((id) => [`deal_${id}`, query("crm.activity.list", { OWNER_TYPE_ID: "2", OWNER_ID: id }, activitySelect, { ID: "ASC" })]));
+  const cmd = Object.fromEntries(ids.map((id) => [`deal_${id}`, query("crm.activity.list", { OWNER_TYPE_ID: "2", OWNER_ID: id, TYPE_ID: "2", DIRECTION: "2" }, activitySelect, { ID: "ASC" })]));
   const response = await bitrixCall<Record<string, unknown>>("batch", { halt: 0, cmd });
   const placeholders = ids.map(() => "?").join(", ");
   await getD1().prepare(`DELETE FROM raw_activities WHERE deal_id IN (${placeholders})`).bind(...ids).run();
@@ -243,7 +293,7 @@ async function activityStep(job: StoredSyncJob) {
 }
 
 async function stageStep(job: StoredSyncJob) {
-  const result = await getD1().prepare("SELECT deal_id FROM raw_deals WHERE synced_at = ? ORDER BY created_at DESC LIMIT 20 OFFSET ?").bind(job.runId, job.cursor).all<{ deal_id: string }>();
+  const result = await getD1().prepare(`SELECT deal_id FROM raw_deals WHERE synced_at = ? ORDER BY created_at DESC LIMIT ${stageDealBatchSize} OFFSET ?`).bind(job.runId, job.cursor).all<{ deal_id: string }>();
   const ids = (result.results ?? []).map((row) => String(row.deal_id));
   if (!ids.length) {
     const activityCount = await getD1().prepare("SELECT COUNT(*) AS count FROM raw_activities WHERE synced_at = ?").bind(job.runId).first<{ count: number }>();
@@ -266,7 +316,21 @@ async function stageStep(job: StoredSyncJob) {
 }
 
 async function telephonyStep(job: StoredSyncJob) {
-  const result = await getD1().prepare("SELECT DISTINCT activity_id FROM raw_activities WHERE synced_at = ? AND activity_id != '' ORDER BY activity_id LIMIT 20 OFFSET ?").bind(job.runId, job.cursor).all<{ activity_id: string }>();
+  const result = await getD1().prepare(`
+    SELECT DISTINCT activity_id
+    FROM raw_activities
+    WHERE synced_at = ?
+      AND activity_id != ''
+      AND CAST(json_extract(payload, '$.DIRECTION') AS TEXT) = '2'
+      AND (
+        CAST(json_extract(payload, '$.TYPE_ID') AS TEXT) = '2'
+        OR UPPER(COALESCE(CAST(json_extract(payload, '$.PROVIDER_ID') AS TEXT), '')) LIKE '%CALL%'
+        OR UPPER(COALESCE(CAST(json_extract(payload, '$.PROVIDER_ID') AS TEXT), '')) LIKE '%VOXIMPLANT%'
+        OR UPPER(COALESCE(CAST(json_extract(payload, '$.PROVIDER_TYPE_ID') AS TEXT), '')) LIKE '%CALL%'
+      )
+    ORDER BY activity_id
+    LIMIT ${telephonyBatchSize} OFFSET ?
+  `).bind(job.runId, job.cursor).all<{ activity_id: string }>();
   const ids = (result.results ?? []).map((row) => String(row.activity_id));
   if (!ids.length) return move(job, "lookups", "Menejer, pipeline va status nomlari yangilanmoqda…", 1);
   const cmd = Object.fromEntries(ids.map((id) => [`activity_${id}`, `voximplant.statistic.get?FILTER%5BCRM_ACTIVITY_ID%5D=${encodeURIComponent(id)}`]));
@@ -300,7 +364,7 @@ async function lookupStep(job: StoredSyncJob) {
 }
 
 async function analyticsStep(job: StoredSyncJob) {
-  const dealResult = await getD1().prepare("SELECT deal_id, payload FROM raw_deals WHERE synced_at = ? ORDER BY created_at DESC LIMIT 100 OFFSET ?").bind(job.runId, job.cursor).all<{ deal_id: string; payload: string }>();
+  const dealResult = await getD1().prepare(`SELECT deal_id, payload FROM raw_deals WHERE synced_at = ? ORDER BY created_at DESC LIMIT ${analyticsDealBatchSize} OFFSET ?`).bind(job.runId, job.cursor).all<{ deal_id: string; payload: string }>();
   const rawDeals = dealResult.results ?? [];
   if (!rawDeals.length) {
     const completedAt = new Date().toISOString();
@@ -315,13 +379,13 @@ async function analyticsStep(job: StoredSyncJob) {
   const activityResult = await getD1().prepare(`SELECT payload, activity_id FROM raw_activities WHERE deal_id IN (${placeholders})`).bind(...ids).all<{ payload: string; activity_id: string }>();
   const historyResult = await getD1().prepare(`SELECT payload FROM raw_stage_history WHERE deal_id IN (${placeholders})`).bind(...ids).all<{ payload: string }>();
   const activities = parseRows<RawActivity>(activityResult.results ?? []);
-  const activityIds = [...new Set((activityResult.results ?? []).map((row) => row.activity_id).filter(Boolean))];
-  let callStats: RawCallStat[] = [];
-  if (activityIds.length) {
-    const activityPlaceholders = activityIds.map(() => "?").join(", ");
-    const callResult = await getD1().prepare(`SELECT payload FROM raw_call_stats WHERE activity_id IN (${activityPlaceholders})`).bind(...activityIds).all<{ payload: string }>();
-    callStats = parseRows<RawCallStat>(callResult.results ?? []);
-  }
+  const callResult = await getD1().prepare(`
+    SELECT stats.payload
+    FROM raw_call_stats AS stats
+    INNER JOIN raw_activities AS activities ON activities.activity_id = stats.activity_id
+    WHERE activities.deal_id IN (${placeholders})
+  `).bind(...ids).all<{ payload: string }>();
+  const callStats = parseRows<RawCallStat>(callResult.results ?? []);
   const userRows = await getDictionary<Record<string, unknown>[]>("users", []);
   const statusRows = await getDictionary<Record<string, unknown>[]>("statuses", []);
   const users = new Map(userRows.map((row) => [value(row, "ID"), [value(row, "NAME"), value(row, "LAST_NAME")].filter(Boolean).join(" ") || `Menejer #${value(row, "ID")}`]));
