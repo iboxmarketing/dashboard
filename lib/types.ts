@@ -29,6 +29,12 @@ export type PipelineOption = {
   name: string;
 };
 
+export type PipelineStageOption = PipelineOption & {
+  categoryId: string;
+  sort: number;
+  semantics: string;
+};
+
 export type CrmFieldOption = {
   key: string;
   title: string;

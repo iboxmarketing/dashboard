@@ -151,10 +151,16 @@ export function buildAnalyticsRecords(input: {
     const stageTimeline = buildStageTimeline({ histories, currentCategoryId, currentStageId, currentStageEnteredAt: stageEntered, createdAt: created, terminalAt, pipelines: input.pipelines, stages: input.stages });
     const qualifiedIds = new Set(input.settings.qualifiedStageIds);
     const qualifiedEvent = stageTimeline.find((entry) => mainIds.has(entry.categoryId) && (qualifiedIds.has(entry.stageId) || isQualificationStage(entry.stage)));
-    const qualified = Boolean(qualifiedEvent || baseSalesStatus === "LOST" || baseSalesStatus === "WON");
-    const salesStatus = baseSalesStatus === "LOW_QUALITY" && qualified ? "LOST" : baseSalesStatus;
+    const salesStatus = baseSalesStatus;
+    // Not Relevant is always a marketing-quality rejection. A previous SQL-stage visit must
+    // not silently reclassify it as a salesperson loss. Won and genuine closed-loss deals
+    // are quality accepted even if incomplete history prevented us from seeing Обработка.
+    const qualified = salesStatus === "LOW_QUALITY"
+      ? false
+      : Boolean(qualifiedEvent || salesStatus === "LOST" || salesStatus === "WON");
     const qualifiedFallback = qualified ? stageTimeline.filter((entry) => mainIds.has(entry.categoryId))[1] ?? stageTimeline.find((entry) => mainIds.has(entry.categoryId)) : null;
-    const qualifiedAt = qualifiedEvent?.enteredAt ?? qualifiedFallback?.enteredAt ?? null;
+    const effectiveQualifiedEvent = qualified ? (qualifiedEvent ?? qualifiedFallback) : null;
+    const qualifiedAt = effectiveQualifiedEvent?.enteredAt ?? null;
 
     const assignedManagerId = string(deal.ASSIGNED_BY_ID);
     const calls = (activitiesByDeal.get(dealId) ?? []).filter((row) => isOutgoingCall(row, input.providerRules)).filter((row) => { const at = timestamp(row.START_TIME ?? row.CREATED); return at && at >= created; }).sort((a, b) => timestamp(a.START_TIME ?? a.CREATED)!.getTime() - timestamp(b.START_TIME ?? b.CREATED)!.getTime());
@@ -196,7 +202,7 @@ export function buildAnalyticsRecords(input: {
       assignedManagerId, assignedManager: managerName(assignedManagerId, input.users), categoryId: currentCategoryId, pipeline: input.pipelines.get(currentCategoryId) ?? `Pipeline #${currentCategoryId}`,
       originCategoryId, originPipeline: input.pipelines.get(originCategoryId) ?? `Pipeline #${originCategoryId}`, operationalPipeline: mainIds.has(currentCategoryId),
       stageId: currentStageId, stage: currentStage, stageEnteredAt: stageEntered.toISOString(), stageAgeHours, stageLimitHours, stageOverdue: salesStatus === "ACTIVE" && stageAgeHours > stageLimitHours,
-      sourceId, source, salesStatus, qualified, qualifiedAt, qualifiedStageId: qualifiedEvent?.stageId ?? qualifiedFallback?.stageId ?? null, qualifiedStage: qualifiedEvent?.stage ?? qualifiedFallback?.stage ?? null,
+      sourceId, source, salesStatus, qualified, qualifiedAt, qualifiedStageId: effectiveQualifiedEvent?.stageId ?? null, qualifiedStage: effectiveQualifiedEvent?.stage ?? null,
       wonAt: effectiveWonAt, salesCycleHours, opportunity: Number.isFinite(opportunity) ? opportunity : 0, currencyId: string(deal.CURRENCY_ID), lossReason: effectiveLossReason, lossReasonGroup,
       contactId: contactId || null, companyId: companyId || null, customerKey: contactId ? `contact:${contactId}` : companyId ? `company:${companyId}` : null, duplicateOfDealId: null, stageTimeline,
       salesManagerId: salesManagerId || null, salesManager: salesManager || null, salesManagerAttribution,

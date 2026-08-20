@@ -77,7 +77,7 @@ test("unanswered outgoing call still stops SLA", () => {
   assert.equal(row.firstCallOutcome, "Ko‘tarmadi");
 });
 
-test("Obrabotka bosqichiga kirgan Deal keyin Not Relevant bo‘lsa ham SQL va sales loss bo‘lib qoladi", () => {
+test("Not Relevant oldin Obrabotka bo‘lgan bo‘lsa ham marketing sifatsizligi bo‘lib qoladi", () => {
   const settings = { ...defaultSettings, selectedPipelineIds: ["0"] };
   const row = buildAnalyticsRecords({
     deals: [{ ID: "77", TITLE: "Historical SQL", DATE_CREATE: "2026-08-17T09:00:00+05:00", DATE_MODIFY: "2026-08-18T09:00:00+05:00", ASSIGNED_BY_ID: "7", CATEGORY_ID: "0", STAGE_ID: "NOT_RELEVANT" }],
@@ -91,8 +91,9 @@ test("Obrabotka bosqichiga kirgan Deal keyin Not Relevant bo‘lsa ham SQL va sa
     stages: new Map([["NEW", "Yangi"], ["IN_PROCESS", "Обработка"], ["NOT_RELEVANT", "Not Relevant"]]), sources: new Map(),
     domain: null, activitiesAvailable: true, stageHistoryAvailable: true,
   })[0];
-  assert.equal(row.qualified, true);
-  assert.equal(row.qualifiedStage, "Обработка");
-  assert.equal(row.salesStatus, "LOST");
+  assert.equal(row.qualified, false);
+  assert.equal(row.qualifiedStage, null);
+  assert.equal(row.salesStatus, "LOW_QUALITY");
+  assert.equal(row.lossReasonGroup, "MARKETING");
   assert.equal(row.stageTimeline.length, 3);
 });

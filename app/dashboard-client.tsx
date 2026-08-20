@@ -7,7 +7,7 @@ import {
   SlidersHorizontal, TimerReset, Users, X, XCircle, CircleDollarSign, ClipboardList, Layers3,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AnalyticsRecord, CrmFieldOption, DashboardSettings, PipelineOption, ProviderDiagnostic, SyncProgressState } from "@/lib/types";
+import type { AnalyticsRecord, CrmFieldOption, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, SyncProgressState } from "@/lib/types";
 
 type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "calls" | "diagnostics" | "settings";
 type SyncState = SyncProgressState;
@@ -345,7 +345,7 @@ function DashboardView({ records, salesRecords, previousRecords, previousSalesRe
   const afterSegment = segment(afterHours);
   return <>
     <section className="kpi-grid sales-kpis">
-      <KpiCard label="Yangi lead" value={String(records.length)} detail={<><MetricDelta current={records.length} previous={previousRecords.length} /> · yaratilgan sana</>} icon={Database} />
+      <KpiCard label="Yangi lead" value={String(records.length)} detail={<><MetricDelta current={records.length} previous={previousRecords.length} /> · Sales + post-sale, Deal ID unique</>} icon={Database} />
       <KpiCard label="Qabul qilingan SQL" value={String(qualified.length)} detail={`${pct(qualified.length, records.length)}% sifatli lead`} icon={Check} tone="green" />
       <KpiCard label="Marketing sifatsiz" value={String(lowQuality.length)} detail="Not Relevant · routing kirmaydi" icon={AlertTriangle} tone="amber" />
       <KpiCard label="Routing" value={String(routing.length)} detail="IDOKO / SD / boshqa yo‘naltirish" icon={RefreshCw} tone="slate" />
@@ -578,16 +578,28 @@ function SettingsView({ settings, syncing, onSave, onFullSync }: { settings: Das
   const [draft, setDraft] = useState(settings); const [holiday, setHoliday] = useState("");
   const [saving, setSaving] = useState(false); const [saved, setSaved] = useState(false);
   const [pipelines, setPipelines] = useState<PipelineOption[]>([]); const [pipelineError, setPipelineError] = useState<string | null>(null);
-  const [fields, setFields] = useState<CrmFieldOption[]>([]); const [stages, setStages] = useState<PipelineOption[]>([]);
+  const [fields, setFields] = useState<CrmFieldOption[]>([]); const [stages, setStages] = useState<PipelineStageOption[]>([]);
   const [customFieldCount, setCustomFieldCount] = useState(0);
+  const [detectedFailureReasonField, setDetectedFailureReasonField] = useState<string | null>(null);
   const days = [[1, "Dushanba"], [2, "Seshanba"], [3, "Chorshanba"], [4, "Payshanba"], [5, "Juma"], [6, "Shanba"], [0, "Yakshanba"]] as const;
   useEffect(() => {
     void fetch("/api/pipelines", { cache: "no-store" }).then(async (response) => {
-      const payload = await response.json() as { pipelines?: PipelineOption[]; selectedIds?: string[]; reportingIds?: string[]; fields?: CrmFieldOption[]; customFieldCount?: number; stages?: PipelineOption[]; error?: string };
+      const payload = await response.json() as { pipelines?: PipelineOption[]; selectedIds?: string[]; reportingIds?: string[]; fields?: CrmFieldOption[]; customFieldCount?: number; detectedFailureReasonField?: string | null; stages?: PipelineStageOption[]; error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Pipeline’lar yuklanmadi");
       const options = payload.pipelines ?? [];
       setPipelines(options);
-      setFields(payload.fields ?? []); setCustomFieldCount(payload.customFieldCount ?? 0); setStages(payload.stages ?? []);
+      const loadedFields = payload.fields ?? []; const loadedStages = payload.stages ?? [];
+      setFields(loadedFields); setCustomFieldCount(payload.customFieldCount ?? 0); setStages(loadedStages);
+      setDetectedFailureReasonField(payload.detectedFailureReasonField ?? null);
+      setDraft((current) => {
+        const visibleStageIds = new Set(loadedStages.map((stage) => stage.id));
+        const keptQualified = current.qualifiedStageIds.filter((id) => visibleStageIds.has(id));
+        const detectedSql = loadedStages.filter((stage) => /^(обработка|obrabotka|processing|sql)$/i.test(stage.name.trim())).map((stage) => stage.id);
+        const knownField = current.failureReasonField && loadedFields.some((field) => field.key === current.failureReasonField)
+          ? current.failureReasonField
+          : payload.detectedFailureReasonField ?? null;
+        return { ...current, qualifiedStageIds: keptQualified.length ? keptQualified : detectedSql, failureReasonField: knownField };
+      });
       if (!settings.selectedPipelineIds.length && payload.selectedIds?.length) {
         const selected = options.filter((item) => payload.selectedIds?.includes(item.id));
         setDraft((current) => ({ ...current, selectedPipelineIds: selected.map((item) => item.id), selectedPipelineNames: selected.map((item) => item.name) }));
@@ -598,43 +610,49 @@ function SettingsView({ settings, syncing, onSave, onFullSync }: { settings: Das
       }
     }).catch((caught) => setPipelineError(caught instanceof Error ? caught.message : "Pipeline’lar yuklanmadi"));
   }, [settings.selectedPipelineIds.length, settings.postSalePipelineIds.length]);
+  const normalizeName = (name: string) => name.toLocaleLowerCase().replace(/[^a-zа-яё0-9]+/gi, " ").trim();
+  const brandOf = (name: string) => normalizeName(name).includes("ibox") ? "ibox" : /(^| )sd( |$)/.test(normalizeName(name)) ? "sd" : null;
+  const salesPipelines = pipelines.filter((pipeline) => {
+    const name = normalizeName(pipeline.name);
+    return draft.selectedPipelineIds.includes(pipeline.id) || (Boolean(brandOf(pipeline.name)) && /(^| )sales( |$)/.test(name) && !/(обуч|сопров|obuch|training|support)/.test(name));
+  });
+  const postSaleCandidates = pipelines.filter((pipeline) => /(обуч|сопров|obuch|training|support|onboard)/.test(normalizeName(pipeline.name)));
+  const pairFor = (pipeline: PipelineOption) => postSaleCandidates.find((candidate) => brandOf(candidate.name) === brandOf(pipeline.name)) ?? null;
   function togglePipeline(pipeline: PipelineOption, checked: boolean) {
     const selected = checked
       ? [...pipelines.filter((item) => draft.selectedPipelineIds.includes(item.id)), pipeline]
       : pipelines.filter((item) => draft.selectedPipelineIds.includes(item.id) && item.id !== pipeline.id);
     const unique = [...new Map(selected.map((item) => [item.id, item])).values()].slice(0, 2);
-    setDraft({ ...draft, selectedPipelineIds: unique.map((item) => item.id), selectedPipelineNames: unique.map((item) => item.name) });
-  }
-  function toggleReporting(pipeline: PipelineOption, checked: boolean) {
-    const selected = checked ? [...pipelines.filter((item) => draft.postSalePipelineIds.includes(item.id)), pipeline] : pipelines.filter((item) => draft.postSalePipelineIds.includes(item.id) && item.id !== pipeline.id);
-    const unique = [...new Map(selected.map((item) => [item.id, item])).values()].slice(0, 2);
-    setDraft({ ...draft, postSalePipelineIds: unique.map((item) => item.id), postSalePipelineNames: unique.map((item) => item.name) });
+    const paired = unique.flatMap((item) => { const match = pairFor(item); return match ? [match] : []; });
+    setDraft({
+      ...draft,
+      selectedPipelineIds: unique.map((item) => item.id), selectedPipelineNames: unique.map((item) => item.name),
+      postSalePipelineIds: paired.map((item) => item.id), postSalePipelineNames: paired.map((item) => item.name),
+    });
   }
   async function save() { setSaving(true); setSaved(false); await onSave(draft); setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 2500); }
   async function fullSync(pipelineId: string) { setSaving(true); setSaved(false); try { await onFullSync(draft, pipelineId); } finally { setSaving(false); } }
   const fieldOptions = fields.map((field) => <option key={field.key} value={field.key}>{field.title}{field.sampleValue ? ` · namuna: ${field.sampleValue}` : ""}</option>);
-  const validConfig = draft.selectedPipelineIds.length === 2 && draft.postSalePipelineIds.length === 2;
+  const failureField = fields.find((field) => field.key === draft.failureReasonField);
+  const pairedProjectCount = draft.selectedPipelineIds.filter((id) => { const main = pipelines.find((item) => item.id === id); return main && draft.postSalePipelineNames.some((name) => brandOf(name) === brandOf(main.name)); }).length;
+  const validConfig = draft.selectedPipelineIds.length >= 1 && pairedProjectCount === draft.selectedPipelineIds.length;
   return <><div className="page-title"><div><p className="eyebrow">ADMIN</p><h1>Sozlamalar</h1><p>Sales pipeline, CRM field’lari va hisoblash qoidalari.</p></div><div className="settings-actions"><button className="button primary" onClick={save} disabled={saving || !validConfig}>{saving ? <Loader2 size={17} className="spin" /> : saved ? <Check size={17} /> : <Settings size={17} />}{saved ? "Saqlandi" : "Sozlamalarni saqlash"}</button></div></div>
-    <section className="panel pipeline-settings"><SectionHeader title="Sales pipeline’lar" subtitle="Aynan 2 ta funnel tanlanadi. Qolganlari, jumladan call center pipeline’lari sync qilinmaydi." />
+    <section className="panel pipeline-settings"><SectionHeader title="Sotuv loyihasi" subtitle="Bitta loyiha — Sales + unga bog‘langan Обучение / Сопровождение. Hozir faqat IBOX’ni tanlash yetarli." />
       {pipelineError && <div className="notice error"><XCircle size={17} />{pipelineError}</div>}
-      <div className="pipeline-options">{pipelines.map((pipeline) => { const checked = draft.selectedPipelineIds.includes(pipeline.id); return <label key={pipeline.id} className={checked ? "selected" : ""}><input type="checkbox" checked={checked} disabled={!checked && draft.selectedPipelineIds.length >= 2} onChange={(event) => togglePipeline(pipeline, event.target.checked)} /><span><Check size={15} /></span><div><strong>{pipeline.name}</strong><small>ID: {pipeline.id}</small></div></label>; })}{!pipelines.length && !pipelineError && <small>Bitrix’dan pipeline’lar yuklanmoqda…</small>}</div>
-      <div className={`pipeline-selection-note ${draft.selectedPipelineIds.length === 2 ? "ok" : "warning"}`}>{draft.selectedPipelineIds.length === 2 ? `Tanlangan: ${draft.selectedPipelineNames.join(" + ")}` : "Davom etish uchun aynan 2 ta sales pipeline tanlang."}</div>
+      <div className="pipeline-options project-options">{salesPipelines.map((pipeline) => { const checked = draft.selectedPipelineIds.includes(pipeline.id); const paired = pairFor(pipeline); return <label key={pipeline.id} className={checked ? "selected" : ""}><input type="checkbox" checked={checked} disabled={!checked && draft.selectedPipelineIds.length >= 2} onChange={(event) => togglePipeline(pipeline, event.target.checked)} /><span><Check size={15} /></span><div><strong>{pipeline.name}</strong><small>{paired ? `+ ${paired.name}` : "Mos post-sale funnel topilmadi"}</small><small>Sales ID: {pipeline.id}{paired ? ` · Post-sale ID: ${paired.id}` : ""}</small></div></label>; })}{!pipelines.length && !pipelineError && <small>Bitrix’dan pipeline’lar yuklanmoqda…</small>}</div>
+      <div className={`pipeline-selection-note ${validConfig ? "ok" : "warning"}`}>{validConfig ? `Faol loyiha: ${draft.selectedPipelineNames.join(" + ")}. Deal ID bo‘yicha unique hisoblanadi.` : "Kamida bitta Sales loyiha va uning post-sale funnel’i topilishi kerak."}</div>
     </section>
-    <section className="panel pipeline-settings"><SectionHeader title="Sotuvni tasdiqlovchi post-sale funnel’lar" subtitle="Faqat sotuvni topish uchun: IBOX va SD Обучение / Сопровождение. Call center hisobga olinmaydi." />
-      <div className="pipeline-options">{pipelines.map((pipeline) => { const checked = draft.postSalePipelineIds.includes(pipeline.id); return <label key={pipeline.id} className={checked ? "selected" : ""}><input type="checkbox" checked={checked} disabled={!checked && draft.postSalePipelineIds.length >= 2} onChange={(event) => toggleReporting(pipeline, event.target.checked)} /><span><Check size={15} /></span><div><strong>{pipeline.name}</strong><small>ID: {pipeline.id}</small></div></label>; })}</div>
-      <div className={`pipeline-selection-note ${draft.postSalePipelineIds.length === 2 ? "ok" : "warning"}`}>{draft.postSalePipelineIds.length === 2 ? `Tanlangan: ${draft.postSalePipelineNames.join(" + ")}` : "Sotuvni to‘liq sanash uchun 2 ta post-sale funnel tanlang."}</div>
-    </section>
-    <section className="panel"><SectionHeader title="Funnel bo‘yicha alohida sinxronizatsiya" subtitle="Bir tugma faqat shu Sales funnel va unga mos Обучение / Сопровождение funnel’ini oladi. Ikkinchi funnel ma’lumotlari saqlanib qoladi." /><div className="scoped-sync-grid">{draft.selectedPipelineIds.map((id, index) => { const name = draft.selectedPipelineNames[index] ?? `Sales funnel #${id}`; const brand = name.toLowerCase().includes("sd") ? "sd" : "ibox"; const postSale = draft.postSalePipelineNames.find((item) => item.toLowerCase().includes(brand)) ?? "mos post-sale funnel"; return <article key={id}><div><span>{brand.toUpperCase()}</span><div><strong>{name}</strong><small>+ {postSale}</small></div></div><p>Faqat oxirgi {draft.historyDays} kun. Boshqa funnel o‘chirilmaydi.</p><button className="button secondary" disabled={saving || syncing || !validConfig} onClick={() => void fullSync(id)}>{saving || syncing ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}{name} full sync</button></article>; })}</div></section>
+    <section className="panel"><SectionHeader title="Loyiha bo‘yicha alohida sinxronizatsiya" subtitle="Bir tugma Sales va unga bog‘langan Обучение / Сопровождение funnel’ini birga oladi." /><div className="scoped-sync-grid">{draft.selectedPipelineIds.map((id, index) => { const name = draft.selectedPipelineNames[index] ?? `Sales funnel #${id}`; const brand = brandOf(name) ?? "sales"; const postSale = draft.postSalePipelineNames.find((item) => brandOf(item) === brand) ?? "mos post-sale funnel"; return <article key={id}><div><span>{brand.toUpperCase()}</span><div><strong>{name}</strong><small>+ {postSale}</small></div></div><p>Oxirgi {draft.historyDays} kun. Sales va post-sale kartochkalari Deal ID bo‘yicha bitta lead hisoblanadi.</p><button className="button secondary" disabled={saving || syncing || !validConfig} onClick={() => void fullSync(id)}>{saving || syncing ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}{name} full sync</button></article>; })}</div></section>
     <section className="panel"><SectionHeader title="Bitrix custom field’lari" subtitle="Ro‘yxatdan qidiring yoki Bitrix’dagi UF_CRM_... kodini qo‘lda kiriting." />
       <div className={`field-discovery ${customFieldCount ? "ok" : "warning"}`}>{customFieldCount ? `${customFieldCount} ta custom field topildi. Input ichida nom yoki kod bo‘yicha qidiring.` : "Webhook custom field nomlarini bermadi. UF_CRM_... kodini qo‘lda kiritish mumkin."}</div>
       <datalist id="crm-field-options">{fieldOptions}</datalist><div className="config-fields">
-      <label>Причина провала<input list="crm-field-options" value={draft.failureReasonField ?? ""} placeholder="UF_CRM_..." onChange={(event) => setDraft({ ...draft, failureReasonField: event.target.value.trim() || null })} /><small>Not Relevant va Sales loss sabablarini olish uchun</small></label>
+      <label>Причина провала<select value={draft.failureReasonField ?? ""} onChange={(event) => setDraft({ ...draft, failureReasonField: event.target.value || null })}><option value="">Tanlanmagan</option>{fieldOptions}</select><small>{failureField ? `Topildi: ${failureField.title} · ${failureField.key}${failureField.options.length ? ` · ${failureField.options.length} ta sabab` : ""}` : detectedFailureReasonField ? `Avtomatik topildi: ${detectedFailureReasonField}` : "Bitrix field nomi va kodi bo‘yicha qidirildi"}</small></label>
       <label>Marketing kanal<input list="crm-field-options" value={draft.marketingChannelField ?? ""} placeholder="Bo‘sh bo‘lsa standart SOURCE_ID" onChange={(event) => setDraft({ ...draft, marketingChannelField: event.target.value.trim() || null })} /><small>Custom marketing kanal field kodi</small></label>
       <label>Sales manager field<input list="crm-field-options" value={draft.salesManagerField ?? ""} placeholder="Bo‘sh bo‘lsa avtomatik attribution" onChange={(event) => setDraft({ ...draft, salesManagerField: event.target.value.trim() || null })} /><small>Sotuvchi yozilgan employee field bo‘lsa</small></label>
     </div></section>
-    <section className="panel"><SectionHeader title="SQL qabul qilingan bosqich" subtitle="Deal bu stage’ga bir marta kirsa, keyin boshqa stage yoki funnel’ga o‘tsa ham SQL bo‘lib qoladi." /><div className="sql-stage-options">{stages.map((stage) => { const checked = draft.qualifiedStageIds.includes(stage.id); return <label key={stage.id} className={checked ? "selected" : ""}><input type="checkbox" checked={checked} onChange={(event) => setDraft({ ...draft, qualifiedStageIds: event.target.checked ? [...new Set([...draft.qualifiedStageIds, stage.id])] : draft.qualifiedStageIds.filter((id) => id !== stage.id) })} /><span><Check size={13} /></span><strong>{stage.name}</strong></label>; })}</div><div className="field-discovery ok">Hech narsa tanlanmasa “Обработка / Processing / SQL” nomli stage’lar avtomatik aniqlanadi.</div></section>
+    <section className="panel"><SectionHeader title="SQL qabul qilingan bosqich" subtitle={`${draft.selectedPipelineNames.join(" + ") || "Tanlangan Sales funnel"} stage’lari. Not Relevant keyinroq tanlansa ham marketing sifatsizligi bo‘lib qoladi.`} /><div className="sql-stage-options">{stages.map((stage) => { const checked = draft.qualifiedStageIds.includes(stage.id); return <label key={`${stage.categoryId}:${stage.id}`} className={checked ? "selected" : ""}><input type="checkbox" checked={checked} onChange={(event) => setDraft({ ...draft, qualifiedStageIds: event.target.checked ? [...new Set([...draft.qualifiedStageIds, stage.id])] : draft.qualifiedStageIds.filter((id) => id !== stage.id) })} /><span><Check size={13} /></span><strong>{stage.name}</strong></label>; })}</div><div className="field-discovery ok">Faqat tanlangan Sales funnel stage’lari ko‘rsatiladi. “Обработка” avtomatik tanlanadi.</div></section>
     <section className="settings-grid"><article className="panel"><SectionHeader title="Routing sabablari" subtitle="Bu so‘zlar topilsa lead marketing sifatsizligiga qo‘shilmaydi." /><label className="wide-field">Kalit so‘zlar<textarea value={draft.routingReasonPatterns.join(", ")} onChange={(event) => setDraft({ ...draft, routingReasonPatterns: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} rows={3} /></label></article><article className="panel"><SectionHeader title="Avtomatik yangilash" subtitle="Dashboard ochiq bo‘lganda incremental sync avtomatik boshlanadi; uzilgan sync keyingi ochilishda davom etadi." /><label className="field-label">Interval<select value={draft.autoSyncMinutes} onChange={(event) => setDraft({ ...draft, autoSyncMinutes: Number(event.target.value) })}><option value="0">O‘chirilgan</option><option value="10">10 minut</option><option value="15">15 minut</option><option value="30">30 minut</option><option value="60">60 minut</option></select></label></article></section>
-    <section className="panel"><SectionHeader title="Har bir stage uchun limit" subtitle="Aktiv Deal shu stage’da limitdan ko‘p tursa Stage nazoratida qizil ko‘rinadi." /><div className="stage-limits"><label className="field-label">Default limit<input type="number" min="1" max="720" value={draft.defaultStageLimitHours} onChange={(event) => setDraft({ ...draft, defaultStageLimitHours: Number(event.target.value) })} /><span>soat</span></label>{stages.map((stage) => <label key={stage.id}><span>{stage.name}</span><input type="number" min="1" max="720" value={draft.stageLimits[stage.id] ?? draft.defaultStageLimitHours} onChange={(event) => setDraft({ ...draft, stageLimits: { ...draft.stageLimits, [stage.id]: Number(event.target.value) } })} /><small>soat</small></label>)}</div></section>
+    <section className="panel"><SectionHeader title="Har bir stage uchun limit" subtitle="Faqat tanlangan Sales funnel stage’lari. Aktiv Deal limitdan oshsa Stage nazoratida qizil ko‘rinadi." /><div className="stage-limits"><label className="field-label">Default limit<input type="number" min="1" max="720" value={draft.defaultStageLimitHours} onChange={(event) => setDraft({ ...draft, defaultStageLimitHours: Number(event.target.value) })} /><span>soat</span></label>{stages.map((stage) => <label key={`${stage.categoryId}:${stage.id}`}><span>{stage.name}</span><input type="number" min="1" max="720" value={draft.stageLimits[stage.id] ?? draft.defaultStageLimitHours} onChange={(event) => setDraft({ ...draft, stageLimits: { ...draft.stageLimits, [stage.id]: Number(event.target.value) } })} /><small>soat</small></label>)}</div></section>
     <section className="settings-grid"><article className="panel"><SectionHeader title="Ish vaqti" subtitle={`Timezone: ${draft.timezone}`} /><div className="schedule-list">{days.map(([key, label]) => { const day = draft.schedule[key]; return <div key={key} className={!day.enabled ? "disabled" : ""}><label className="check-label"><input type="checkbox" checked={day.enabled} onChange={(event) => setDraft({ ...draft, schedule: { ...draft.schedule, [key]: { ...day, enabled: event.target.checked } } })} /><span><Check size={13} /></span><strong>{label}</strong></label><input type="time" value={day.start} disabled={!day.enabled} onChange={(event) => setDraft({ ...draft, schedule: { ...draft.schedule, [key]: { ...day, start: event.target.value } } })} /><span>—</span><input type="time" value={day.end} disabled={!day.enabled} onChange={(event) => setDraft({ ...draft, schedule: { ...draft.schedule, [key]: { ...day, end: event.target.value } } })} /></div>; })}</div></article>
       <div className="settings-stack"><article className="panel"><SectionHeader title="SLA" subtitle="Obrabotka qilinmagan Deal alohida qoladi" /><label className="field-label">SLA target<input type="number" min="1" max="240" value={draft.slaMinutes} onChange={(event) => setDraft({ ...draft, slaMinutes: Number(event.target.value) })} /><span>business minutes</span></label></article><article className="panel"><SectionHeader title="History" subtitle="Har bir funnel full sync’i uchun alohida import oralig‘i" /><label className="field-label">Import range<select value={draft.historyDays} onChange={(event) => setDraft({ ...draft, historyDays: Number(event.target.value) })}><option value="7">7 kun</option><option value="14">14 kun</option><option value="30">30 kun</option><option value="90">90 kun</option><option value="180">180 kun</option><option value="365">365 kun</option></select></label></article></div>
     </section>
@@ -671,7 +689,10 @@ export default function DashboardClient() {
         const response = await fetch("/api/dashboard", { cache: "no-store" });
         const payload = await response.json() as { records: AnalyticsRecord[]; settings: DashboardSettings; sync: SyncState; providers: ProviderDiagnostic[]; error?: string };
         if (!response.ok) throw new Error(payload.error ?? "Dashboard ma’lumotlari yuklanmadi");
-        setRecords(markDuplicates((payload.records ?? []).map(hydrateRecord))); setSettings(payload.settings); setSync(payload.sync); setProviders(payload.providers ?? []);
+        const selectedOrigins = new Set(payload.settings.selectedPipelineIds.map(String));
+        const selectedProjectCategories = new Set([...payload.settings.selectedPipelineIds, ...payload.settings.postSalePipelineIds].map(String));
+        const projectRecords = (payload.records ?? []).map(hydrateRecord).filter((row) => !selectedOrigins.size || selectedOrigins.has(String(row.originCategoryId)) || selectedProjectCategories.has(String(row.categoryId)));
+        setRecords(markDuplicates(projectRecords)); setSettings(payload.settings); setSync(payload.sync); setProviders(payload.providers ?? []);
       }
     } catch (caught) { setLoadError(caught instanceof Error ? caught.message : "Dashboard yuklanmadi"); }
     finally { setLoading(false); }
@@ -798,7 +819,7 @@ export default function DashboardClient() {
         {hasLegacyData && sync.status !== "running" && <div className="notice warning page-notice"><AlertTriangle size={18} /><span>Eski sync ma’lumotlari bor. Yangi sales analytics to‘liq ishlashi uchun Sozlamalarda CRM field’larini tekshirib, <strong>“To‘liq qayta sync”</strong>ni bosing.</span><button onClick={() => setView("settings")}>Sozlamalar</button></div>}
         {["running", "paused", "error"].includes(sync.status) && <SyncProgress sync={sync} busy={refreshing} onPause={() => void pauseCurrentSync()} onResume={() => void syncLoop("resume")} />}
         {view !== "settings" && view !== "diagnostics" && <FiltersBar filters={filters} setFilters={setFilters} records={records} />}
-        {view === "dashboard" && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Lead sifati, sotuv, menejer va processing muammolarini bitta joyda kuzating.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{cohortFiltered.length} yangi lead</strong></div></div><DashboardView records={cohortFiltered} salesRecords={wonFiltered} previousRecords={previousCohortFiltered} previousSalesRecords={previousWonFiltered} onManager={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /><TrendChart records={cohortFiltered} /></>}
+        {view === "dashboard" && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{cohortFiltered.length} unique lead</strong></div></div><DashboardView records={cohortFiltered} salesRecords={wonFiltered} previousRecords={previousCohortFiltered} previousSalesRecords={previousWonFiltered} onManager={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /><TrendChart records={cohortFiltered} /></>}
         {view === "managers" && <><div className="page-title"><div><p className="eyebrow">TEAM PERFORMANCE</p><h1>Menejerlar</h1><p>Lead, sifatsizlik, sales loss, sotuv soni va Opportunity kesimida.</p></div></div><section className="panel"><SectionHeader title="Menejerlar reytingi" subtitle="Lead va cohort konversiya — yaratilgan sana; davr sotuv — Oplata sanasi bo‘yicha" /><ManagerTable rows={buildManagers(cohortFiltered, wonFiltered)} onSelect={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /></section></>}
         {view === "managerDetail" && selectedManager && <ManagerDetailView manager={selectedManager} cohortRecords={cohortFiltered} salesRecords={wonFiltered} onBack={() => setView("managers")} />}
         {view === "leadFlow" && <LeadFlowView records={cohortFiltered} />}

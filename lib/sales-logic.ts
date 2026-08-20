@@ -26,6 +26,9 @@ export function classifyLossReasonGroup(input: {
   routingPatterns?: string[];
 }): LossReasonGroup {
   if (!input.reason && !["LOW_QUALITY", "LOST"].includes(input.status)) return "NONE";
+  // The business rule is stage-authoritative: every Not Relevant card is a
+  // marketing-quality rejection, regardless of the selected failure reason.
+  if (input.status === "LOW_QUALITY") return "MARKETING";
   const reason = normalized(input.reason);
   const patterns = input.routingPatterns ?? [];
   const isRouting = patterns.some((pattern) => {
@@ -35,7 +38,6 @@ export function classifyLossReasonGroup(input: {
     return reason.includes(value);
   });
   if (isRouting) return "ROUTING";
-  if (input.status === "LOW_QUALITY") return "MARKETING";
   if (input.status === "LOST") return "SALES";
   return "NONE";
 }

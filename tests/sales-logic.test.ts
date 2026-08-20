@@ -20,10 +20,11 @@ test("Причина провала enum qiymati nomga aylantiriladi", () => {
   assert.equal(fieldDisplayValue("7", new Map([["7", "Telefon noto‘g‘ri"]])), "Telefon noto‘g‘ri");
 });
 
-test("IDOKO va SD transfer marketing sifatsizligiga qo‘shilmaydi", () => {
-  assert.equal(classifyLossReasonGroup({ status: "LOW_QUALITY", reason: "IDOKO ga berildi", routingPatterns: ["idoko", "sd"] }), "ROUTING");
-  assert.equal(classifyLossReasonGroup({ status: "LOW_QUALITY", reason: "SD ga o‘tkazildi", routingPatterns: ["idoko", "sd"] }), "ROUTING");
+test("Not Relevant sababi qanday bo‘lishidan qat’i nazar marketing sifatsizligi", () => {
+  assert.equal(classifyLossReasonGroup({ status: "LOW_QUALITY", reason: "IDOKO ga berildi", routingPatterns: ["idoko", "sd"] }), "MARKETING");
+  assert.equal(classifyLossReasonGroup({ status: "LOW_QUALITY", reason: "SD ga o‘tkazildi", routingPatterns: ["idoko", "sd"] }), "MARKETING");
   assert.equal(classifyLossReasonGroup({ status: "LOW_QUALITY", reason: "Noto‘g‘ri raqam", routingPatterns: ["idoko", "sd"] }), "MARKETING");
+  assert.equal(classifyLossReasonGroup({ status: "LOST", reason: "SD ga o‘tkazildi", routingPatterns: ["idoko", "sd"] }), "ROUTING");
 });
 
 test("IBOX va SD post-sale funnel Cyrillic nom bilan topiladi", () => {
@@ -31,6 +32,6 @@ test("IBOX va SD post-sale funnel Cyrillic nom bilan topiladi", () => {
     { id: "1", name: "IBOX Sales" }, { id: "2", name: "SD Sales" },
     { id: "3", name: "IBOX Обучение Сопровождение" }, { id: "4", name: "SD Обучение / Сопровождение" },
     { id: "5", name: "Call Center" },
-  ], [], []);
+  ], [], ["IBOX Обучение Сопровождение", "SD Обучение Сопровождение"]);
   assert.deepEqual(rows.map((row) => row.id), ["3", "4"]);
 });

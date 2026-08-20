@@ -6,7 +6,7 @@ import {
   getSyncState, getSalesSnapshots, saveDictionary, saveProviderDiagnostics, saveSalesSnapshots, saveSettings, saveSyncJob,
   saveSyncState, upsertAnalyticsRecords, type StoredSyncJob,
 } from "./storage";
-import type { CrmFieldOption, PipelineOption } from "./types";
+import type { CrmFieldOption, PipelineOption, PipelineStageOption } from "./types";
 export { normalizePipelineName, resolvePipelineSelection } from "./pipelines";
 import { normalizePipelineName, pairPostSalePipeline, resolvePipelineSelection, resolvePostSalePipelines } from "./pipelines";
 
@@ -37,11 +37,50 @@ export async function listPipelines(): Promise<PipelineOption[]> {
   return rows.map((row) => ({ id: value(row, "ID"), name: value(row, "NAME") || `Pipeline #${value(row, "ID")}` })).filter((row) => row.id);
 }
 
+export async function listPipelineStages(categoryIds: string[]): Promise<PipelineStageOption[]> {
+  const uniqueIds = [...new Set(categoryIds.map(String).filter(Boolean))];
+  const groups = await Promise.all(uniqueIds.map(async (categoryId) => {
+    const entityId = categoryId === "0" ? "DEAL_STAGE" : `DEAL_STAGE_${categoryId}`;
+    const rows = await bitrixList<Record<string, unknown>>("crm.status.list", {
+      filter: { ENTITY_ID: entityId },
+      order: { SORT: "ASC" },
+    }, { maxPages: 20 });
+    return rows.flatMap((row) => {
+      const id = value(row, "STATUS_ID") || value(row, "ID");
+      if (!id) return [];
+      return [{
+        id,
+        name: value(row, "NAME") || id,
+        categoryId,
+        sort: Number(row.SORT ?? 0),
+        semantics: value(row, "SEMANTICS") || value(row, "SYSTEM_STATUS_ID"),
+      }];
+    });
+  }));
+  return [...new Map(groups.flat().map((stage) => [`${stage.categoryId}:${stage.id}`, stage])).values()]
+    .sort((a, b) => a.categoryId.localeCompare(b.categoryId) || a.sort - b.sort || a.name.localeCompare(b.name));
+}
+
 function localizedValue(raw: unknown) {
   if (raw === null || raw === undefined) return "";
   if (typeof raw !== "object") return String(raw);
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      const shown = localizedValue(item);
+      if (shown) return shown;
+    }
+    return "";
+  }
   const labels = raw as Record<string, unknown>;
-  return String(labels.ru ?? labels.uz ?? labels.en ?? Object.values(labels).find(Boolean) ?? "");
+  for (const key of ["ru", "uz", "en", "RU", "UZ", "EN", "VALUE", "value", "NAME", "name", "TITLE", "title"]) {
+    const shown = localizedValue(labels[key]);
+    if (shown) return shown;
+  }
+  for (const candidate of Object.values(labels)) {
+    const shown = localizedValue(candidate);
+    if (shown) return shown;
+  }
+  return "";
 }
 
 function crmFieldRows(result: unknown, discoverySource: CrmFieldOption["discoverySource"]): CrmFieldOption[] {
@@ -94,7 +133,11 @@ export async function listCrmFields(categoryIds: string[] = []): Promise<CrmFiel
 }
 
 function detectField(fields: CrmFieldOption[], pattern: RegExp, type?: RegExp) {
-  return fields.find((field) => pattern.test(normalizePipelineName(field.title)) && (!type || type.test(field.type)))?.key ?? null;
+  return fields.find((field) => pattern.test(normalizePipelineName(`${field.title} ${field.key}`)) && (!type || type.test(field.type)))?.key ?? null;
+}
+
+export function detectFailureReasonField(fields: CrmFieldOption[]) {
+  return detectField(fields, /причин.*(провал|отказ|закрыт)|prichin.*proval|failure.*reason|loss.*reason|rad.*sabab|sotilma.*sabab/);
 }
 
 function query(path: string, filter: Record<string, string>, select: string[] = [], order: Record<string, string> = {}) {
@@ -157,7 +200,12 @@ export async function startSync(options: { days?: number; full?: boolean; pipeli
   let settings = await getSettings();
   const pipelines = await listPipelines();
   const allSelected = resolvePipelineSelection(pipelines, settings.selectedPipelineIds, settings.selectedPipelineNames);
-  const allReporting = resolvePostSalePipelines(pipelines, settings.postSalePipelineIds, settings.postSalePipelineNames);
+  const configuredReporting = resolvePostSalePipelines(pipelines, settings.postSalePipelineIds, settings.postSalePipelineNames);
+  const autoReporting = resolvePostSalePipelines(pipelines, [], allSelected.map((item) => item.name));
+  const allReporting = [...new Map(allSelected.flatMap((main) => {
+    const paired = pairPostSalePipeline(main, configuredReporting) ?? pairPostSalePipeline(main, autoReporting);
+    return paired ? [[paired.id, paired] as const] : [];
+  })).values()];
   const scopedMain = allSelected.find((pipeline) => pipeline.id === String(options.pipelineId ?? "")) ?? allSelected[0];
   if (options.pipelineId && scopedMain.id !== String(options.pipelineId)) throw new Error("Tanlangan sales funnel sozlamalarda topilmadi");
   const scopedPostSale = pairPostSalePipeline(scopedMain, allReporting);
@@ -165,9 +213,12 @@ export async function startSync(options: { days?: number; full?: boolean; pipeli
   const selected = [scopedMain]; const reporting = [scopedPostSale];
   let crmFields: CrmFieldOption[] = [];
   try { crmFields = await listCrmFields(selected.map((item) => item.id)); } catch { /* Config remains editable by field code. */ }
+  const knownFieldKeys = new Set(crmFields.map((field) => field.key));
   settings = {
     ...settings,
-    failureReasonField: settings.failureReasonField ?? detectField(crmFields, /причин.*провал|prichin.*proval|failure.*reason/),
+    failureReasonField: settings.failureReasonField && knownFieldKeys.has(settings.failureReasonField)
+      ? settings.failureReasonField
+      : detectFailureReasonField(crmFields),
     marketingChannelField: settings.marketingChannelField ?? detectField(crmFields, /маркет.*канал|marketing.*kanal|marketing.*channel/),
     salesManagerField: settings.salesManagerField ?? detectField(crmFields, /менеджер.*продаж|sales.*manager|sotuv.*menejer/, /employee|user/),
   };

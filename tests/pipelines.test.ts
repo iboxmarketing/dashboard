@@ -17,8 +17,8 @@ test("call center pipeline tanlovga kirmaydi", () => {
   assert.deepEqual(resolvePipelineSelection(options, ["2", "3"], []).map((item) => item.name), ["IBOX Sales", "SD Sales"]);
 });
 
-test("ikki aniq sales pipeline topilmasa sync rad etiladi", () => {
-  assert.throws(() => resolvePipelineSelection(options.slice(0, 2), [], ["IBOX Sales", "SD Sales"]), /aniq topilmadi/);
+test("faqat IBOX tanlansa ham sync ishlaydi", () => {
+  assert.deepEqual(resolvePipelineSelection(options, ["2"], []).map((item) => item.name), ["IBOX Sales"]);
 });
 
 test("har bir sales funnel faqat o‘z post-sale funnel’i bilan juftlanadi", () => {
