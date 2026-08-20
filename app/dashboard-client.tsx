@@ -326,7 +326,7 @@ function TrendChart({ records }: { records: AnalyticsRecord[] }) {
 
 function CallsView({ records }: { records: AnalyticsRecord[] }) {
   const buckets = [["0–5 min", 0, 5], ["5–10 min", 6, 10], ["10–15 min", 11, 15], ["15–30 min", 16, 30], ["30–60 min", 31, 60], ["1–2 ish soati", 61, 120], ["2+ ish soati", 121, Infinity]] as const;
-  const bucketRows = buckets.map(([label, min, max]) => ({ label, value: records.filter((row) => row.processingBusinessMinutes !== null && row.processingBusinessMinutes >= min && row.processingBusinessMinutes <= max).length, total: records.length, color: "#246bfd" }));
+  const bucketRows: { label: string; value: number; total: number; color: string }[] = buckets.map(([label, min, max]) => ({ label, value: records.filter((row) => row.processingBusinessMinutes !== null && row.processingBusinessMinutes >= min && row.processingBusinessMinutes <= max).length, total: records.length, color: "#246bfd" }));
   bucketRows.push({ label: "Obrabotka yo‘q", value: records.filter((row) => row.processingBusinessMinutes === null).length, total: records.length, color: "#ef5962" });
   return <><div className="page-title"><div><p className="eyebrow">CALL ANALYTICS</p><h1>Qo‘ng‘iroqlar</h1><p>Birinchi urinish SLA’ni to‘xtatadi; javob natijasi alohida tahlil qilinadi.</p></div></div>
     <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Response time distribution" subtitle="Faqat business minutes" /><BarList rows={bucketRows} /></article><article className="panel"><SectionHeader title="Call outcome" /><BarList rows={Object.keys(outcomeColors).map((label) => ({ label, value: records.filter((row) => row.firstCallOutcome === label).length, total: records.filter((row) => row.outgoingCallCount > 0).length, color: outcomeColors[label] })).filter((row) => row.value > 0)} /></article></section>
@@ -420,7 +420,10 @@ export default function DashboardClient() {
     } catch (caught) { setLoadError(caught instanceof Error ? caught.message : "Dashboard yuklanmadi"); }
     finally { setLoading(false); }
   }, []);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void load(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
 
   const filtered = useMemo(() => {
     const bounds = rangeBounds(filters); const search = filters.search.trim().toLowerCase();
@@ -492,4 +495,3 @@ export default function DashboardClient() {
     </main>
   </div>;
 }
-

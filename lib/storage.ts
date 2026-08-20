@@ -44,7 +44,7 @@ export async function saveSettings(settings: DashboardSettings) {
 export async function getProviderRules() {
   await ensureSchema();
   const result = await getD1().prepare("SELECT provider_key, mode FROM provider_rules").all<{ provider_key: string; mode: string }>();
-  return Object.fromEntries((result.results ?? []).map((row) => [row.provider_key, row.mode]));
+  return Object.fromEntries(((result.results ?? []) as { provider_key: string; mode: string }[]).map((row) => [row.provider_key, row.mode]));
 }
 
 export async function saveProviderRule(providerKey: string, mode: "AUTO" | "USE" | "IGNORE") {
@@ -88,7 +88,7 @@ export async function replaceAnalyticsRecords(records: AnalyticsRecord[], fromIs
 export async function listAnalyticsRecords() {
   await ensureSchema();
   const result = await getD1().prepare("SELECT payload FROM analytics_records ORDER BY created_at DESC").all<{ payload: string }>();
-  return (result.results ?? []).flatMap((row) => {
+  return ((result.results ?? []) as { payload: string }[]).flatMap((row) => {
     try {
       return [JSON.parse(row.payload) as AnalyticsRecord];
     } catch {
@@ -117,7 +117,7 @@ export async function listProviderDiagnostics() {
   const result = await getD1()
     .prepare("SELECT provider_key, provider_id, provider_type_id, type_id, direction, count, sample_subject FROM provider_diagnostics ORDER BY count DESC")
     .all<Record<string, string | number>>();
-  return (result.results ?? []).map((row) => ({
+  return ((result.results ?? []) as Record<string, string | number>[]).map((row) => ({
     key: String(row.provider_key),
     providerId: String(row.provider_id),
     providerTypeId: String(row.provider_type_id),
@@ -165,4 +165,3 @@ export async function getSyncState() {
     safeError: row?.safe_error ?? null,
   };
 }
-
