@@ -1,0 +1,168 @@
+import { getD1 } from "@/db";
+import { defaultSettings } from "./business-time";
+import type { AnalyticsRecord, DashboardSettings, ProviderDiagnostic } from "./types";
+
+export async function ensureSchema() {
+  const db = getD1();
+  await db.batch([
+    db.prepare("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS analytics_records (deal_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, assigned_manager_id TEXT NOT NULL, category_id TEXT NOT NULL, stage_id TEXT NOT NULL, source_id TEXT NOT NULL, creation_period TEXT NOT NULL, processing_source TEXT NOT NULL, processing_minutes INTEGER, sla_status TEXT NOT NULL, call_outcome TEXT NOT NULL, stage_before_call INTEGER NOT NULL, payload TEXT NOT NULL, synced_at TEXT NOT NULL)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS analytics_created_idx ON analytics_records(created_at)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS analytics_manager_idx ON analytics_records(assigned_manager_id)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS provider_rules (provider_key TEXT PRIMARY KEY, mode TEXT NOT NULL, updated_at TEXT NOT NULL)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS provider_diagnostics (provider_key TEXT PRIMARY KEY, provider_id TEXT NOT NULL, provider_type_id TEXT NOT NULL, type_id TEXT NOT NULL, direction TEXT NOT NULL, count INTEGER NOT NULL, sample_subject TEXT NOT NULL, updated_at TEXT NOT NULL)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS sync_state (id TEXT PRIMARY KEY, status TEXT NOT NULL, last_sync_at TEXT, last_from TEXT, counts TEXT NOT NULL, permissions TEXT NOT NULL, safe_error TEXT, updated_at TEXT NOT NULL)"),
+  ]);
+}
+
+export async function getSettings(): Promise<DashboardSettings> {
+  await ensureSchema();
+  const row = await getD1().prepare("SELECT value FROM app_settings WHERE key = ?").bind("dashboard").first<{ value: string }>();
+  if (!row?.value) return defaultSettings;
+  try {
+    const parsed = JSON.parse(row.value) as Partial<DashboardSettings>;
+    return {
+      ...defaultSettings,
+      ...parsed,
+      schedule: { ...defaultSettings.schedule, ...(parsed.schedule ?? {}) },
+      holidays: Array.isArray(parsed.holidays) ? parsed.holidays : [],
+    };
+  } catch {
+    return defaultSettings;
+  }
+}
+
+export async function saveSettings(settings: DashboardSettings) {
+  await ensureSchema();
+  const now = new Date().toISOString();
+  await getD1()
+    .prepare("INSERT INTO app_settings(key, value, updated_at) VALUES(?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+    .bind("dashboard", JSON.stringify(settings), now)
+    .run();
+}
+
+export async function getProviderRules() {
+  await ensureSchema();
+  const result = await getD1().prepare("SELECT provider_key, mode FROM provider_rules").all<{ provider_key: string; mode: string }>();
+  return Object.fromEntries((result.results ?? []).map((row) => [row.provider_key, row.mode]));
+}
+
+export async function saveProviderRule(providerKey: string, mode: "AUTO" | "USE" | "IGNORE") {
+  await ensureSchema();
+  await getD1()
+    .prepare("INSERT INTO provider_rules(provider_key, mode, updated_at) VALUES(?, ?, ?) ON CONFLICT(provider_key) DO UPDATE SET mode = excluded.mode, updated_at = excluded.updated_at")
+    .bind(providerKey, mode, new Date().toISOString())
+    .run();
+}
+
+export async function replaceAnalyticsRecords(records: AnalyticsRecord[], fromIso: string) {
+  await ensureSchema();
+  const db = getD1();
+  const syncedAt = new Date().toISOString();
+  await db.prepare("DELETE FROM analytics_records WHERE created_at >= ?").bind(fromIso).run();
+  for (let index = 0; index < records.length; index += 40) {
+    const statements = records.slice(index, index + 40).map((record) =>
+      db
+        .prepare("INSERT OR REPLACE INTO analytics_records(deal_id, created_at, assigned_manager_id, category_id, stage_id, source_id, creation_period, processing_source, processing_minutes, sla_status, call_outcome, stage_before_call, payload, synced_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(
+          record.dealId,
+          record.createdAt,
+          record.assignedManagerId,
+          record.categoryId,
+          record.stageId,
+          record.sourceId,
+          record.creationPeriod,
+          record.processingSource,
+          record.processingBusinessMinutes,
+          record.slaStatus,
+          record.firstCallOutcome,
+          record.stageChangedBeforeCall ? 1 : 0,
+          JSON.stringify(record),
+          syncedAt,
+        ),
+    );
+    if (statements.length) await db.batch(statements);
+  }
+}
+
+export async function listAnalyticsRecords() {
+  await ensureSchema();
+  const result = await getD1().prepare("SELECT payload FROM analytics_records ORDER BY created_at DESC").all<{ payload: string }>();
+  return (result.results ?? []).flatMap((row) => {
+    try {
+      return [JSON.parse(row.payload) as AnalyticsRecord];
+    } catch {
+      return [];
+    }
+  });
+}
+
+export async function saveProviderDiagnostics(providers: ProviderDiagnostic[]) {
+  await ensureSchema();
+  const db = getD1();
+  const now = new Date().toISOString();
+  for (let index = 0; index < providers.length; index += 40) {
+    const statements = providers.slice(index, index + 40).map((provider) =>
+      db
+        .prepare("INSERT OR REPLACE INTO provider_diagnostics(provider_key, provider_id, provider_type_id, type_id, direction, count, sample_subject, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(provider.key, provider.providerId, provider.providerTypeId, provider.typeId, provider.direction, provider.count, provider.sampleSubject, now),
+    );
+    if (statements.length) await db.batch(statements);
+  }
+}
+
+export async function listProviderDiagnostics() {
+  await ensureSchema();
+  const rules = await getProviderRules();
+  const result = await getD1()
+    .prepare("SELECT provider_key, provider_id, provider_type_id, type_id, direction, count, sample_subject FROM provider_diagnostics ORDER BY count DESC")
+    .all<Record<string, string | number>>();
+  return (result.results ?? []).map((row) => ({
+    key: String(row.provider_key),
+    providerId: String(row.provider_id),
+    providerTypeId: String(row.provider_type_id),
+    typeId: String(row.type_id),
+    direction: String(row.direction),
+    count: Number(row.count),
+    sampleSubject: String(row.sample_subject),
+    mode: (rules[String(row.provider_key)] ?? "AUTO") as "AUTO" | "USE" | "IGNORE",
+  } satisfies ProviderDiagnostic));
+}
+
+export async function saveSyncState(state: {
+  status: string;
+  lastSyncAt?: string | null;
+  lastFrom?: string | null;
+  counts?: Record<string, number>;
+  permissions?: Record<string, string>;
+  safeError?: string | null;
+}) {
+  await ensureSchema();
+  const previous = await getSyncState();
+  const next = {
+    status: state.status,
+    lastSyncAt: state.lastSyncAt === undefined ? previous.lastSyncAt : state.lastSyncAt,
+    lastFrom: state.lastFrom === undefined ? previous.lastFrom : state.lastFrom,
+    counts: state.counts ?? previous.counts,
+    permissions: state.permissions ?? previous.permissions,
+    safeError: state.safeError === undefined ? previous.safeError : state.safeError,
+  };
+  await getD1()
+    .prepare("INSERT INTO sync_state(id, status, last_sync_at, last_from, counts, permissions, safe_error, updated_at) VALUES('main', ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status, last_sync_at = excluded.last_sync_at, last_from = excluded.last_from, counts = excluded.counts, permissions = excluded.permissions, safe_error = excluded.safe_error, updated_at = excluded.updated_at")
+    .bind(next.status, next.lastSyncAt, next.lastFrom, JSON.stringify(next.counts), JSON.stringify(next.permissions), next.safeError, new Date().toISOString())
+    .run();
+}
+
+export async function getSyncState() {
+  await ensureSchema();
+  const row = await getD1().prepare("SELECT * FROM sync_state WHERE id = 'main'").first<Record<string, string | null>>();
+  return {
+    status: row?.status ?? "idle",
+    lastSyncAt: row?.last_sync_at ?? null,
+    lastFrom: row?.last_from ?? null,
+    counts: row?.counts ? (JSON.parse(row.counts) as Record<string, number>) : {},
+    permissions: row?.permissions ? (JSON.parse(row.permissions) as Record<string, string>) : {},
+    safeError: row?.safe_error ?? null,
+  };
+}
+
