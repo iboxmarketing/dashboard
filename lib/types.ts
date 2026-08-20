@@ -49,6 +49,7 @@ export type SyncProgressState = {
   total: number;
   stale: boolean;
   selectedPipelines: PipelineOption[];
+  scopePipelineId: string | null;
   lastSyncAt: string | null;
   lastFrom: string | null;
   counts: Record<string, number>;

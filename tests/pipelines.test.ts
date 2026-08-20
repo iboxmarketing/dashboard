@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizePipelineName, resolvePipelineSelection } from "../lib/pipelines";
+import { normalizePipelineName, pairPostSalePipeline, resolvePipelineSelection } from "../lib/pipelines";
 
 const options = [
   { id: "1", name: "Call Center" },
@@ -19,4 +19,13 @@ test("call center pipeline tanlovga kirmaydi", () => {
 
 test("ikki aniq sales pipeline topilmasa sync rad etiladi", () => {
   assert.throws(() => resolvePipelineSelection(options.slice(0, 2), [], ["IBOX Sales", "SD Sales"]), /aniq topilmadi/);
+});
+
+test("har bir sales funnel faqat o‘z post-sale funnel’i bilan juftlanadi", () => {
+  const postSale = [
+    { id: "13", name: "IBOX Обучение / Сопровождение" },
+    { id: "14", name: "SD Обучение / Сопровождение" },
+  ];
+  assert.equal(pairPostSalePipeline({ id: "2", name: "IBOX Sales" }, postSale)?.id, "13");
+  assert.equal(pairPostSalePipeline({ id: "3", name: "SD Sales" }, postSale)?.id, "14");
 });

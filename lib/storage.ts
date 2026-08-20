@@ -245,6 +245,7 @@ export async function getSyncState() {
     total: 0,
     stale: false,
     selectedPipelines: [],
+    scopePipelineId: null,
     safeError: base.status === "running" ? "Avvalgi sync server timeout’i sabab yakunlanmagan." : base.safeError,
   } satisfies SyncProgressState;
   const heartbeat = Date.parse(job.heartbeatAt ?? job.updatedAt ?? "");
@@ -259,6 +260,7 @@ export async function getSyncState() {
     total: job.total,
     stale,
     selectedPipelines: job.selectedPipelines,
+    scopePipelineId: job.scopePipelineId ?? job.selectedPipelines[0]?.id ?? null,
     safeError: job.safeError ?? base.safeError,
   } satisfies SyncProgressState;
 }
@@ -276,6 +278,7 @@ export type StoredSyncJob = {
   mode: "full" | "incremental";
   runId: string;
   selectedPipelines: { id: string; name: string }[];
+  scopePipelineId: string;
   reportingPipelines: { id: string; name: string }[];
   dealScope: "main" | "postSale";
   counts: Record<string, number>;
@@ -291,7 +294,15 @@ export async function getSyncJob() {
   if (!row?.payload) return null;
   try {
     const parsed = JSON.parse(row.payload) as StoredSyncJob;
-    return { ...parsed, reportingPipelines: parsed.reportingPipelines ?? [], dealScope: parsed.dealScope ?? "main" };
+    const legacyCombined = !parsed.scopePipelineId && (parsed.selectedPipelines?.length ?? 0) > 1;
+    return {
+      ...parsed,
+      status: legacyCombined ? "error" as const : parsed.status,
+      message: legacyCombined ? "Eski 2-funnelli uzun sync to‘xtatildi. Yuqoridan bitta funnel tanlab yangi sync boshlang." : parsed.message,
+      safeError: legacyCombined ? "15 000 talik combined sync avtomatik davom ettirilmadi." : parsed.safeError,
+      scopePipelineId: parsed.scopePipelineId ?? parsed.selectedPipelines?.[0]?.id ?? "",
+      reportingPipelines: parsed.reportingPipelines ?? [], dealScope: parsed.dealScope ?? "main",
+    };
   } catch { return null; }
 }
 

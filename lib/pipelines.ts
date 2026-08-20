@@ -18,11 +18,16 @@ export function resolvePipelineSelection(options: PipelineOption[], selectedIds:
   return unique;
 }
 
-function brand(name: string) {
+export function pipelineBrand(name: string) {
   const normalized = normalizePipelineName(name);
   if (/\bibox\b/.test(normalized)) return "ibox";
   if (/\bsd\b/.test(normalized)) return "sd";
   return null;
+}
+
+export function pairPostSalePipeline(main: PipelineOption, postSalePipelines: PipelineOption[]) {
+  const brandName = pipelineBrand(main.name);
+  return postSalePipelines.find((pipeline) => brandName && pipelineBrand(pipeline.name) === brandName) ?? null;
 }
 
 export function resolvePostSalePipelines(options: PipelineOption[], selectedIds: string[], selectedNames: string[]) {
@@ -33,8 +38,8 @@ export function resolvePostSalePipelines(options: PipelineOption[], selectedIds:
   const postSaleWords = /обуч|сопров|obuch|training|support|onboard/;
   const candidates = options.filter((option) => postSaleWords.test(normalizePipelineName(option.name)));
   const matches = ["ibox", "sd"].flatMap((brandName) => {
-    const exact = candidates.find((option) => brand(option.name) === brandName && desired.some((name) => name.includes(brandName) && (name === normalizePipelineName(option.name) || postSaleWords.test(name))));
-    return exact ? [exact] : candidates.filter((option) => brand(option.name) === brandName).slice(0, 1);
+    const exact = candidates.find((option) => pipelineBrand(option.name) === brandName && desired.some((name) => name.includes(brandName) && (name === normalizePipelineName(option.name) || postSaleWords.test(name))));
+    return exact ? [exact] : candidates.filter((option) => pipelineBrand(option.name) === brandName).slice(0, 1);
   });
   return [...new Map(matches.map((item) => [item.id, item])).values()];
 }

@@ -3,7 +3,7 @@ import { pauseSync, resumeSync, runSyncSteps, startSync } from "@/lib/sync";
 
 export async function POST(request: Request) {
   try {
-    const payload = (await request.json().catch(() => ({}))) as { action?: "start" | "step" | "pause" | "resume"; days?: number; full?: boolean; steps?: number };
+    const payload = (await request.json().catch(() => ({}))) as { action?: "start" | "step" | "pause" | "resume"; days?: number; full?: boolean; steps?: number; pipelineId?: string };
     const result = payload.action === "step"
       ? await runSyncSteps(payload.steps)
       : payload.action === "pause"

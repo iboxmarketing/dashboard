@@ -2,13 +2,13 @@ import { getD1 } from "@/db";
 import { buildAnalyticsRecords, discoverProviders, type RawActivity, type RawCallStat, type RawDeal, type RawStageHistory } from "./analytics";
 import { bitrixCall, bitrixList, bitrixPage, getBitrixDomain, safeBitrixMessage } from "./bitrix";
 import {
-  clearUnselectedAnalytics, getDictionary, getProviderRules, getSettings, getSyncJob,
+  getDictionary, getProviderRules, getSettings, getSyncJob,
   getSyncState, getSalesSnapshots, saveDictionary, saveProviderDiagnostics, saveSalesSnapshots, saveSettings, saveSyncJob,
   saveSyncState, upsertAnalyticsRecords, type StoredSyncJob,
 } from "./storage";
 import type { CrmFieldOption, PipelineOption } from "./types";
 export { normalizePipelineName, resolvePipelineSelection } from "./pipelines";
-import { normalizePipelineName, resolvePipelineSelection, resolvePostSalePipelines } from "./pipelines";
+import { normalizePipelineName, pairPostSalePipeline, resolvePipelineSelection, resolvePostSalePipelines } from "./pipelines";
 
 const activitySelect = [
   "ID", "OWNER_ID", "OWNER_TYPE_ID", "BINDINGS", "TYPE_ID", "PROVIDER_ID", "PROVIDER_TYPE_ID",
@@ -136,11 +136,28 @@ async function upsertRaw(table: "raw_deals" | "raw_activities" | "raw_stage_hist
   }
 }
 
-export async function startSync(options: { days?: number; full?: boolean } = {}) {
+async function clearPipelineScope(categoryIds: string[]) {
+  if (!categoryIds.length) return;
+  const db = getD1(); const placeholders = categoryIds.map(() => "?").join(", ");
+  await db.batch([
+    db.prepare(`DELETE FROM raw_call_stats WHERE activity_id IN (SELECT activity_id FROM raw_activities WHERE deal_id IN (SELECT deal_id FROM raw_deals WHERE category_id IN (${placeholders})))`).bind(...categoryIds),
+    db.prepare(`DELETE FROM raw_activities WHERE deal_id IN (SELECT deal_id FROM raw_deals WHERE category_id IN (${placeholders}))`).bind(...categoryIds),
+    db.prepare(`DELETE FROM raw_stage_history WHERE deal_id IN (SELECT deal_id FROM raw_deals WHERE category_id IN (${placeholders}))`).bind(...categoryIds),
+    db.prepare(`DELETE FROM analytics_records WHERE category_id IN (${placeholders})`).bind(...categoryIds),
+    db.prepare(`DELETE FROM raw_deals WHERE category_id IN (${placeholders})`).bind(...categoryIds),
+  ]);
+}
+
+export async function startSync(options: { days?: number; full?: boolean; pipelineId?: string } = {}) {
   let settings = await getSettings();
   const pipelines = await listPipelines();
-  const selected = resolvePipelineSelection(pipelines, settings.selectedPipelineIds, settings.selectedPipelineNames);
-  const reporting = resolvePostSalePipelines(pipelines, settings.postSalePipelineIds, settings.postSalePipelineNames);
+  const allSelected = resolvePipelineSelection(pipelines, settings.selectedPipelineIds, settings.selectedPipelineNames);
+  const allReporting = resolvePostSalePipelines(pipelines, settings.postSalePipelineIds, settings.postSalePipelineNames);
+  const scopedMain = allSelected.find((pipeline) => pipeline.id === String(options.pipelineId ?? "")) ?? allSelected[0];
+  if (options.pipelineId && scopedMain.id !== String(options.pipelineId)) throw new Error("Tanlangan sales funnel sozlamalarda topilmadi");
+  const scopedPostSale = pairPostSalePipeline(scopedMain, allReporting);
+  if (!scopedPostSale) throw new Error(`${scopedMain.name} uchun mos Обучение / Сопровождение funnel topilmadi`);
+  const selected = [scopedMain]; const reporting = [scopedPostSale];
   let crmFields: CrmFieldOption[] = [];
   try { crmFields = await listCrmFields(selected.map((item) => item.id)); } catch { /* Config remains editable by field code. */ }
   settings = {
@@ -149,12 +166,12 @@ export async function startSync(options: { days?: number; full?: boolean } = {})
     marketingChannelField: settings.marketingChannelField ?? detectField(crmFields, /маркет.*канал|marketing.*kanal|marketing.*channel/),
     salesManagerField: settings.salesManagerField ?? detectField(crmFields, /менеджер.*продаж|sales.*manager|sotuv.*menejer/, /employee|user/),
   };
-  const selectedIds = selected.map((item) => item.id);
-  const stateRow = await getD1().prepare("SELECT last_sync_at FROM sync_state WHERE id = 'main'").first<{ last_sync_at: string }>();
+  const selectedIds = allSelected.map((item) => item.id);
+  const scopeState = await getDictionary<{ lastSyncAt: string | null }>(`syncScope:${scopedMain.id}`, { lastSyncAt: null });
   const now = new Date();
   const days = Math.min(365, Math.max(1, Number(options.days ?? settings.historyDays)));
-  const mode = options.full || !stateRow?.last_sync_at ? "full" : "incremental";
-  const lastSyncMs = Date.parse(stateRow?.last_sync_at ?? "");
+  const mode = options.full || !scopeState.lastSyncAt ? "full" : "incremental";
+  const lastSyncMs = Date.parse(scopeState.lastSyncAt ?? "");
   const from = mode === "full"
     ? new Date(now.getTime() - days * 86_400_000)
     : new Date(Math.max(now.getTime() - 86_400_000, (Number.isFinite(lastSyncMs) ? lastSyncMs : now.getTime()) - 10 * 60_000));
@@ -162,23 +179,15 @@ export async function startSync(options: { days?: number; full?: boolean } = {})
   const runId = crypto.randomUUID();
   const permissions = { deals: "ok", activities: "ok", stageHistory: "ok", managers: "ok", telephony: "ok" };
 
-  await saveSettings({ ...settings, selectedPipelineIds: selectedIds, selectedPipelineNames: selected.map((item) => item.name), postSalePipelineIds: reporting.map((item) => item.id), postSalePipelineNames: reporting.map((item) => item.name) });
+  await saveSettings({ ...settings, selectedPipelineIds: selectedIds, selectedPipelineNames: allSelected.map((item) => item.name), postSalePipelineIds: allReporting.map((item) => item.id), postSalePipelineNames: allReporting.map((item) => item.name) });
   await saveDictionary("crmFields", crmFields);
-  await clearUnselectedAnalytics([...selectedIds, ...reporting.map((item) => item.id)], mode === "full" ? fromIso : undefined);
-  if (mode === "full") {
-    const db = getD1();
-    await db.batch([
-      db.prepare("DELETE FROM analytics_records"),
-      db.prepare("DELETE FROM raw_deals"), db.prepare("DELETE FROM raw_activities"),
-      db.prepare("DELETE FROM raw_stage_history"), db.prepare("DELETE FROM raw_call_stats"),
-    ]);
-  }
+  if (mode === "full") await clearPipelineScope([scopedMain.id, scopedPostSale.id]);
 
   const timestamp = now.toISOString();
   const job: StoredSyncJob = {
-    status: "running", phase: "deals", progress: 0, message: "Eng yangi Deal’lar yuklanmoqda…",
+    status: "running", phase: "deals", progress: 0, message: `${scopedMain.name} Deal’lari yuklanmoqda…`,
     processed: 0, total: 0, cursor: 0, fromIso, toIso: timestamp, mode, runId,
-    selectedPipelines: selected, reportingPipelines: reporting, dealScope: "main", counts: {}, permissions, safeError: null,
+    selectedPipelines: selected, scopePipelineId: scopedMain.id, reportingPipelines: reporting, dealScope: "main", counts: {}, permissions, safeError: null,
     heartbeatAt: timestamp, updatedAt: timestamp,
   };
   await saveSyncJob(job);
@@ -297,6 +306,7 @@ async function analyticsStep(job: StoredSyncJob) {
     const completedAt = new Date().toISOString();
     const finished: StoredSyncJob = { ...job, status: "success", phase: "done", progress: 100, processed: job.counts.deals ?? 0, total: job.counts.deals ?? 0, cursor: 0, message: "Sinxronizatsiya yakunlandi", safeError: null };
     await saveSyncJob(finished);
+    await saveDictionary(`syncScope:${job.scopePipelineId}`, { lastSyncAt: completedAt, pipelineName: job.selectedPipelines[0]?.name ?? "" });
     await saveSyncState({ status: "success", lastSyncAt: completedAt, lastFrom: job.fromIso, counts: job.counts, permissions: job.permissions, safeError: null });
     return finished;
   }
@@ -391,11 +401,12 @@ export async function pauseSync() {
 export async function resumeSync() {
   const job = await getSyncJob();
   if (!job) throw new Error("Davom ettiriladigan sync topilmadi");
+  if (job.selectedPipelines.length > 1) throw new Error("Eski combined sync davom ettirilmaydi. Bitta funnel tanlab yangi sync boshlang.");
   if (job.status === "success") return await getSyncState();
   await saveSyncJob({ ...job, status: "running", safeError: null, message: `${job.message.replace(/\s*\(.*\)$/, "")} (davom etmoqda)` });
   return await getSyncState();
 }
 
-export async function runSync(options: { days?: number; full?: boolean } = {}) {
+export async function runSync(options: { days?: number; full?: boolean; pipelineId?: string } = {}) {
   return await startSync(options);
 }
