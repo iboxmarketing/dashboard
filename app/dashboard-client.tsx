@@ -9,6 +9,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AnalyticsRecord, CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, StageReconciliation, SyncProgressState } from "@/lib/types";
 import { countSalesLost, dealOutcomeLabel, isSalesLost, salesLostRate, salesManagerKey } from "@/lib/sales-logic";
+import { countDuplicates, isDuplicate, markDuplicates } from "@/lib/duplicates";
 
 type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "calls" | "diagnostics" | "settings";
 type SyncState = SyncProgressState;
@@ -110,15 +111,6 @@ function hydrateRecord(row: AnalyticsRecord): AnalyticsRecord {
     salesManager: row.salesManager ?? null,
     salesManagerAttribution: row.salesManagerAttribution ?? "UNKNOWN",
   };
-}
-function markDuplicates(rows: AnalyticsRecord[]) {
-  const firstByCustomer = new Map<string, string>();
-  return [...rows].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map((row) => {
-    if (!row.customerKey) return row;
-    const first = firstByCustomer.get(row.customerKey);
-    if (!first) firstByCustomer.set(row.customerKey, row.dealId);
-    return { ...row, duplicateOfDealId: first ?? null };
-  }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 function localDateKey(date: Date) {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tashkent", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
@@ -346,7 +338,7 @@ function DashboardView({ records, salesRecords, previousRecords, previousSalesRe
   const cohortSales = records.filter((row) => row.salesStatus === "WON");
   const salesAmount = salesRecords.reduce((sum, row) => sum + row.opportunity, 0);
   const previousAmount = previousSalesRecords.reduce((sum, row) => sum + row.opportunity, 0);
-  const duplicates = records.filter((row) => row.duplicateOfDealId);
+  const duplicates = records.filter(isDuplicate);
   const segment = (rows: AnalyticsRecord[]) => ({
     count: rows.length, avg: average(rows.map((row) => row.processingBusinessMinutes)),
     median: median(rows.map((row) => row.processingBusinessMinutes)),
@@ -578,7 +570,7 @@ function StageControlView({ records, historicalRecords, reconciliation, loading,
 
 function DiagnosticsView({ sync, providers, records, reconciliation, onProviderChange }: { sync: SyncState; providers: ProviderDiagnostic[]; records: AnalyticsRecord[]; reconciliation: StageReconciliation | null; onProviderChange: (key: string, mode: string) => void }) {
   const permissions = [["Deal API", sync.permissions.deals], ["Activity API", sync.permissions.activities], ["Stage history", sync.permissions.stageHistory], ["User API", sync.permissions.managers], ["Telephony / Call Statistics", sync.permissions.telephony]];
-  const qualities = [["Deals without activities", records.filter((row) => row.outgoingCallCount === 0).length], ["Deals without stage history", records.filter((row) => !row.stageTimeline.length).length], ["Calls without outcome data", records.filter((row) => row.outgoingCallCount > 0 && row.firstCallOutcome === "Noma’lum").length], ["Missing sales manager", records.filter((row) => !row.salesManagerId).length], ["Missing failure reason", records.filter((row) => ["LOW_QUALITY", "LOST"].includes(row.salesStatus) && row.lossReason === "Sabab ko‘rsatilmagan").length], ["Seller fallback: current responsible", records.filter((row) => row.salesManagerAttribution === "CURRENT_RESPONSIBLE").length], ["Duplicate leads", records.filter((row) => row.duplicateOfDealId).length], ["Data unavailable", records.filter((row) => row.dataUnavailable).length]] as const;
+  const qualities = [["Deals without activities", records.filter((row) => row.outgoingCallCount === 0).length], ["Deals without stage history", records.filter((row) => !row.stageTimeline.length).length], ["Calls without outcome data", records.filter((row) => row.outgoingCallCount > 0 && row.firstCallOutcome === "Noma’lum").length], ["Missing sales manager", records.filter((row) => !row.salesManagerId).length], ["Missing failure reason", records.filter((row) => ["LOW_QUALITY", "LOST"].includes(row.salesStatus) && row.lossReason === "Sabab ko‘rsatilmagan").length], ["Seller fallback: current responsible", records.filter((row) => row.salesManagerAttribution === "CURRENT_RESPONSIBLE").length], ["Duplicate leads", countDuplicates(records)], ["Data unavailable", records.filter((row) => row.dataUnavailable).length]] as const;
   return <><div className="page-title"><div><p className="eyebrow">ADMIN</p><h1>Diagnostika</h1><p>API ruxsatlari, call provider’lar va data quality nazorati.</p></div></div>
     {sync.permissions.telephony !== "ok" && <div className="notice warning page-notice"><AlertTriangle size={18} />Qo‘ng‘iroq natijasini aniqlash uchun Bitrix Telephony / Call Statistics ruxsati kerak. SLA va first outgoing call analytics ishlashda davom etadi.</div>}
     <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Bitrix24 ruxsatlari" /><div className="permission-list">{permissions.map(([label, state]) => <div key={label}><StatusDot state={state ?? "error"} /><span>{label}</span><strong>{state === "ok" ? "Tayyor" : state === "warning" ? "Cheklangan" : "Tekshirish kerak"}</strong></div>)}</div></article>
