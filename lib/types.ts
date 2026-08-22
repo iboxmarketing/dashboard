@@ -105,7 +105,7 @@ export type CallOutcome =
   | "Bloklangan"
   | "Noma’lum";
 
-export type ProcessingSource = "OUTGOING_CALL" | "STAGE_CHANGE" | "NO_PROCESSING";
+export type ProcessingSource = "QUALIFICATION_STAGE" | "NO_PROCESSING_EVIDENCE" | "NO_PROCESSING";
 export type SlaStatus = "ON_TIME" | "LATE" | "NO_PROCESSING";
 export type CreationPeriod = "WORK_HOURS" | "AFTER_HOURS";
 export type SalesStatus = "ACTIVE" | "LOW_QUALITY" | "LOST" | "WON";

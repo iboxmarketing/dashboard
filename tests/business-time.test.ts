@@ -51,29 +51,30 @@ function analytics(overrides: { callAt?: string; stageAt?: string; failedCode?: 
     settings: defaultSettings,
     providerRules: {},
     users: new Map([["7", "Aziz Karimov"]]), pipelines: new Map([["0", "Asosiy"]]),
-    stages: new Map([["IN_PROCESS", "Obrabotka"]]), sources: new Map([["WEB", "Web"]]),
+    stages: new Map([["IN_PROCESS", "Обработка"]]), sources: new Map([["WEB", "Web"]]),
     domain: "example.bitrix24.com", activitiesAvailable: true, stageHistoryAvailable: true,
   })[0];
 }
 
-test("stage change is fallback when outgoing call does not exist", () => {
+test("birinchi ishlov SQL bosqichiga o‘tganda qayd etiladi", () => {
   const row = analytics({ stageAt: "2026-08-17T09:13" });
-  assert.equal(row.processingSource, "STAGE_CHANGE");
+  assert.equal(row.processingSource, "QUALIFICATION_STAGE");
   assert.equal(row.processingBusinessMinutes, 13);
 });
 
-test("outgoing call has priority even when stage changed first", () => {
-  const row = analytics({ stageAt: "2026-08-17T09:04", callAt: "2026-08-17T09:10" });
-  assert.equal(row.processingSource, "OUTGOING_CALL");
-  assert.equal(row.processingBusinessMinutes, 10);
-  assert.equal(row.firstStageChangeBusinessMinutes, 4);
-  assert.equal(row.stageChangedBeforeCall, true);
+test("qo‘ng‘iroq birinchi ishlov vaqtini to‘xtatmaydi", () => {
+  // Superseded rule: the outgoing call used to win. Call coverage is uneven
+  // across sellers, so only the CRM-recorded qualification outcome counts now.
+  const row = analytics({ stageAt: "2026-08-17T09:13", callAt: "2026-08-17T09:04" });
+  assert.equal(row.processingSource, "QUALIFICATION_STAGE");
+  assert.equal(row.processingBusinessMinutes, 13);
+  assert.equal(row.firstCallBusinessMinutes, 4, "qo‘ng‘iroq ma’lumoti saqlanib qoladi");
 });
 
-test("unanswered outgoing call still stops SLA", () => {
+test("faqat qo‘ng‘iroq bo‘lsa, ishlov qayd etilmagan hisoblanadi", () => {
   const row = analytics({ callAt: "2026-08-17T09:05", failedCode: "304" });
-  assert.equal(row.processingBusinessMinutes, 5);
-  assert.equal(row.processingSource, "OUTGOING_CALL");
+  assert.equal(row.processingBusinessMinutes, null);
+  assert.equal(row.processingSource, "NO_PROCESSING_EVIDENCE");
   assert.equal(row.firstCallOutcome, "Ko‘tarmadi");
 });
 

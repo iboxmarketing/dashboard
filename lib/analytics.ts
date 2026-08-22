@@ -1,8 +1,8 @@
 import { calculateBusinessMinutes, getSlaStart, isInsideWorkingTime } from "./business-time";
-import { classifyLossReasonGroup, classifySalesStatus, fieldDisplayValue, isPaymentStage, isQualificationStage } from "./sales-logic";
+import { classifyLossReasonGroup, classifySalesStatus, fieldDisplayValue, isLowQualityStage, isPaymentStage, isQualificationStage } from "./sales-logic";
 import type { StageSemantics } from "./stage-config";
 import type { SalesSnapshot } from "./storage";
-import type { AnalyticsRecord, CallOutcome, DashboardSettings, ProviderDiagnostic, SalesManagerAttribution } from "./types";
+import type { AnalyticsRecord, CallOutcome, DashboardSettings, ProcessingSource, ProviderDiagnostic, SalesManagerAttribution } from "./types";
 
 export type RawDeal = Record<string, unknown>;
 export type RawActivity = Record<string, unknown>;
@@ -192,8 +192,29 @@ export function buildAnalyticsRecords(input: {
     const stageChange = firstStageChange(deal, histories); const slaStart = getSlaStart(created, input.settings);
     const firstCallMinutes = firstCallAt ? calculateBusinessMinutes(slaStart, firstCallAt, input.settings) : null;
     const stageMinutes = stageChange ? calculateBusinessMinutes(slaStart, stageChange.at, input.settings) : null;
-    const processingAt = firstCallAt ?? stageChange?.at ?? null; const processingMinutes = processingAt ? calculateBusinessMinutes(slaStart, processingAt, input.settings) : null;
-    const processingSource = firstCallAt ? "OUTGOING_CALL" : stageChange ? "STAGE_CHANGE" : "NO_PROCESSING";
+    // First processing is the CRM-recorded result of the first real qualification
+    // conversation: the deal entering SQL/Обработка or Not Relevant. Calls are
+    // deliberately excluded — not every seller has a Bitrix-connected phone, so
+    // call coverage is uneven and would bias manager and SLA comparisons.
+    // Intermediate operational stages (No Answer, First Attempt, …) do not stop
+    // the timer: only the two configured qualification outcomes do.
+    const isProcessingStage = (stageId: string, name: string) =>
+      isQualificationStage(name, stageId, stageSemantics) || isLowQualityStage(name, stageId, stageSemantics);
+    const processingHistory = histories.find((row) => {
+      const at = timestamp(row.CREATED_TIME); const stageId = string(row.STAGE_ID);
+      return Boolean(at) && isProcessingStage(stageId, stageName(stageId, input.stages));
+    });
+    // Without history we only trust MOVED_TIME, and only while the CURRENT stage
+    // is itself a qualification outcome — then it is the exact entry time. For a
+    // later stage the deal was clearly processed, but its first qualification
+    // cannot be dated, so nothing is fabricated from DATE_MODIFY or creation.
+    const currentStageIsProcessing = isProcessingStage(currentStageId, currentStage);
+    const processingAt = (processingHistory ? timestamp(processingHistory.CREATED_TIME) : null)
+      ?? (currentStageIsProcessing ? timestamp(deal.MOVED_TIME) : null);
+    const processingMinutes = processingAt ? calculateBusinessMinutes(slaStart, processingAt, input.settings) : null;
+    const processingSource: ProcessingSource = processingAt
+      ? "QUALIFICATION_STAGE"
+      : histories.length ? "NO_PROCESSING" : "NO_PROCESSING_EVIDENCE";
     const stageChangedBeforeCall = Boolean(stageChange && firstCallAt && stageChange.at < firstCallAt);
 
     const snapshot = snapshots.get(dealId); const customManagerId = input.settings.salesManagerField ? employeeId(deal[input.settings.salesManagerField]) : "";
@@ -225,7 +246,7 @@ export function buildAnalyticsRecords(input: {
     const lossReasonGroup = classifyLossReasonGroup({ status: salesStatus, reason: effectiveLossReason, routingPatterns: input.settings.routingReasonPatterns });
 
     return [{
-      analyticsVersion: 3, dealId, title: string(deal.TITLE) || `Deal #${dealId}`, createdAt: created.toISOString(), creationPeriod: isInsideWorkingTime(created, input.settings) ? "WORK_HOURS" : "AFTER_HOURS", slaStart: slaStart.toISOString(),
+      analyticsVersion: 4, dealId, title: string(deal.TITLE) || `Deal #${dealId}`, createdAt: created.toISOString(), creationPeriod: isInsideWorkingTime(created, input.settings) ? "WORK_HOURS" : "AFTER_HOURS", slaStart: slaStart.toISOString(),
       assignedManagerId, assignedManager: managerName(assignedManagerId, input.users), categoryId: currentCategoryId, pipeline: input.pipelines.get(currentCategoryId) ?? `Pipeline #${currentCategoryId}`,
       originCategoryId, originPipeline: input.pipelines.get(originCategoryId) ?? `Pipeline #${originCategoryId}`, operationalPipeline: mainIds.has(currentCategoryId),
       stageId: currentStageId, stage: currentStage, stageEnteredAt: stageEntered.toISOString(), stageAgeHours, stageLimitHours, stageOverdue: salesStatus === "ACTIVE" && stageAgeHours > stageLimitHours,

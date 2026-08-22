@@ -67,9 +67,10 @@ Current stage workload uses current Bitrix `ASSIGNED_BY_ID`, because it answers 
 
 ## 6. Processing and SLA
 
-- Primary processing event: first outgoing call after deal creation.
-- Fallback only when no outgoing call exists: first genuine stage change.
-- An unanswered outgoing call still stops the initial-processing SLA.
+- Processing event: the earliest entry into a configured SQL/Обработка or Not Relevant stage — the CRM-recorded result of the first real qualification conversation.
+- Calls never stop the processing timer. Not every seller has a Bitrix-connected phone, so call coverage is uneven and would bias manager and SLA comparisons.
+- Intermediate operational stages (No Answer, First Attempt) do not stop the timer.
+- Without stage history the current stage's `MOVED_TIME` is used only while that stage is itself SQL or Not Relevant; for a later stage the processing time is reported as unknown and never fabricated.
 - Working-time calculations use the configured weekly schedule, holidays and `Asia/Tashkent`.
 - `NO_PROCESSING` is separate from late processing.
 - Stage limits are configured independently for each stage, with a default fallback.
@@ -114,4 +115,4 @@ Tests must continue to prove:
 - payment and post-sale do not double-count a sale;
 - IBOX and SD pair only with their own post-sale funnels;
 - one selected IBOX pipeline is valid;
-- outgoing call takes priority over an earlier stage change for processing attribution.
+- an outgoing call does not stop the first-processing timer; only SQL or Not Relevant entry does.

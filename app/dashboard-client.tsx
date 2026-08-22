@@ -3,7 +3,7 @@
 import {
   Activity, AlertTriangle, ArrowDownRight, ArrowLeft, ArrowUpRight, BarChart3, CalendarDays, Check,
   ChevronDown, Clock3, Database, Download, ExternalLink, Gauge, LayoutDashboard,
-  Loader2, Menu, PhoneCall, RefreshCw, Search, Settings, ShieldCheck,
+  Loader2, Menu, RefreshCw, Search, Settings, ShieldCheck,
   SlidersHorizontal, TimerReset, Users, X, XCircle, CircleDollarSign, ClipboardList, Layers3,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -12,19 +12,17 @@ import { countSalesLost, dealOutcomeLabel, isSalesLost, salesLostRate, salesMana
 import { countDuplicates, isDuplicate, markDuplicates } from "@/lib/duplicates";
 import { stageConfigConflicts } from "@/lib/stage-config";
 
-type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "calls" | "diagnostics" | "settings";
+type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "diagnostics" | "settings";
 type SyncState = SyncProgressState;
 type Filters = {
   range: "today" | "yesterday" | "7" | "30" | "month" | "lastMonth" | "custom";
   from: string; to: string; manager: string; pipeline: string; source: string;
-  stage: string; period: string; sla: string; processing: string; outcome: string;
-  called: string; stageBeforeCall: string; search: string;
+  stage: string; period: string; sla: string; processing: string; search: string;
 };
 
 const emptyFilters: Filters = {
   range: "30", from: "", to: "", manager: "", pipeline: "", source: "",
-  stage: "", period: "", sla: "", processing: "", outcome: "", called: "",
-  stageBeforeCall: "", search: "",
+  stage: "", period: "", sla: "", processing: "", search: "",
 };
 
 const idleSync: SyncState = {
@@ -40,16 +38,9 @@ const navItems: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "quality", label: "Lead sifati", icon: ClipboardList },
   { id: "stages", label: "Stage nazorati", icon: Layers3 },
   { id: "deals", label: "Deal’lar", icon: Database },
-  { id: "calls", label: "Qo‘ng‘iroqlar", icon: PhoneCall },
   { id: "diagnostics", label: "Diagnostika", icon: Activity },
   { id: "settings", label: "Sozlamalar", icon: Settings },
 ];
-
-const outcomeColors: Record<string, string> = {
-  "Ko‘tardi": "#16a46f", "Ko‘tarmadi": "#f59e0b", Band: "#ef8b2c",
-  "Rad etdi": "#e34b52", "Bekor qilindi": "#9b6ed5", "Noto‘g‘ri raqam": "#7c879b",
-  Ulanmadi: "#ef6a6a", Bloklangan: "#8f5aa9", "Noma’lum": "#a5adbb",
-};
 
 function pct(value: number, total: number) { return total ? Math.round((value / total) * 100) : 0; }
 function average(values: (number | null)[]) {
@@ -216,8 +207,7 @@ function SectionHeader({ title, subtitle, action }: { title: string; subtitle?: 
 
 type ManagerRow = {
   id: string; name: string; deals: number; avg: number | null; median: number | null;
-  firstCall: number | null; callPct: number; answeredPct: number; stageOnly: number;
-  noProcessing: number; beforeCall: number; successTime: number | null;
+  noProcessing: number;
   lowQuality: number; lost: number; active: number; sales: number; cohortSales: number; amount: number; conversion: number;
   avgCheck: number | null; medianCheck: number | null; salesCycle: number | null;
 };
@@ -236,13 +226,7 @@ function buildManagers(records: AnalyticsRecord[], wonRecords: AnalyticsRecord[]
     id, name: rows[0]?.salesManager ?? won[0]?.salesManager ?? "Aniqlanmagan", deals: rows.length,
     avg: average(rows.map((row) => row.processingBusinessMinutes)),
     median: median(rows.map((row) => row.processingBusinessMinutes)),
-    firstCall: average(rows.map((row) => row.firstCallBusinessMinutes)),
-    callPct: pct(rows.filter((row) => row.outgoingCallCount > 0).length, rows.length),
-    answeredPct: pct(rows.filter((row) => row.firstCallOutcome === "Ko‘tardi").length, rows.filter((row) => row.outgoingCallCount > 0).length),
-    stageOnly: rows.filter((row) => row.processingSource === "STAGE_CHANGE").length,
     noProcessing: rows.filter((row) => row.processingSource === "NO_PROCESSING").length,
-    beforeCall: rows.filter((row) => row.stageChangedBeforeCall).length,
-    successTime: average(rows.map((row) => row.firstSuccessfulCallBusinessMinutes)),
     lowQuality: rows.filter((row) => row.lossReasonGroup === "MARKETING").length,
     lost: countSalesLost(rows),
     active: rows.filter((row) => row.salesStatus === "ACTIVE").length,
@@ -269,13 +253,13 @@ function ManagerTable({ rows, onSelect }: { rows: ManagerRow[]; onSelect: (manag
   return <div className="table-wrap"><table className="data-table manager-table"><thead><tr>
     <th>{header("Sotuvchi", "name")}</th><th>{header("Lead", "deals")}</th><th>{header("Davr sotuv", "sales")}</th><th>{header("Cohort sotuv", "cohortSales")}</th><th>{header("Summa", "amount")}</th>
     <th>{header("Konversiya", "conversion")}</th><th>{header("Sifatsiz", "lowQuality")}</th><th>{header("Sotilmadi", "lost")}</th><th>{header("Cohort aktiv", "active")}</th>
-    <th>{header("Avg obrabotka", "avg")}</th><th>{header("Call %", "callPct")}</th><th>{header("No processing", "noProcessing")}</th>
+    <th>{header("Avg ishlov", "avg")}</th><th>{header("Ishlov berilmagan", "noProcessing")}</th>
   </tr></thead><tbody>{sorted.map((row) => <tr key={row.id} onClick={() => onSelect(row)}>
     <td><div className="manager-cell"><span>{row.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span><strong>{row.name}</strong></div></td>
     <td>{row.deals}</td><td><strong className="success-text">{row.sales}</strong></td><td>{row.cohortSales}</td><td>{row.amount.toLocaleString("uz-UZ")}</td>
     <td><span className="pill success">{row.conversion}%</span></td><td><span className={row.lowQuality ? "warning-text" : ""}>{row.lowQuality}</span></td>
     <td><span className={row.lost ? "danger-text" : ""}>{row.lost}</span></td><td>{row.active}</td><td>{fmtMinutes(row.avg)}</td>
-    <td><span className="pill neutral">{row.callPct}%</span></td><td><span className={row.noProcessing ? "danger-text" : ""}>{row.noProcessing}</span></td>
+    <td><span className={row.noProcessing ? "danger-text" : ""}>{row.noProcessing}</span></td>
   </tr>)}</tbody></table>{!rows.length && <div className="empty-table">Tanlangan filtr bo‘yicha menejerlar topilmadi.</div>}</div>;
 }
 
@@ -314,20 +298,15 @@ function FiltersBar({ filters, setFilters, records, currentStages, mode = "cohor
       <Select label="Status" value={filters.stage} onChange={(value) => set("stage", value)}><option value="">Barcha statuslar</option>{stages.map((value) => <option key={value}>{value}</option>)}</Select>
       <Select label="Ish vaqti" value={filters.period} onChange={(value) => set("period", value)}><option value="">Ish vaqti: barchasi</option><option value="WORK_HOURS">Ish vaqtida</option><option value="AFTER_HOURS">Ish vaqtidan tashqarida</option></Select>
       <Select label="SLA" value={filters.sla} onChange={(value) => set("sla", value)}><option value="">SLA: barchasi</option><option value="ON_TIME">SLA ichida</option><option value="LATE">Kechikkan</option><option value="NO_PROCESSING">Obrabotka qilinmagan</option></Select>
-      <Select label="Obrabotka usuli" value={filters.processing} onChange={(value) => set("processing", value)}><option value="">Obrabotka: barchasi</option><option value="OUTGOING_CALL">Outgoing call</option><option value="STAGE_CHANGE">Stage change</option><option value="NO_PROCESSING">Obrabotka yo‘q</option></Select>
-      <Select label="Call outcome" value={filters.outcome} onChange={(value) => set("outcome", value)}><option value="">Call outcome: barchasi</option>{Object.keys(outcomeColors).map((value) => <option key={value}>{value}</option>)}</Select>
-      <Select label="Call attempted" value={filters.called} onChange={(value) => set("called", value)}><option value="">Call attempted: barchasi</option><option value="yes">Ha</option><option value="no">Yo‘q</option></Select>
-      <Select label="Status call’dan oldin" value={filters.stageBeforeCall} onChange={(value) => set("stageBeforeCall", value)}><option value="">Status → call: barchasi</option><option value="yes">Ha</option><option value="no">Yo‘q</option></Select>
+      <Select label="Obrabotka usuli" value={filters.processing} onChange={(value) => set("processing", value)}><option value="">Obrabotka: barchasi</option><option value="QUALIFICATION_STAGE">Ishlov berilgan</option><option value="NO_PROCESSING">Ishlov berilmagan</option><option value="NO_PROCESSING_EVIDENCE">Vaqti noma’lum</option></Select>
     </div>}
   </div>;
 }
 
 function DashboardView({ records, salesRecords, previousRecords, previousSalesRecords, onManager }: { records: AnalyticsRecord[]; salesRecords: AnalyticsRecord[]; previousRecords: AnalyticsRecord[]; previousSalesRecords: AnalyticsRecord[]; onManager: (manager: ManagerRow) => void }) {
   const processed = records.filter((row) => row.processingBusinessMinutes !== null);
-  const called = records.filter((row) => row.outgoingCallCount > 0);
-  const answered = records.filter((row) => row.firstCallOutcome === "Ko‘tardi");
   const noProcessing = records.filter((row) => row.processingSource === "NO_PROCESSING");
-  const stageOnly = records.filter((row) => row.processingSource === "STAGE_CHANGE");
+  const unknownProcessing = records.filter((row) => row.processingSource === "NO_PROCESSING_EVIDENCE");
   const afterHours = records.filter((row) => row.creationPeriod === "AFTER_HOURS");
   const slaOnTime = processed.filter((row) => row.slaStatus === "ON_TIME");
   const managers = buildManagers(records, salesRecords);
@@ -343,8 +322,6 @@ function DashboardView({ records, salesRecords, previousRecords, previousSalesRe
   const segment = (rows: AnalyticsRecord[]) => ({
     count: rows.length, avg: average(rows.map((row) => row.processingBusinessMinutes)),
     median: median(rows.map((row) => row.processingBusinessMinutes)),
-    call: pct(rows.filter((row) => row.outgoingCallCount > 0).length, rows.length),
-    answered: pct(rows.filter((row) => row.firstCallOutcome === "Ko‘tardi").length, rows.filter((row) => row.outgoingCallCount > 0).length),
     no: pct(rows.filter((row) => row.processingSource === "NO_PROCESSING").length, rows.length),
   });
   const workSegment = segment(records.filter((row) => row.creationPeriod === "WORK_HOURS"));
@@ -371,43 +348,25 @@ function DashboardView({ records, salesRecords, previousRecords, previousSalesRe
     <SectionHeader title="Lead processing" subtitle="Quyidagi KPI’lar faqat IBOX Sales va SD Sales’dagi yangi leadlar bo‘yicha" />
     <section className="kpi-grid">
       <KpiCard label="Jami Deal" value={String(records.length)} detail="Tanlangan davr" icon={Database} />
-      <KpiCard label="O‘rtacha obrabotka" value={fmtMinutes(average(records.map((row) => row.processingBusinessMinutes)))} detail="Faqat ish minutlari" icon={Clock3} tone="indigo" />
-      <KpiCard label="Median obrabotka" value={fmtMinutes(median(records.map((row) => row.processingBusinessMinutes)))} detail="Ekstremal qiymatlarsiz markaz" icon={TimerReset} tone="violet" />
+      <KpiCard label="O‘rtacha birinchi ishlov" value={fmtMinutes(average(records.map((row) => row.processingBusinessMinutes)))} detail="Lead SQL yoki Not Relevant bosqichiga o‘tguncha" icon={Clock3} tone="indigo" />
+      <KpiCard label="Median birinchi ishlov" value={fmtMinutes(median(records.map((row) => row.processingBusinessMinutes)))} detail="Ekstremal qiymatlarsiz markaz" icon={TimerReset} tone="violet" />
       <KpiCard label="SLA ichida" value={`${pct(slaOnTime.length, processed.length)}%`} detail={`${slaOnTime.length} / ${processed.length} obrabotka`} icon={Gauge} tone="green" />
-      <KpiCard label="Qo‘ng‘iroq qilingan" value={`${pct(called.length, records.length)}%`} detail={`${called.length} ta Deal`} icon={PhoneCall} tone="cyan" />
-      <KpiCard label="Faqat status orqali" value={String(stageOnly.length)} detail="Call yo‘q, stage change bor" icon={RefreshCw} tone="amber" />
-      <KpiCard label="Obrabotka qilinmagan" value={String(noProcessing.length)} detail={`${pct(noProcessing.length, records.length)}% jami Deal’dan`} icon={AlertTriangle} tone="red" />
+      <KpiCard label="Ishlov vaqti noma’lum" value={String(unknownProcessing.length)} detail="Keyingi bosqichda, tarix yo‘q" icon={RefreshCw} tone="amber" />
+      <KpiCard label="Ishlov berilmagan" value={String(noProcessing.length)} detail={`${pct(noProcessing.length, records.length)}% jami Deal’dan`} icon={AlertTriangle} tone="red" />
       <KpiCard label="Ish vaqtidan tashqarida" value={String(afterHours.length)} detail={`${pct(afterHours.length, records.length)}% jami Deal’dan`} icon={CalendarDays} tone="slate" />
     </section>
-    <section className="dashboard-grid two-one">
-      <article className="panel"><SectionHeader title="Obrabotka usuli" subtitle="Birinchi real harakat bo‘yicha" /><BarList rows={[
-        { label: "Outgoing call", value: called.length, total: records.length, color: "#246bfd", icon: "📞" },
-        { label: "Stage change", value: stageOnly.length, total: records.length, color: "#8a5dd1", icon: "🔄" },
-        { label: "Obrabotka yo‘q", value: noProcessing.length, total: records.length, color: "#ef5962", icon: "⚠️" },
-      ]} /></article>
-      <article className="panel sla-panel"><SectionHeader title="Call funnel" subtitle="Outgoing call javobdan qat’i nazar processing hisoblanadi" />
-        <div className="funnel-row"><span>Jami yangi Deal</span><strong>{records.length}</strong></div><div className="funnel-arrow">↓</div>
-        <div className="funnel-row primary"><span>Outgoing call attempted</span><strong>{called.length}</strong><small>{pct(called.length, records.length)}%</small></div>
-        <div className="funnel-split"><div><Check size={16} /><span>Ko‘tardi</span><strong>{answered.length}</strong></div><div><X size={16} /><span>Ko‘tarmadi / boshqa</span><strong>{called.length - answered.length}</strong></div></div>
-        <div className="funnel-foot"><span>Status only <strong>{stageOnly.length}</strong></span><span>No processing <strong>{noProcessing.length}</strong></span></div>
-      </article>
-    </section>
-    <section className="dashboard-grid two-one">
-      <article className="panel"><SectionHeader title="Birinchi qo‘ng‘iroq natijasi" subtitle="Telephony ruxsati bo‘lmasa ‘Noma’lum’ ko‘rsatiladi" /><BarList rows={Object.keys(outcomeColors).map((label) => ({ label, value: records.filter((row) => row.firstCallOutcome === label).length, total: called.length, color: outcomeColors[label] })).filter((row) => row.value > 0)} /></article>
-      <article className="panel compact-kpis"><SectionHeader title="Qo‘ng‘iroq KPI" />
-        <div><span>O‘rtacha first call</span><strong>{fmtMinutes(average(records.map((row) => row.firstCallBusinessMinutes)))}</strong></div>
-        <div><span>Mijoz ko‘targan</span><strong className="success-text">{pct(answered.length, called.length)}%</strong></div>
-        <div><span>Mijoz ko‘tarmagan</span><strong>{pct(called.length - answered.length, called.length)}%</strong></div>
-        <div><span>Qo‘ng‘iroqdan oldin status</span><strong className="warning-text">{records.filter((row) => row.stageChangedBeforeCall).length}</strong></div>
-      </article>
-    </section>
+    <section className="panel"><SectionHeader title="Birinchi ishlov manbai" subtitle="Lead SQL yoki Not Relevant bosqichiga o‘tgan payt CRM’da qayd etilgan" /><BarList rows={[
+      { label: "Ishlov qayd etilgan", value: records.length - noProcessing.length - unknownProcessing.length, total: records.length, color: "#246bfd", icon: "✅" },
+      { label: "Ishlov vaqti noma’lum", value: unknownProcessing.length, total: records.length, color: "#8a5dd1", icon: "�途" },
+      { label: "Ishlov berilmagan", value: noProcessing.length, total: records.length, color: "#ef5962", icon: "⚠️" },
+    ]} /></section>
     <section className="panel"><SectionHeader title="Ish vaqti vs. ish vaqtidan tashqari" subtitle="After-hours SLA keyingi ish davri ochilishidan boshlanadi" />
       <div className="segment-grid">{[
         { title: "Ish vaqtida tushgan Deal’lar", data: workSegment, tone: "work" },
         { title: "Ish vaqtidan tashqarida tushgan", data: afterSegment, tone: "after" },
       ].map(({ title, data, tone }) => <div className={`segment-card ${tone}`} key={title}>
         <div className="segment-title"><span>{tone === "work" ? <ArrowUpRight size={18} /> : <ArrowDownRight size={18} />}</span><div><strong>{title}</strong><small>{data.count} ta Deal</small></div></div>
-        <div className="segment-metrics"><div><span>Avg obrabotka</span><strong>{fmtMinutes(data.avg)}</strong></div><div><span>Median</span><strong>{fmtMinutes(data.median)}</strong></div><div><span>Call attempt</span><strong>{data.call}%</strong></div><div><span>Answered</span><strong>{data.answered}%</strong></div><div><span>No processing</span><strong>{data.no}%</strong></div></div>
+        <div className="segment-metrics"><div><span>Avg obrabotka</span><strong>{fmtMinutes(data.avg)}</strong></div><div><span>Median</span><strong>{fmtMinutes(data.median)}</strong></div><div><span>Ishlov berilmagan</span><strong>{data.no}%</strong></div></div>
       </div>)}</div>
     </section>
     <section className="panel"><SectionHeader title="Menejerlar performance" subtitle="Qatorni bossangiz dashboard shu menejer bo‘yicha filtrlanadi" /><ManagerTable rows={managers.slice(0, 8)} onSelect={onManager} /></section>
@@ -423,11 +382,11 @@ function TrendChart({ records }: { records: AnalyticsRecord[] }) {
       date, avg: average(rows.map((row) => row.processingBusinessMinutes)) ?? 0,
       median: median(rows.map((row) => row.processingBusinessMinutes)) ?? 0,
       sla: pct(rows.filter((row) => row.slaStatus === "ON_TIME").length, rows.filter((row) => row.processingBusinessMinutes !== null).length),
-      calls: pct(rows.filter((row) => row.outgoingCallCount > 0).length, rows.length), count: rows.length,
+      count: rows.length,
     }));
   }, [records]);
   const max = Math.max(1, ...days.map((row) => Number(row[metric as keyof typeof row])));
-  return <section className="panel"><SectionHeader title="Trend" subtitle="Kunlik dinamikasi" action={<Select label="Trend metrikasi" value={metric} onChange={setMetric}><option value="avg">Avg obrabotka</option><option value="median">Median</option><option value="sla">SLA %</option><option value="calls">Call %</option><option value="count">Deal soni</option></Select>} />
+  return <section className="panel"><SectionHeader title="Trend" subtitle="Kunlik dinamikasi" action={<Select label="Trend metrikasi" value={metric} onChange={setMetric}><option value="avg">Avg ishlov</option><option value="median">Median</option><option value="sla">SLA %</option><option value="count">Deal soni</option></Select>} />
     <div className="trend-chart">{days.map((row) => { const current = row as unknown as Record<string, string | number>; const value = Number(current[metric]); return <div className="trend-column" key={row.date} title={`${row.date}: ${Math.round(value)}`}><span style={{ height: `${Math.max(4, (value / max) * 100)}%` }} /><small>{row.date.slice(8)}</small></div>; })}</div>
     {!days.length && <div className="empty-chart">Trend uchun ma’lumot yo‘q.</div>}
   </section>;
@@ -449,9 +408,9 @@ function ManagerDetailView({ manager, cohortRecords, salesRecords, currentStages
   const reasons = groupedCount(leads.filter((row) => row.lossReasonGroup !== "NONE"), (row) => `${row.lossReasonGroup === "MARKETING" ? "Marketing" : row.lossReasonGroup === "ROUTING" ? "Routing" : "Sales"} · ${row.lossReason}`);
   const stageRows = groupedCount(active, (row) => row.stage).map((stage) => ({ ...stage, overdue: active.filter((row) => row.stage === stage.label && row.stageOverdue).length }));
   return <><div className="page-title manager-detail-title"><div><button className="back-button" onClick={onBack}><ArrowLeft size={16} />Menejerlarga qaytish</button><p className="eyebrow">INDIVIDUAL PERFORMANCE</p><h1>{manager.name}</h1><p>Lead manbasi, SQL, sotuv, yo‘qotish, stage yuklamasi va tezlik bitta profilga jamlandi.</p></div><div className="manager-identity"><span>{manager.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span><div><strong>{manager.name}</strong><small>{manager.id === "unknown" ? "Sotuvchi aniqlanmagan" : `Bitrix user #${manager.id}`}</small></div></div></div>
-    <section className="kpi-grid sales-kpis"><KpiCard label="Yangi lead" value={String(leads.length)} detail="Tanlangan cohort" icon={Database} /><KpiCard label="SQL" value={String(qualified.length)} detail={`${pct(qualified.length, leads.length)}% qabul qilingan`} icon={Check} tone="green" /><KpiCard label="Davr sotuv" value={String(sales.length)} detail={`${pct(leads.filter((row) => row.salesStatus === "WON").length, leads.length)}% cohort konversiya`} icon={CircleDollarSign} tone="cyan" /><KpiCard label="Sotuv summasi" value={amount.toLocaleString("uz-UZ")} detail={sales[0]?.currencyId || "Bitrix valyutasi"} icon={CircleDollarSign} tone="indigo" /><KpiCard label="Marketing sifatsiz" value={String(marketing.length)} detail={`${pct(marketing.length, leads.length)}% lead’dan`} icon={AlertTriangle} tone="amber" /><KpiCard label="Sotilmadi" value={String(lost.length)} detail={`${salesLostRate(leads)}% SQL’dan sotilmagan`} icon={XCircle} tone="red" /><KpiCard label="Savdo sikli" value={fmtHours(average(sales.map((row) => row.salesCycleHours)))} detail="Yaratilishdan Oplata’gacha" icon={TimerReset} tone="violet" /><KpiCard label="First contact" value={fmtMinutes(average(leads.map((row) => row.processingBusinessMinutes)))} detail={`${leads.filter((row) => row.processingSource === "NO_PROCESSING").length} ta harakatsiz lead`} icon={PhoneCall} tone="slate" /></section>
+    <section className="kpi-grid sales-kpis"><KpiCard label="Yangi lead" value={String(leads.length)} detail="Tanlangan cohort" icon={Database} /><KpiCard label="SQL" value={String(qualified.length)} detail={`${pct(qualified.length, leads.length)}% qabul qilingan`} icon={Check} tone="green" /><KpiCard label="Davr sotuv" value={String(sales.length)} detail={`${pct(leads.filter((row) => row.salesStatus === "WON").length, leads.length)}% cohort konversiya`} icon={CircleDollarSign} tone="cyan" /><KpiCard label="Sotuv summasi" value={amount.toLocaleString("uz-UZ")} detail={sales[0]?.currencyId || "Bitrix valyutasi"} icon={CircleDollarSign} tone="indigo" /><KpiCard label="Marketing sifatsiz" value={String(marketing.length)} detail={`${pct(marketing.length, leads.length)}% lead’dan`} icon={AlertTriangle} tone="amber" /><KpiCard label="Sotilmadi" value={String(lost.length)} detail={`${salesLostRate(leads)}% SQL’dan sotilmagan`} icon={XCircle} tone="red" /><KpiCard label="Savdo sikli" value={fmtHours(average(sales.map((row) => row.salesCycleHours)))} detail="Yaratilishdan Oplata’gacha" icon={TimerReset} tone="violet" /><KpiCard label="Birinchi ishlov vaqti" value={fmtMinutes(average(leads.map((row) => row.processingBusinessMinutes)))} detail={`${leads.filter((row) => row.processingSource === "NO_PROCESSING").length} ta ishlov berilmagan lead`} icon={Clock3} tone="slate" /></section>
     <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Qaysi source’dan nechta lead" subtitle="Sotuv — Oplata sanasi, qolganlari lead yaratilgan sanasi" /><div className="table-wrap"><table className="data-table"><thead><tr><th>Source</th><th>Lead</th><th>SQL</th><th>Sifatsiz</th><th>Sotilmadi</th><th>Sotuv</th></tr></thead><tbody>{sources.map((row) => <tr key={row.label}><td><strong>{row.label}</strong></td><td>{row.value}</td><td>{row.sql}</td><td>{row.low}</td><td>{row.lost}</td><td><strong className="success-text">{row.sales}</strong></td></tr>)}</tbody></table></div></article><article className="panel"><SectionHeader title="Joriy stage yuklamasi" subtitle={currentStages ? "Bitrix live · Assigned by ID" : "Sync bazasi · qizil raqam limitdan oshgan"} /><div className="stage-load-list">{stageRows.map((row) => <div key={row.label}><span>{row.label}</span><strong>{row.value}</strong><small className={row.overdue ? "danger-text" : ""}>{row.overdue} overdue</small></div>)}{!stageRows.length && <div className="empty-table">Aktiv lead yo‘q.</div>}</div></article></section>
-    <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Sabablar profili" subtitle="Marketing / Sales / Routing alohida" /><BarList rows={reasons.slice(0, 15).map((row) => ({ ...row, total: reasons.reduce((sum, item) => sum + item.value, 0), color: row.label.startsWith("Marketing") ? "#f59e0b" : row.label.startsWith("Routing") ? "#8a5dd1" : "#ef5962" }))} /></article><article className="panel compact-kpis"><SectionHeader title="Chek va aloqa sifati" /><div><span>O‘rtacha chek</span><strong>{(average(sales.map((row) => row.opportunity)) ?? 0).toLocaleString("uz-UZ", { maximumFractionDigits: 0 })}</strong></div><div><span>Median chek</span><strong>{(median(sales.map((row) => row.opportunity)) ?? 0).toLocaleString("uz-UZ", { maximumFractionDigits: 0 })}</strong></div><div><span>Call attempted</span><strong>{pct(leads.filter((row) => row.outgoingCallCount > 0).length, leads.length)}%</strong></div><div><span>SLA ichida</span><strong>{pct(leads.filter((row) => row.slaStatus === "ON_TIME").length, leads.filter((row) => row.processingBusinessMinutes !== null).length)}%</strong></div></article></section>
+    <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Sabablar profili" subtitle="Marketing / Sales / Routing alohida" /><BarList rows={reasons.slice(0, 15).map((row) => ({ ...row, total: reasons.reduce((sum, item) => sum + item.value, 0), color: row.label.startsWith("Marketing") ? "#f59e0b" : row.label.startsWith("Routing") ? "#8a5dd1" : "#ef5962" }))} /></article><article className="panel compact-kpis"><SectionHeader title="Chek va ishlov sifati" /><div><span>O‘rtacha chek</span><strong>{(average(sales.map((row) => row.opportunity)) ?? 0).toLocaleString("uz-UZ", { maximumFractionDigits: 0 })}</strong></div><div><span>Median chek</span><strong>{(median(sales.map((row) => row.opportunity)) ?? 0).toLocaleString("uz-UZ", { maximumFractionDigits: 0 })}</strong></div><div><span>Ishlov qayd etilgan</span><strong>{pct(leads.filter((row) => row.processingBusinessMinutes !== null).length, leads.length)}%</strong></div><div><span>SLA ichida</span><strong>{pct(leads.filter((row) => row.slaStatus === "ON_TIME").length, leads.filter((row) => row.processingBusinessMinutes !== null).length)}%</strong></div></article></section>
   </>;
 }
 
@@ -478,15 +437,6 @@ function LeadFlowView({ records }: { records: AnalyticsRecord[] }) {
   </>;
 }
 
-function CallsView({ records }: { records: AnalyticsRecord[] }) {
-  const buckets = [["0–5 min", 0, 5], ["5–10 min", 6, 10], ["10–15 min", 11, 15], ["15–30 min", 16, 30], ["30–60 min", 31, 60], ["1–2 ish soati", 61, 120], ["2+ ish soati", 121, Infinity]] as const;
-  const bucketRows: { label: string; value: number; total: number; color: string }[] = buckets.map(([label, min, max]) => ({ label, value: records.filter((row) => row.processingBusinessMinutes !== null && row.processingBusinessMinutes >= min && row.processingBusinessMinutes <= max).length, total: records.length, color: "#246bfd" }));
-  bucketRows.push({ label: "Obrabotka yo‘q", value: records.filter((row) => row.processingBusinessMinutes === null).length, total: records.length, color: "#ef5962" });
-  return <><div className="page-title"><div><p className="eyebrow">CALL ANALYTICS</p><h1>Qo‘ng‘iroqlar</h1><p>Birinchi urinish SLA’ni to‘xtatadi; javob natijasi alohida tahlil qilinadi.</p></div></div>
-    <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Response time distribution" subtitle="Faqat business minutes" /><BarList rows={bucketRows} /></article><article className="panel"><SectionHeader title="Call outcome" /><BarList rows={Object.keys(outcomeColors).map((label) => ({ label, value: records.filter((row) => row.firstCallOutcome === label).length, total: records.filter((row) => row.outgoingCallCount > 0).length, color: outcomeColors[label] })).filter((row) => row.value > 0)} /></article></section>
-    <TrendChart records={records} /></>;
-}
-
 function DealsTable({ records }: { records: AnalyticsRecord[] }) {
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<"createdAt" | "processingBusinessMinutes">("createdAt");
@@ -496,22 +446,21 @@ function DealsTable({ records }: { records: AnalyticsRecord[] }) {
   const safePage = Math.min(page, pages);
   const rows = sorted.slice((safePage - 1) * perPage, safePage * perPage);
   function exportCsv() {
-    const headers = ["Deal ID", "Deal nomi", "Yaratilgan vaqt", "Deal mas’uli", "Sales pipeline", "Current pipeline", "Current stage", "Stage age hours", "Stage limit hours", "Sales status", "SQL at", "Sales manager", "Seller attribution", "Won at", "Sales cycle hours", "Opportunity", "Currency", "Failure group", "Failure reason", "Source", "Duplicate of", "First outgoing call", "First call outcome", "Processing business minutes", "SLA status"];
+    const headers = ["Deal ID", "Deal nomi", "Yaratilgan vaqt", "Deal mas’uli", "Sales pipeline", "Current pipeline", "Current stage", "Stage age hours", "Stage limit hours", "Sales status", "SQL at", "Sales manager", "Seller attribution", "Won at", "Sales cycle hours", "Opportunity", "Currency", "Failure group", "Failure reason", "Source", "Duplicate of", "First processing at", "Processing source", "Processing business minutes", "SLA status"];
     const quote = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
-    const lines: unknown[][] = [headers, ...sorted.map((row) => [row.dealId, row.title, row.createdAt, row.assignedManager, row.originPipeline, row.pipeline, row.stage, row.stageAgeHours, row.stageLimitHours, row.salesStatus, row.qualifiedAt, row.salesManager, row.salesManagerAttribution, row.wonAt, row.salesCycleHours, row.opportunity, row.currencyId, row.lossReasonGroup, row.lossReason, row.source, row.duplicateOfDealId, row.firstCallAt, row.firstCallOutcome, row.processingBusinessMinutes, row.slaStatus])];
+    const lines: unknown[][] = [headers, ...sorted.map((row) => [row.dealId, row.title, row.createdAt, row.assignedManager, row.originPipeline, row.pipeline, row.stage, row.stageAgeHours, row.stageLimitHours, row.salesStatus, row.qualifiedAt, row.salesManager, row.salesManagerAttribution, row.wonAt, row.salesCycleHours, row.opportunity, row.currencyId, row.lossReasonGroup, row.lossReason, row.source, row.duplicateOfDealId, row.processingAt, row.processingSource, row.processingBusinessMinutes, row.slaStatus])];
     const blob = new Blob(["\ufeff", lines.map((line) => line.map(quote).join(",")).join("\n")], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob); const link = document.createElement("a");
     link.href = url; link.download = `bitrix-deals-${new Date().toISOString().slice(0, 10)}.csv`; link.click(); URL.revokeObjectURL(url);
   }
   return <section className="panel deals-panel"><SectionHeader title="Detailed Deal report" subtitle={`${records.length} ta Deal`} action={<div className="table-actions"><Select label="Saralash" value={sort} onChange={(value) => setSort(value as typeof sort)}><option value="createdAt">Yangi Deal</option><option value="processingBusinessMinutes">Eng tez obrabotka</option></Select><button className="button small secondary" onClick={exportCsv}><Download size={16} />CSV export</button></div>} />
-    <div className="table-wrap"><table className="data-table deal-table"><thead><tr><th>Deal</th><th>Sotuv holati</th><th>Mas’ul / sotuvchi</th><th>Pipeline / Stage</th><th>Stage yoshi</th><th>Source / sabab</th><th>First call</th><th>Processing</th><th>SLA</th></tr></thead><tbody>{rows.map((row) => { const outcome = dealOutcomeLabel(row); return <tr key={row.dealId}>
+    <div className="table-wrap"><table className="data-table deal-table"><thead><tr><th>Deal</th><th>Sotuv holati</th><th>Mas’ul / sotuvchi</th><th>Pipeline / Stage</th><th>Stage yoshi</th><th>Source / sabab</th><th>Birinchi ishlov</th><th>SLA</th></tr></thead><tbody>{rows.map((row) => { const outcome = dealOutcomeLabel(row); return <tr key={row.dealId}>
       <td><div className="deal-name"><strong>{row.title}</strong>{row.bitrixUrl ? <a href={row.bitrixUrl} target="_blank" rel="noreferrer">#{row.dealId}<ExternalLink size={12} /></a> : <small>#{row.dealId}</small>}</div></td>
       <td><span className={`pill ${outcome.tone}`}>{outcome.label}</span><small>{row.wonAt ? fmtDate(row.wonAt) : fmtDate(row.createdAt)}{row.duplicateOfDealId ? ` · duplicate #${row.duplicateOfDealId}` : ""}</small></td>
       <td><span>{row.salesManager ?? "Aniqlanmagan"}</span><small>{row.salesManagerAttribution} · hozir: {row.assignedManager}</small></td><td><span>{row.originPipeline}</span><small>{row.stage}{row.qualifiedAt ? ` · SQL ${fmtDate(row.qualifiedAt)}` : ""}</small></td>
       <td><span className={row.stageOverdue ? "danger-text" : ""}>{Math.round(row.stageAgeHours)} soat</span><small>Limit: {row.stageLimitHours} soat</small></td>
       <td><span>{row.source}</span><small>{row.lossReasonGroup !== "NONE" ? `${row.lossReasonGroup} · ${row.lossReason}` : row.lossReason || "—"}</small></td>
-      <td><span>{fmtDate(row.firstCallAt)}</span><small>{row.firstCallManager ?? "—"} · {row.firstCallOutcome}</small></td>
-      <td><span className="source-pill">{row.processingSource === "OUTGOING_CALL" ? "📞 Call" : row.processingSource === "STAGE_CHANGE" ? "🔄 Stage" : "⚠️ Yo‘q"}</span><small>{fmtMinutes(row.processingBusinessMinutes)}</small></td>
+      <td><span className="source-pill">{row.processingSource === "QUALIFICATION_STAGE" ? "✅ Ishlov" : row.processingSource === "NO_PROCESSING_EVIDENCE" ? "❔ Noma’lum" : "⚠️ Yo‘q"}</span><small>{fmtMinutes(row.processingBusinessMinutes)}</small></td>
       <td><span className={`pill ${row.slaStatus === "ON_TIME" ? "success" : row.slaStatus === "LATE" ? "warning" : "danger"}`}>{row.slaStatus === "ON_TIME" ? "SLA ichida" : row.slaStatus === "LATE" ? "Kechikkan" : "Obrabotka yo‘q"}</span></td>
     </tr>; })}</tbody></table>{!rows.length && <div className="empty-table">Tanlangan filtr bo‘yicha Deal topilmadi.</div>}</div>
     <div className="pagination"><span>{safePage} / {pages} sahifa</span><div><button disabled={safePage <= 1} onClick={() => setPage((value) => value - 1)}>Oldingi</button><button disabled={safePage >= pages} onClick={() => setPage((value) => value + 1)}>Keyingi</button></div></div>
@@ -571,7 +520,7 @@ function StageControlView({ records, historicalRecords, reconciliation, loading,
 
 function DiagnosticsView({ sync, providers, records, reconciliation, onProviderChange }: { sync: SyncState; providers: ProviderDiagnostic[]; records: AnalyticsRecord[]; reconciliation: StageReconciliation | null; onProviderChange: (key: string, mode: string) => void }) {
   const permissions = [["Deal API", sync.permissions.deals], ["Activity API", sync.permissions.activities], ["Stage history", sync.permissions.stageHistory], ["User API", sync.permissions.managers], ["Telephony / Call Statistics", sync.permissions.telephony]];
-  const qualities = [["Deals without activities", records.filter((row) => row.outgoingCallCount === 0).length], ["Deals without stage history", records.filter((row) => !row.stageTimeline.length).length], ["Calls without outcome data", records.filter((row) => row.outgoingCallCount > 0 && row.firstCallOutcome === "Noma’lum").length], ["Missing sales manager", records.filter((row) => !row.salesManagerId).length], ["Missing failure reason", records.filter((row) => ["LOW_QUALITY", "LOST"].includes(row.salesStatus) && row.lossReason === "Sabab ko‘rsatilmagan").length], ["Seller fallback: current responsible", records.filter((row) => row.salesManagerAttribution === "CURRENT_RESPONSIBLE").length], ["Duplicate leads", countDuplicates(records)], ["Data unavailable", records.filter((row) => row.dataUnavailable).length]] as const;
+  const qualities = [["Deals without stage history", records.filter((row) => !row.stageTimeline.length).length], ["First processing time unknown", records.filter((row) => row.processingSource === "NO_PROCESSING_EVIDENCE").length], ["Missing sales manager", records.filter((row) => !row.salesManagerId).length], ["Missing failure reason", records.filter((row) => ["LOW_QUALITY", "LOST"].includes(row.salesStatus) && row.lossReason === "Sabab ko‘rsatilmagan").length], ["Seller fallback: current responsible", records.filter((row) => row.salesManagerAttribution === "CURRENT_RESPONSIBLE").length], ["Duplicate leads", countDuplicates(records)], ["Data unavailable", records.filter((row) => row.dataUnavailable).length]] as const;
   return <><div className="page-title"><div><p className="eyebrow">ADMIN</p><h1>Diagnostika</h1><p>API ruxsatlari, call provider’lar va data quality nazorati.</p></div></div>
     {sync.permissions.telephony !== "ok" && <div className="notice warning page-notice"><AlertTriangle size={18} />Qo‘ng‘iroq natijasini aniqlash uchun Bitrix Telephony / Call Statistics ruxsati kerak. SLA va first outgoing call analytics ishlashda davom etadi.</div>}
     <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Bitrix24 ruxsatlari" /><div className="permission-list">{permissions.map(([label, state]) => <div key={label}><StatusDot state={state ?? "error"} /><span>{label}</span><strong>{state === "ok" ? "Tayyor" : state === "warning" ? "Cheklangan" : "Tekshirish kerak"}</strong></div>)}</div></article>
@@ -769,9 +718,6 @@ export default function DashboardClient() {
       if (filters.period && row.creationPeriod !== filters.period) return false;
       if (filters.sla && row.slaStatus !== filters.sla) return false;
       if (filters.processing && row.processingSource !== filters.processing) return false;
-      if (filters.outcome && row.firstCallOutcome !== filters.outcome) return false;
-      if (filters.called && (row.outgoingCallCount > 0 ? "yes" : "no") !== filters.called) return false;
-      if (filters.stageBeforeCall && (row.stageChangedBeforeCall ? "yes" : "no") !== filters.stageBeforeCall) return false;
       if (search && !`${row.dealId} ${row.title}`.toLowerCase().includes(search)) return false;
       return true;
     });
@@ -890,7 +836,7 @@ export default function DashboardClient() {
   return <div className="app-shell">
     <aside className={menuOpen ? "open" : ""}>
       <div className="brand"><div className="brand-mark">B24</div><div><strong>Deal Processing</strong><small>Sales analytics</small></div><button className="mobile-close" onClick={() => setMenuOpen(false)}><X size={18} /></button></div>
-      <nav>{navItems.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => { if (item.id === "stages") setFilters((current) => ({ ...current, source: "", period: "", sla: "", processing: "", outcome: "", called: "", stageBeforeCall: "" })); setView(item.id); setMenuOpen(false); }}><item.icon size={18} /><span>{item.label}</span>{item.id === "diagnostics" && sync.permissions.telephony === "warning" && <i />}</button>)}</nav>
+      <nav>{navItems.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => { if (item.id === "stages") setFilters((current) => ({ ...current, source: "", period: "", sla: "", processing: "" })); setView(item.id); setMenuOpen(false); }}><item.icon size={18} /><span>{item.label}</span>{item.id === "diagnostics" && sync.permissions.telephony === "warning" && <i />}</button>)}</nav>
       <div className="sidebar-status"><div><span className="live-dot" /><strong>Bitrix24 ulangan</strong></div><small>Oxirgi sync</small><p>{fmtDate(sync.lastSyncAt)}</p></div>
       <div className="sidebar-foot"><ShieldCheck size={16} /><span>Webhook server secret’da himoyalangan</span></div>
     </aside>
@@ -909,7 +855,6 @@ export default function DashboardClient() {
         {view === "quality" && <QualityView records={cohortFiltered} />}
         {view === "stages" && <StageControlView records={filteredCurrentStages} historicalRecords={stageHistoricalRecords} reconciliation={stageReconciliation} loading={currentStageLoading} error={currentStageError} onRefresh={() => void loadCurrentStages()} />}
         {view === "deals" && <><div className="page-title"><div><p className="eyebrow">DETAIL REPORT</p><h1>Deal’lar</h1><p>Sotuv holati, sotuvchi attribution’i, stage yoshi va processing yagona jadvalda.</p></div></div><DealsTable records={detailFiltered} /></>}
-        {view === "calls" && <CallsView records={cohortFiltered.filter((row) => row.operationalPipeline)} />}
         {view === "diagnostics" && <DiagnosticsView sync={sync} providers={providers} records={records} reconciliation={stageReconciliation} onProviderChange={changeProvider} />}
         {view === "settings" && <SettingsView settings={settings} syncing={refreshing || sync.status === "running"} onSave={saveSettings} onFullSync={saveAndFullSync} />}
         <footer><span>Bitrix24 Deal Processing Dashboard</span><span>Timezone: Asia/Tashkent · Business minutes only</span></footer>

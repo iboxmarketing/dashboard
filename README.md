@@ -11,7 +11,7 @@ Production is hosted with ChatGPT Sites. This repository is the portable source 
 - treats SD Sales + SD Обучение/Сопровождение as one SD project flow;
 - separates marketing low-quality leads (`Not Relevant`) from qualified leads later lost by Sales;
 - records a sale when payment is reached or the deal moves to the matching post-sale funnel;
-- calculates processing SLA from the first outgoing call, with first stage change as fallback;
+- calculates processing SLA from entry into the SQL or Not Relevant stage, not from calls;
 - preserves the seller attached to a completed sale;
 - shows a lightweight live snapshot of all currently open deals in selected Sales funnels;
 - compares that live snapshot with the historical analytics cache to expose missing or stale records.

@@ -10,7 +10,7 @@
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vite",
     "build": "bash scripts/build-verified.sh",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
-    "test": "node --import tsx --test tests/business-time.test.ts tests/current-stages.test.ts tests/pipelines.test.ts tests/sales-logic.test.ts tests/sync-window.test.ts tests/duplicates.test.ts tests/sales-snapshots.test.ts tests/stage-semantics.test.ts && npm run build && node --test tests/rendered-html.test.mjs",
+    "test": "node --import tsx --test tests/business-time.test.ts tests/current-stages.test.ts tests/pipelines.test.ts tests/sales-logic.test.ts tests/sync-window.test.ts tests/duplicates.test.ts tests/sales-snapshots.test.ts tests/stage-semantics.test.ts tests/first-processing.test.ts && npm run build && node --test tests/rendered-html.test.mjs",
     "lint": "bash scripts/sites-env.sh -- eslint . --ignore-pattern dist --ignore-pattern .next",
     "secrets:check": "bash scripts/check-secrets.sh",
     "verify": "npm run secrets:check && npm run lint && npm test",

@@ -12,7 +12,7 @@ Read `docs/HANDOFF.md`, `docs/BUSINESS_RULES.md`, `docs/ARCHITECTURE.md`, and `d
 6. Current-stage counts must come from a live query of all open deals in selected Sales funnels and must not be limited by `DATE_CREATE`.
 7. Historical reports are cohort-based and may use the configured import range. Do not present them as live inventory.
 8. Seller attribution for completed sales must remain stable; never silently replace it with a later customer-care or call-center assignee.
-9. The first outgoing call has priority as the processing event. First stage change is a fallback only when no outgoing call exists.
+9. First processing is the CRM-recorded qualification outcome: entry into the SQL/Обработка or Not Relevant stage. Calls do not stop the processing timer, because call coverage is uneven across sellers. Intermediate stages such as No Answer do not count.
 10. Call-center funnels are excluded unless the product owner explicitly changes scope.
 
 ## Engineering rules
