@@ -41,3 +41,12 @@ next-env.d.ts
 /.sites-runtime/
 /outputs/
 /work/
+
+# local credentials and data exports
+.dev.vars
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+*.backup
+*.bak
