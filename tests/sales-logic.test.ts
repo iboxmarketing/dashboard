@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyLossReasonGroup, classifySalesStatus, countSalesLost, fieldDisplayValue, isSalesLost, salesManagerKey } from "../lib/sales-logic";
+import { classifyLossReasonGroup, classifySalesStatus, countSalesLost, dealOutcomeLabel, fieldDisplayValue, isSalesLost, salesLostRate, salesManagerKey } from "../lib/sales-logic";
 import { buildAnalyticsRecords, type RawStageHistory } from "../lib/analytics";
 import type { AnalyticsRecord } from "../lib/types";
 import { defaultSettings } from "../lib/business-time";
@@ -206,4 +206,79 @@ test("Sales Lost 7: routing sabab bilan yopilgan deal SQL sifatida qabul qilinga
   // salesStatus LOST, so it still counts as quality accepted upstream.
   assert.equal(classifySalesStatus({ stage: "Закрыто и не реализовано", paymentReached: false, inPostSalePipeline: false }), "LOST");
   assert.equal(classifyLossReasonGroup({ status: "LOST", reason: "SD ga o‘tkazildi", routingPatterns: ["sd"] }), "ROUTING");
+});
+
+type RateRow = { qualified: boolean; lossReasonGroup: AnalyticsRecord["lossReasonGroup"]; salesStatus: AnalyticsRecord["salesStatus"] };
+
+function rateRow(qualified: boolean, lossReasonGroup: RateRow["lossReasonGroup"], salesStatus: RateRow["salesStatus"]): RateRow {
+  return { qualified, lossReasonGroup, salesStatus };
+}
+function cohort(counts: { sqlActive: number; salesLost: number; routing: number; marketing: number; won: number; unqualifiedActive: number }) {
+  return [
+    ...Array.from({ length: counts.sqlActive }, () => rateRow(true, "NONE", "ACTIVE")),
+    ...Array.from({ length: counts.salesLost }, () => rateRow(true, "SALES", "LOST")),
+    ...Array.from({ length: counts.routing }, () => rateRow(true, "ROUTING", "LOST")),
+    ...Array.from({ length: counts.marketing }, () => rateRow(false, "MARKETING", "LOW_QUALITY")),
+    ...Array.from({ length: counts.won }, () => rateRow(true, "NONE", "WON")),
+    ...Array.from({ length: counts.unqualifiedActive }, () => rateRow(false, "NONE", "ACTIVE")),
+  ];
+}
+
+test("Rate 1: 100 lead / 60 SQL / 12 Sotilmadi → 20% (lead’dan emas, SQL’dan)", () => {
+  const rows = cohort({ sqlActive: 30, salesLost: 12, routing: 0, marketing: 18, won: 18, unqualifiedActive: 22 });
+  assert.equal(rows.length, 100);
+  assert.equal(rows.filter((row) => row.qualified).length, 60);
+  assert.equal(countSalesLost(rows), 12);
+  assert.equal(salesLostRate(rows), 20);
+  // The old cohort denominator produced 12% for the same data.
+  assert.notEqual(salesLostRate(rows), 12);
+});
+
+test("Rate 2: SQL nol bo‘lsa 0% — NaN yoki Infinity emas", () => {
+  const rows = cohort({ sqlActive: 0, salesLost: 0, routing: 0, marketing: 5, won: 0, unqualifiedActive: 7 });
+  const rate = salesLostRate(rows);
+  assert.equal(rate, 0);
+  assert.ok(Number.isFinite(rate));
+  assert.equal(salesLostRate([]), 0);
+});
+
+test("Rate 3: ROUTING sotilmagan raqamga ham, foizga ham kirmaydi", () => {
+  const rows = cohort({ sqlActive: 0, salesLost: 0, routing: 1, marketing: 0, won: 0, unqualifiedActive: 0 });
+  assert.equal(countSalesLost(rows), 0);
+  assert.equal(salesLostRate(rows), 0);
+  assert.equal(rows.filter((row) => row.lossReasonGroup === "ROUTING").length, 1);
+  assert.deepEqual(dealOutcomeLabel({ salesStatus: "LOST", lossReasonGroup: "ROUTING" }), { label: "Yo‘naltirildi", tone: "neutral" });
+});
+
+test("Rate 4: kanonik Sotilmadi yozuvi “Sotilmadi” deb belgilanadi", () => {
+  assert.deepEqual(dealOutcomeLabel({ salesStatus: "LOST", lossReasonGroup: "SALES" }), { label: "Sotilmadi", tone: "danger" });
+});
+
+test("Rate 5: Not Relevant Sotilmadi’dan ajratilgan bo‘lib qoladi", () => {
+  const rows = cohort({ sqlActive: 0, salesLost: 0, routing: 0, marketing: 3, won: 0, unqualifiedActive: 0 });
+  assert.equal(countSalesLost(rows), 0);
+  assert.equal(salesLostRate(rows), 0);
+  assert.deepEqual(dealOutcomeLabel({ salesStatus: "LOW_QUALITY", lossReasonGroup: "MARKETING" }), { label: "Sifatsiz", tone: "warning" });
+});
+
+test("Rate 6: Lead→SQL, SQL→Sotuv va Lead→Sotuv populyatsiyalari o‘zgarmadi", () => {
+  const rows = cohort({ sqlActive: 30, salesLost: 12, routing: 0, marketing: 18, won: 18, unqualifiedActive: 22 });
+  const leads = rows.length; const sql = rows.filter((row) => row.qualified).length;
+  const won = rows.filter((row) => row.salesStatus === "WON").length;
+  assert.equal(Math.round((sql / leads) * 100), 60);
+  assert.equal(Math.round((won / sql) * 100), 30);
+  assert.equal(Math.round((won / leads) * 100), 18);
+  assert.deepEqual(dealOutcomeLabel({ salesStatus: "WON", lossReasonGroup: "NONE" }), { label: "Sotilgan", tone: "success" });
+  assert.deepEqual(dealOutcomeLabel({ salesStatus: "ACTIVE", lossReasonGroup: "NONE" }), { label: "Aktiv", tone: "neutral" });
+});
+
+test("Rate 7: foiz va son aynan bitta Sotilmadi populyatsiyasidan hisoblanadi", () => {
+  const rows = cohort({ sqlActive: 10, salesLost: 5, routing: 4, marketing: 6, won: 5, unqualifiedActive: 0 });
+  const sql = rows.filter((row) => row.qualified).length;
+  assert.equal(countSalesLost(rows), 5);
+  assert.equal(sql, 24);
+  assert.equal(salesLostRate(rows), Math.round((countSalesLost(rows) / sql) * 100));
+  assert.equal(salesLostRate(rows), 21);
+  // A stale routing reason on a live deal must not be badged as terminal.
+  assert.deepEqual(dealOutcomeLabel({ salesStatus: "ACTIVE", lossReasonGroup: "ROUTING" }), { label: "Aktiv", tone: "neutral" });
 });

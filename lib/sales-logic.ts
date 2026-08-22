@@ -86,3 +86,34 @@ export function countSalesLost(rows: { lossReasonGroup?: LossReasonGroup | null 
 export function salesManagerKey(row: { salesManagerId?: string | null }) {
   return row.salesManagerId || "unknown";
 }
+
+/**
+ * Sales Lost rate. Sales Lost is a post-SQL outcome, so the denominator is the
+ * quality-accepted population, never the whole lead cohort: 12 lost out of
+ * 60 SQL is 20%, not 12% of 100 leads.
+ *
+ * Reuses the canonical `qualified` flag produced by buildAnalyticsRecords —
+ * there is deliberately no second SQL definition. Zero SQL yields 0.
+ */
+export function salesLostRate(rows: { lossReasonGroup?: LossReasonGroup | null; qualified?: boolean }[]) {
+  const sql = rows.filter((row) => row.qualified).length;
+  return sql ? Math.round((countSalesLost(rows) / sql) * 100) : 0;
+}
+
+export type DealOutcomePresentation = { label: string; tone: "success" | "danger" | "warning" | "neutral" };
+
+/**
+ * Row-level outcome badge. Terminal deals are split by loss group so a routed
+ * card no longer reads "Sotilmadi" while every Sotilmadi count excludes it.
+ * Presentation only: no new SalesStatus value and no stored field.
+ */
+export function dealOutcomeLabel(row: { salesStatus?: SalesStatus; lossReasonGroup?: LossReasonGroup | null }): DealOutcomePresentation {
+  if (row.salesStatus === "WON") return { label: "Sotilgan", tone: "success" };
+  if (row.salesStatus === "LOW_QUALITY") return { label: "Sifatsiz", tone: "warning" };
+  if (row.salesStatus === "LOST") {
+    return row.lossReasonGroup === "ROUTING"
+      ? { label: "Yo‘naltirildi", tone: "neutral" }
+      : { label: "Sotilmadi", tone: "danger" };
+  }
+  return { label: "Aktiv", tone: "neutral" };
+}
