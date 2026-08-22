@@ -9,6 +9,7 @@ import {
 import type { CrmFieldOption, PipelineOption, PipelineStageOption } from "./types";
 export { normalizePipelineName, resolvePipelineSelection } from "./pipelines";
 import { normalizePipelineName, pairPostSalePipeline, resolvePipelineSelection, resolvePostSalePipelines } from "./pipelines";
+import { resolveSyncWindow } from "./sync-window";
 
 const activitySelect = [
   "ID", "OWNER_ID", "OWNER_TYPE_ID", "BINDINGS", "TYPE_ID", "PROVIDER_ID", "PROVIDER_TYPE_ID",
@@ -225,12 +226,14 @@ export async function startSync(options: { days?: number; full?: boolean; pipeli
   const selectedIds = allSelected.map((item) => item.id);
   const scopeState = await getDictionary<{ lastSyncAt: string | null }>(`syncScope:${scopedMain.id}`, { lastSyncAt: null });
   const now = new Date();
-  const days = Math.min(365, Math.max(1, Number(options.days ?? settings.historyDays)));
-  const mode = options.full || !scopeState.lastSyncAt ? "full" : "incremental";
-  const lastSyncMs = Date.parse(scopeState.lastSyncAt ?? "");
-  const from = mode === "full"
-    ? new Date(now.getTime() - days * 86_400_000)
-    : new Date(Math.max(now.getTime() - 86_400_000, (Number.isFinite(lastSyncMs) ? lastSyncMs : now.getTime()) - 10 * 60_000));
+  const window = resolveSyncWindow({
+    lastSuccessfulSyncAt: scopeState.lastSyncAt,
+    now,
+    bootstrapDays: Number(options.days ?? settings.historyDays),
+    full: options.full,
+  });
+  const mode = window.mode;
+  const from = window.from;
   const fromIso = from.toISOString();
   const runId = crypto.randomUUID();
   const permissions = { deals: "ok", activities: "ok", stageHistory: "ok", managers: "ok", telephony: "ok" };
@@ -421,7 +424,10 @@ async function analyticsStep(job: StoredSyncJob) {
     const completedAt = new Date().toISOString();
     const finished: StoredSyncJob = { ...job, status: "success", phase: "done", progress: 100, processed: job.counts.deals ?? 0, total: job.counts.deals ?? 0, cursor: 0, message: "Sinxronizatsiya yakunlandi", safeError: null };
     await saveSyncJob(finished);
-    await saveDictionary(`syncScope:${job.scopePipelineId}`, { lastSyncAt: completedAt, pipelineName: job.selectedPipelines[0]?.name ?? "" });
+    // The checkpoint is the watermark this run actually queried (`toIso`), not
+    // the moment it finished. A long run would otherwise skip everything
+    // modified while it was still working.
+    await saveDictionary(`syncScope:${job.scopePipelineId}`, { lastSyncAt: job.toIso, pipelineName: job.selectedPipelines[0]?.name ?? "" });
     await saveSyncState({ status: "success", lastSyncAt: completedAt, lastFrom: job.fromIso, counts: job.counts, permissions: job.permissions, safeError: null });
     return finished;
   }
