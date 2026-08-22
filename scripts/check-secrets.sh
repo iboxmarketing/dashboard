@@ -27,6 +27,7 @@ fi
 
 candidate_files=()
 while IFS= read -r -d '' file; do
+  [[ -f "$file" ]] || continue
   [[ "$file" == "scripts/check-secrets.sh" ]] && continue
   candidate_files+=("$file")
 done < <(git ls-files --cached --others --exclude-standard -z)
