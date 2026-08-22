@@ -154,3 +154,23 @@ export const customPageWidgets = sqliteTable("custom_page_widgets", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
+
+// Read-only share links for a Custom Page. Only the SHA-256 hash of a token is
+// stored: the raw token is shown once, at creation, and never persisted.
+// Visibility belongs to the share, not the widget, so two shares of the same
+// page can expose different subsets.
+export const pageShareTokens = sqliteTable("page_share_tokens", {
+  id: text("id").primaryKey(),
+  pageId: text("page_id").notNull(),
+  tokenHash: text("token_hash").notNull().unique(),
+  label: text("label"),
+  createdAt: text("created_at").notNull(),
+  expiresAt: text("expires_at"),
+  revokedAt: text("revoked_at"),
+  lastAccessedAt: text("last_accessed_at"),
+});
+
+export const pageShareWidgets = sqliteTable("page_share_widgets", {
+  shareId: text("share_id").notNull(),
+  widgetId: text("widget_id").notNull(),
+});

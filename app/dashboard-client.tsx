@@ -18,9 +18,14 @@ import {
 } from "@/lib/projects";
 import {
   MANUAL_KPI_FORMATS, PAGE_RANGES, PAGE_TEMPLATES, WIDGET_REGISTRY, WIDGET_SOURCE_LABELS,
-  filterPages, formatManualValue, pageWidgets, widgetSource,
+  filterPages, formatManualValue, pageRangeBounds, pageRangeLabel, pageWidgets,
+  resolveWidgetRange, selectLatestUpdates, selectProjectsListRows, widgetSource,
   type CustomPage, type PageWidget, type WidgetType,
 } from "@/lib/custom-pages";
+import {
+  DEFAULT_SHARED_WIDGET_TYPES, SHARE_STATUS_LABELS, defaultVisibleWidgetIds, shareStatus,
+  type PageShare,
+} from "@/lib/share-tokens";
 import { countSalesLost, dealOutcomeLabel, isEligibleCohortDeal, isSalesLost, salesLostRate, salesManagerKey } from "@/lib/sales-logic";
 import { markDuplicates } from "@/lib/duplicates";
 import { stageConfigConflicts } from "@/lib/stage-config";
@@ -802,14 +807,6 @@ function ProjectDetailView({ project, updates, onBack, onEditProject, onArchive,
 type PageDraft = { id?: string; name: string; description: string; audience: string; defaultRange: string };
 type WidgetDraft = { id?: string; pageId: string; widgetType: WidgetType; title: string; config: Record<string, unknown> };
 
-function pageRangeBounds(range: string) {
-  const now = new Date();
-  const start = range === "7" ? new Date(now.getTime() - 6 * 86_400_000)
-    : range === "month" ? new Date(now.getFullYear(), now.getMonth(), 1)
-      : new Date(now.getTime() - 29 * 86_400_000);
-  return { from: start.getTime(), to: now.getTime() };
-}
-
 /** Renders one widget. Sales numbers come from the canonical metric helper. */
 function WidgetBlock({ widget, records, projects, updates, pageRange, editing }: {
   widget: PageWidget; records: AnalyticsRecord[]; projects: Project[]; updates: ProjectUpdate[];
@@ -824,13 +821,13 @@ function WidgetBlock({ widget, records, projects, updates, pageRange, editing }:
   }
 
   if (widget.widgetType === "SALES_KPI") {
-    const range = String(widget.config.range || "") || pageRange;
+    const range = resolveWidgetRange(widget.config, pageRange);
     const bounds = pageRangeBounds(range);
     const populations = selectPeriodPopulations(records, bounds.from, bounds.to);
     const metrics = buildDashboardMetrics(populations.cohort, populations.periodSales);
     const resolved = resolveDashboardMetric(metrics, String(widget.config.metricId) as DashboardMetricId);
     return <KpiCard label={widget.title || resolved.label} value={resolved.value}
-      detail={<>{PAGE_RANGES.find((item) => item.id === range)?.label ?? range}{badge}</>} icon={BarChart3} tone="blue" />;
+      detail={<>{pageRangeLabel(range)}{badge}</>} icon={BarChart3} tone="blue" />;
   }
 
   if (widget.widgetType === "MANUAL_KPI") {
@@ -861,10 +858,7 @@ function WidgetBlock({ widget, records, projects, updates, pageRange, editing }:
   }
 
   if (widget.widgetType === "PROJECTS_LIST") {
-    const rows = filterProjects(projects, {
-      status: String(widget.config.status ?? ""), deadline: String(widget.config.deadline ?? ""),
-      includeArchived: widget.config.includeArchived === true,
-    }).slice(0, Number(widget.config.limit ?? 10));
+    const rows = selectProjectsListRows(projects, widget.config);
     return <article className="panel"><SectionHeader title={widget.title || "Loyihalar"} />
       <div className="table-wrap"><table className="data-table"><thead><tr><th>Loyiha</th><th>Status</th><th>Deadline</th><th>Oxirgi update</th></tr></thead>
         <tbody>{rows.map((project) => <tr key={project.id}><td><strong>{project.name}</strong></td>
@@ -874,13 +868,7 @@ function WidgetBlock({ widget, records, projects, updates, pageRange, editing }:
   }
 
   if (widget.widgetType === "LATEST_UPDATES") {
-    const projectId = String(widget.config.projectId ?? "");
-    const status = String(widget.config.status ?? "");
-    const rows = (projectId ? projectUpdates(updates, projectId) : projectUpdates(updates, "").length ? [] : [...updates])
-      .filter((update) => !projectId || update.projectId === projectId);
-    const source2 = (projectId ? rows : [...updates].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)))
-      .filter((update) => !status || update.status === status)
-      .slice(0, Number(widget.config.limit ?? 5));
+    const source2 = selectLatestUpdates(updates, widget.config);
     return <article className="panel"><SectionHeader title={widget.title || "Oxirgi update’lar"} />
       <div className="update-timeline">{source2.map((update) => <div key={update.id} className="update-item">
         <div className="update-head"><strong>{update.title}</strong><StatusPill status={update.status} /></div>
@@ -889,6 +877,85 @@ function WidgetBlock({ widget, records, projects, updates, pageRange, editing }:
   }
 
   return null;
+}
+
+type ShareDraft = { id?: string; pageId: string; label: string; expiresAt: string; widgetIds: string[] };
+
+/**
+ * Share management for one Custom Page.
+ *
+ * Visibility is per share, not per widget: the same page can back a link that
+ * shows only Sales KPIs and another that also carries the internal notes.
+ * Defaults are conservative, and the raw URL is displayed once — the server
+ * keeps only a hash and cannot show it again.
+ */
+function SharePanel({ page, widgets, shares, draft, setDraft, createdUrl, dismissUrl, onSubmit, onRevoke, busy }: {
+  page: CustomPage; widgets: PageWidget[]; shares: PageShare[];
+  draft: ShareDraft | null; setDraft: (draft: ShareDraft | null) => void;
+  createdUrl: string | null; dismissUrl: () => void;
+  onSubmit: (draft: ShareDraft) => void; onRevoke: (share: PageShare) => void; busy: boolean;
+}) {
+  const rows = shares.filter((share) => share.pageId === page.id);
+  const newDraft = (): ShareDraft => ({ pageId: page.id, label: "", expiresAt: "", widgetIds: defaultVisibleWidgetIds(widgets) });
+  const toggle = (widgetId: string) => {
+    if (!draft) return;
+    const next = draft.widgetIds.includes(widgetId)
+      ? draft.widgetIds.filter((id) => id !== widgetId)
+      : [...draft.widgetIds, widgetId];
+    setDraft({ ...draft, widgetIds: next });
+  };
+
+  return <section className="panel share-panel">
+    <SectionHeader title="Ulashish" subtitle="Faqat o‘qish uchun havola — qabul qiluvchi tanlangan widgetlardan boshqa hech narsani ko‘rmaydi"
+      action={<button className="button secondary" disabled={busy} onClick={() => setDraft(newDraft())}>Yangi link yaratish</button>} />
+
+    {createdUrl && <div className="share-created">
+      <strong>Havola faqat shu safar ko‘rsatiladi</strong>
+      <code>{createdUrl}</code>
+      <div className="share-created-actions">
+        <button className="button small" onClick={() => { void navigator.clipboard?.writeText(createdUrl); }}>Nusxalash</button>
+        <button className="button small secondary" onClick={dismissUrl}>Yopish</button>
+      </div>
+      <small>Yo‘qotsangiz qayta ko‘rsatib bo‘lmaydi — yangi link yarating.</small>
+    </div>}
+
+    {draft && <div className="share-draft">
+      <div className="filter-grid">
+        <label>Nomi<input value={draft.label} placeholder="CEO, Board weekly, Sales Director"
+          onChange={(event) => setDraft({ ...draft, label: event.target.value })} /></label>
+        <label>Amal qilish muddati<input type="date" value={draft.expiresAt}
+          onChange={(event) => setDraft({ ...draft, expiresAt: event.target.value })} /><small>Bo‘sh — muddatsiz</small></label>
+      </div>
+      <p className="share-hint">Ko‘rinadigan widgetlar ({draft.widgetIds.length}/{widgets.length}). Ichki matn va loyiha nomlari sukut bo‘yicha yopiq.</p>
+      <div className="share-widget-list">{widgets.map((widget) => <label key={widget.id} className="share-widget">
+        <input type="checkbox" checked={draft.widgetIds.includes(widget.id)} onChange={() => toggle(widget.id)} />
+        <span>{widget.title || WIDGET_REGISTRY.find((entry) => entry.type === widget.widgetType)?.label || widget.widgetType}</span>
+        <small>{WIDGET_SOURCE_LABELS[widgetSource(widget.widgetType)]}{DEFAULT_SHARED_WIDGET_TYPES.includes(widget.widgetType) ? "" : " · ichki"}</small>
+      </label>)}{!widgets.length && <div className="empty-table">Avval widget qo‘shing.</div>}</div>
+      <div className="drawer-actions">
+        <button className="button" disabled={busy || !draft.widgetIds.length} onClick={() => onSubmit(draft)}>Saqlash</button>
+        <button className="button secondary" disabled={busy} onClick={() => setDraft(null)}>Bekor qilish</button>
+      </div>
+    </div>}
+
+    <div className="table-wrap"><table className="data-table">
+      <thead><tr><th>Nomi</th><th>Yaratilgan</th><th>Muddat</th><th>Holat</th><th>Widget</th><th /></tr></thead>
+      <tbody>{rows.map((share) => {
+        const status = shareStatus(share);
+        return <tr key={share.id}>
+          <td><strong>{share.label || "Nomsiz"}</strong></td>
+          <td>{fmtDate(share.createdAt, false)}</td>
+          <td>{share.expiresAt ? fmtDate(share.expiresAt, false) : "Muddatsiz"}</td>
+          <td><span className={`status-pill ${status === "ACTIVE" ? "ok" : "muted"}`}>{SHARE_STATUS_LABELS[status]}</span></td>
+          <td>{share.widgetIds.length}</td>
+          <td><button className="button small secondary" disabled={busy}
+            onClick={() => setDraft({ id: share.id, pageId: page.id, label: share.label, expiresAt: (share.expiresAt ?? "").slice(0, 10), widgetIds: share.widgetIds })}>Tahrirlash</button>
+          {status === "ACTIVE" && <button className="button small secondary" disabled={busy}
+            onClick={() => { if (window.confirm("Havola bekor qilinsinmi? Bu amalni qaytarib bo‘lmaydi.")) onRevoke(share); }}>Bekor qilish</button>}</td>
+        </tr>;
+      })}</tbody></table>
+      {!rows.length && <div className="empty-table">Hali ulashish havolasi yo‘q.</div>}</div>
+  </section>;
 }
 
 export default function DashboardClient() {
@@ -922,6 +989,10 @@ export default function DashboardClient() {
   const [pageSearch, setPageSearch] = useState("");
   const [pageDraft, setPageDraft] = useState<PageDraft | null>(null);
   const [widgetDraft, setWidgetDraft] = useState<WidgetDraft | null>(null);
+  const [shares, setShares] = useState<PageShare[]>([]);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareDraft, setShareDraft] = useState<ShareDraft | null>(null);
+  const [shareUrlOnce, setShareUrlOnce] = useState<string | null>(null);
   const [projectError, setProjectError] = useState<string | null>(null);
   const syncLoopRef = useRef(false);
   const autoSyncIndexRef = useRef(0);
@@ -969,6 +1040,28 @@ export default function DashboardClient() {
     } catch (caught) { setProjectError(caught instanceof Error ? caught.message : "Sahifalar yuklanmadi"); }
   }, []);
 
+  const loadShares = useCallback(async () => {
+    try {
+      const response = await fetch("/api/shares", { cache: "no-store" });
+      const payload = await response.json() as { shares?: PageShare[]; error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Havolalar yuklanmadi");
+      setShares(payload.shares ?? []);
+    } catch (caught) { setProjectError(caught instanceof Error ? caught.message : "Havolalar yuklanmadi"); }
+  }, []);
+
+  /** The create response is the only place a raw URL exists; it is never refetched. */
+  const shareAction = useCallback(async (body: Record<string, unknown>) => {
+    setProjectBusy(true); setProjectError(null);
+    try {
+      const response = await fetch("/api/shares", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const payload = await response.json() as { url?: string; error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Amal bajarilmadi");
+      await loadShares();
+      return payload.url ?? null;
+    } catch (caught) { setProjectError(caught instanceof Error ? caught.message : "Amal bajarilmadi"); return null; }
+    finally { setProjectBusy(false); }
+  }, [loadShares]);
+
   const pageAction = useCallback(async (body: Record<string, unknown>) => {
     setProjectBusy(true); setProjectError(null);
     try {
@@ -996,11 +1089,11 @@ export default function DashboardClient() {
         const selectedProjectCategories = new Set([...payload.settings.selectedPipelineIds, ...payload.settings.postSalePipelineIds].map(String));
         const projectRecords = (payload.records ?? []).map(hydrateRecord).filter((row) => !selectedOrigins.size || selectedOrigins.has(String(row.originCategoryId)) || selectedProjectCategories.has(String(row.categoryId)));
         setRecords(markDuplicates(withLiveSlaState(projectRecords, normalizeSettings(payload.settings)))); setSettings(normalizeSettings(payload.settings)); setSync(payload.sync);
-        void loadCurrentStages(); void loadProjects(); void loadPages();
+        void loadCurrentStages(); void loadProjects(); void loadPages(); void loadShares();
       }
     } catch (caught) { setLoadError(caught instanceof Error ? caught.message : "Dashboard yuklanmadi"); }
     finally { setLoading(false); }
-  }, [loadCurrentStages, loadProjects, loadPages]);
+  }, [loadCurrentStages, loadProjects, loadPages, loadShares]);
   useEffect(() => {
     const timer = window.setTimeout(() => { void load(); }, 0);
     return () => window.clearTimeout(timer);
@@ -1189,10 +1282,19 @@ export default function DashboardClient() {
             <p className="eyebrow">{openPage.audience || "SAHIFA"}</p><h1>{openPage.name}</h1><p>{openPage.description || ""}</p></div>
             <div className="settings-actions">
               <button className="button secondary" onClick={() => setPageEditing(!pageEditing)}>{pageEditing ? "Ko‘rish rejimi" : "Tahrirlash"}</button>
+              <button className="button secondary" onClick={() => { setShareOpen(!shareOpen); setShareDraft(null); setShareUrlOnce(null); }}><ExternalLink size={16} />Ulashish</button>
               {pageEditing && <><button className="button secondary" onClick={() => setPageDraft({ id: openPage.id, name: openPage.name, description: openPage.description, audience: openPage.audience, defaultRange: openPage.defaultRange })}><Settings size={16} />Sahifa sozlamasi</button>
               <button className="button secondary" disabled={projectBusy} onClick={() => void pageAction({ action: openPage.archivedAt ? "restorePage" : "archivePage", id: openPage.id })}>{openPage.archivedAt ? "Arxivdan chiqarish" : "Arxivlash"}</button>
               <button className="button secondary" disabled={projectBusy} onClick={() => { if (window.confirm(`"${openPage.name}" sahifasi butunlay o‘chirilsinmi?`)) void pageAction({ action: "deletePage", id: openPage.id, confirm: true }).then(() => { setOpenPageId(null); setView("pages"); }); }}>O‘chirish</button></>}
             </div></div>
+          {shareOpen && <SharePanel page={openPage} widgets={openPageWidgets} shares={shares}
+            draft={shareDraft} setDraft={setShareDraft} createdUrl={shareUrlOnce} dismissUrl={() => setShareUrlOnce(null)}
+            busy={projectBusy}
+            onRevoke={(share) => void shareAction({ action: "revokeShare", id: share.id })}
+            onSubmit={(draft) => void shareAction(draft.id
+              ? { action: "updateShare", id: draft.id, label: draft.label, expiresAt: draft.expiresAt, widgetIds: draft.widgetIds }
+              : { action: "createShare", pageId: draft.pageId, label: draft.label, expiresAt: draft.expiresAt, widgetIds: draft.widgetIds })
+              .then((url) => { setShareDraft(null); if (url) setShareUrlOnce(url); })} />}
           {pageEditing && <section className="panel"><SectionHeader title="Widget qo‘shish" subtitle={`Sahifa oralig‘i: ${PAGE_RANGES.find((r) => r.id === openPage.defaultRange)?.label ?? openPage.defaultRange}`} />
             <div className="setup-actions">{WIDGET_REGISTRY.map((entry) => <button key={entry.type} className="button secondary" disabled={projectBusy}
               onClick={() => setWidgetDraft({ pageId: openPage.id, widgetType: entry.type, title: entry.label,

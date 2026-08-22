@@ -1,4 +1,5 @@
 import { DASHBOARD_METRICS, type DashboardMetricId } from "./dashboard-metrics";
+import { filterProjects, projectUpdates, type Project, type ProjectUpdate } from "./projects";
 
 /**
  * Custom Pages — audience-specific management dashboards (CEO, Marketing,
@@ -220,6 +221,46 @@ export function formatManualValue(config: Record<string, unknown>) {
     : raw;
   if (format === "percentage") return `${shown}%`;
   return unit ? `${shown} ${unit}` : shown;
+}
+
+/**
+ * Resolves a range id to absolute bounds. Shared by the authenticated builder
+ * and the public share renderer so a shared KPI covers exactly the same window
+ * as the same widget inside the app.
+ */
+export function pageRangeBounds(range: string, now: Date = new Date()) {
+  const start = range === "7" ? new Date(now.getTime() - 6 * 86_400_000)
+    : range === "month" ? new Date(now.getFullYear(), now.getMonth(), 1)
+      : new Date(now.getTime() - 29 * 86_400_000);
+  return { from: start.getTime(), to: now.getTime() };
+}
+
+/** A widget range of "" means "inherit the page range". */
+export function resolveWidgetRange(config: Record<string, unknown>, pageRange: string) {
+  return String(config.range || "") || pageRange;
+}
+
+export function pageRangeLabel(range: string) {
+  return PAGE_RANGES.find((item) => item.id === range)?.label ?? range;
+}
+
+/** Row selection for PROJECTS_LIST — one implementation, two renderers. */
+export function selectProjectsListRows(projects: Project[], config: Record<string, unknown>, now: Date = new Date()) {
+  return filterProjects(projects, {
+    status: String(config.status ?? ""),
+    deadline: String(config.deadline ?? ""),
+    includeArchived: config.includeArchived === true,
+  }, now).slice(0, Number(config.limit ?? 10));
+}
+
+/** Row selection for LATEST_UPDATES — newest first, optional project/status filter. */
+export function selectLatestUpdates(updates: ProjectUpdate[], config: Record<string, unknown>) {
+  const projectId = String(config.projectId ?? "");
+  const status = String(config.status ?? "");
+  const scoped = projectId
+    ? projectUpdates(updates, projectId)
+    : [...updates].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+  return scoped.filter((update) => !status || update.status === status).slice(0, Number(config.limit ?? 5));
 }
 
 export type TemplateWidget = { widgetType: WidgetType; title: string; config: Record<string, unknown> };

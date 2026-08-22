@@ -6,6 +6,7 @@ import {
   moveWidget, templateById, validatePageInput, validateWidgetConfig, validateWidgetInput,
   type PageWidget,
 } from "@/lib/custom-pages";
+import { deleteShareWidgetLinks, deleteSharesForPage } from "@/lib/share-storage";
 
 export async function GET() {
   try {
@@ -41,6 +42,9 @@ export async function POST(request: Request) {
     if (action === "deletePage") {
       if (!id) return Response.json({ error: "Sahifa ID kerak" }, { status: 400 });
       if (payload.confirm !== true) return Response.json({ error: "Tasdiqlanmagan" }, { status: 400 });
+      // Share links die with their page, and before it, so no foreign key is
+      // left dangling on stores that do not cascade.
+      await deleteSharesForPage(id);
       await deletePage(id);
       return Response.json({ ok: true });
     }
@@ -61,6 +65,7 @@ export async function POST(request: Request) {
 
     if (action === "deleteWidget") {
       if (!id || !pageId) return Response.json({ error: "Widget ID kerak" }, { status: 400 });
+      await deleteShareWidgetLinks(id);
       await deleteWidget(id, pageId);
       return Response.json({ ok: true });
     }
