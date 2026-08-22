@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyLossReasonGroup, classifySalesStatus, fieldDisplayValue } from "../lib/sales-logic";
+import { classifyLossReasonGroup, classifySalesStatus, countSalesLost, fieldDisplayValue, isSalesLost, salesManagerKey } from "../lib/sales-logic";
 import { buildAnalyticsRecords, type RawStageHistory } from "../lib/analytics";
+import type { AnalyticsRecord } from "../lib/types";
 import { defaultSettings } from "../lib/business-time";
 import { resolvePostSalePipelines } from "../lib/pipelines";
 
@@ -118,4 +119,91 @@ test("joriy Oplata stage WON bo‘lgani uchun stage limitidan oshgan deb belgila
   const row = record({ STAGE_ID: "PAYMENT", MOVED_TIME: "2025-01-01T09:00:00+05:00" }, []);
   assert.equal(row.salesStatus, "WON");
   assert.equal(row.stageOverdue, false);
+});
+
+type LossRow = { dealId: string; lossReasonGroup: AnalyticsRecord["lossReasonGroup"]; salesStatus: AnalyticsRecord["salesStatus"]; salesManagerId: string | null };
+
+function lossRow(dealId: string, lossReasonGroup: LossRow["lossReasonGroup"], salesStatus: LossRow["salesStatus"], salesManagerId: string | null = "7"): LossRow {
+  return { dealId, lossReasonGroup, salesStatus, salesManagerId };
+}
+/** Mirrors buildManagers: partition by seller bucket, count Sales Lost per bucket. */
+function managerLostRows(rows: LossRow[]) {
+  const grouped = new Map<string, LossRow[]>();
+  for (const row of rows) {
+    const key = salesManagerKey(row);
+    grouped.set(key, [...(grouped.get(key) ?? []), row]);
+  }
+  return [...grouped.entries()].map(([id, group]) => ({ id, lost: countSalesLost(group) }));
+}
+const sumLost = (rows: LossRow[]) => managerLostRows(rows).reduce((total, row) => total + row.lost, 0);
+
+test("Sales Lost 1: SALES yo‘qotish headline va menejerda bir xil", () => {
+  const rows = [lossRow("1", "SALES", "LOST")];
+  assert.equal(countSalesLost(rows), 1);
+  assert.deepEqual(managerLostRows(rows), [{ id: "7", lost: 1 }]);
+});
+
+test("Sales Lost 2: ROUTING yozuvi Sotilmadi’ga kirmaydi", () => {
+  const rows = [lossRow("1", "ROUTING", "LOST")];
+  // The regression itself: the old manager column keyed on salesStatus and
+  // counted this record while the headline did not.
+  assert.equal(rows.filter((row) => row.salesStatus === "LOST").length, 1);
+  assert.equal(countSalesLost(rows), 0);
+  assert.deepEqual(managerLostRows(rows), [{ id: "7", lost: 0 }]);
+  assert.equal(rows.filter((row) => row.lossReasonGroup === "ROUTING").length, 1);
+});
+
+test("Sales Lost 3: Not Relevant hech qayerda Sotilmadi emas", () => {
+  const rows = [lossRow("1", "MARKETING", "LOW_QUALITY")];
+  assert.equal(countSalesLost(rows), 0);
+  assert.equal(sumLost(rows), 0);
+  assert.equal(rows.filter((row) => row.lossReasonGroup === "MARKETING").length, 1);
+});
+
+test("Sales Lost 4: aralash populyatsiyada hamma joyda 2 ta", () => {
+  const rows = [
+    lossRow("1", "SALES", "LOST"), lossRow("2", "SALES", "LOST"),
+    lossRow("3", "ROUTING", "LOST"), lossRow("4", "MARKETING", "LOW_QUALITY"),
+    lossRow("5", "NONE", "WON"),
+  ];
+  assert.equal(countSalesLost(rows), 2);
+  assert.equal(sumLost(rows), 2);
+  // Untouched groups keep their existing totals.
+  assert.equal(rows.filter((row) => row.lossReasonGroup === "ROUTING").length, 1);
+  assert.equal(rows.filter((row) => row.lossReasonGroup === "MARKETING").length, 1);
+  assert.equal(rows.filter((row) => row.salesStatus === "WON").length, 1);
+  assert.equal(rows.filter((row) => row.salesStatus === "LOST").length, 3);
+});
+
+test("Sales Lost 5: menejerlar yig‘indisi headline bilan mos, Unknown ham yo‘qolmaydi", () => {
+  const rows = [
+    lossRow("1", "SALES", "LOST", "7"), lossRow("2", "SALES", "LOST", "7"),
+    lossRow("3", "SALES", "LOST", "9"),
+    lossRow("4", "SALES", "LOST", null),
+    lossRow("5", "ROUTING", "LOST", "9"), lossRow("6", "MARKETING", "LOW_QUALITY", "7"),
+  ];
+  const perManager = managerLostRows(rows);
+  assert.equal(countSalesLost(rows), 4);
+  assert.equal(sumLost(rows), 4);
+  assert.deepEqual(perManager.find((row) => row.id === "7"), { id: "7", lost: 2 });
+  assert.deepEqual(perManager.find((row) => row.id === "9"), { id: "9", lost: 1 });
+  // The unassigned bucket is reported, not dropped to force a match.
+  assert.deepEqual(perManager.find((row) => row.id === "unknown"), { id: "unknown", lost: 1 });
+});
+
+test("Sales Lost 6: isSalesLost faqat SALES guruhini tan oladi", () => {
+  assert.equal(isSalesLost({ lossReasonGroup: "SALES" }), true);
+  assert.equal(isSalesLost({ lossReasonGroup: "ROUTING" }), false);
+  assert.equal(isSalesLost({ lossReasonGroup: "MARKETING" }), false);
+  assert.equal(isSalesLost({ lossReasonGroup: "NONE" }), false);
+  assert.equal(isSalesLost({}), false);
+  assert.equal(salesManagerKey({ salesManagerId: null }), "unknown");
+  assert.equal(salesManagerKey({ salesManagerId: "7" }), "7");
+});
+
+test("Sales Lost 7: routing sabab bilan yopilgan deal SQL sifatida qabul qilingan bo‘lib qoladi", () => {
+  // Classification is untouched this sprint: a routed terminal deal is still
+  // salesStatus LOST, so it still counts as quality accepted upstream.
+  assert.equal(classifySalesStatus({ stage: "Закрыто и не реализовано", paymentReached: false, inPostSalePipeline: false }), "LOST");
+  assert.equal(classifyLossReasonGroup({ status: "LOST", reason: "SD ga o‘tkazildi", routingPatterns: ["sd"] }), "ROUTING");
 });

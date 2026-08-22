@@ -63,3 +63,26 @@ export function fieldDisplayValue(raw: unknown, options: Map<string, string> = n
   }).filter(Boolean);
   return labels.join(", ");
 }
+
+/**
+ * Canonical Sales Lost population: a quality-accepted lead that Sales did not
+ * close. Routing/transfer outcomes carry their own group and are deliberately
+ * excluded, so this is narrower than `salesStatus === "LOST"`.
+ *
+ * Every metric labelled "Sotilmadi" / "Sales loss" must go through here.
+ * `SalesStatus.LOST` stays useful as the broader terminal state (quality
+ * acceptance, drop-off, missing-reason diagnostics) but must never power a
+ * Sales Lost KPI on its own.
+ */
+export function isSalesLost(row: { lossReasonGroup?: LossReasonGroup | null }) {
+  return row.lossReasonGroup === "SALES";
+}
+
+export function countSalesLost(rows: { lossReasonGroup?: LossReasonGroup | null }[]) {
+  return rows.filter(isSalesLost).length;
+}
+
+/** Seller bucket used by every manager aggregation, including the unknown one. */
+export function salesManagerKey(row: { salesManagerId?: string | null }) {
+  return row.salesManagerId || "unknown";
+}

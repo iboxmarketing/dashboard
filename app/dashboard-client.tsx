@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AnalyticsRecord, CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, StageReconciliation, SyncProgressState } from "@/lib/types";
+import { countSalesLost, isSalesLost, salesManagerKey } from "@/lib/sales-logic";
 
 type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "calls" | "diagnostics" | "settings";
 type SyncState = SyncProgressState;
@@ -231,11 +232,11 @@ type ManagerRow = {
 function buildManagers(records: AnalyticsRecord[], wonRecords: AnalyticsRecord[] = records.filter((row) => row.salesStatus === "WON")): ManagerRow[] {
   const grouped = new Map<string, AnalyticsRecord[]>(); const wonGrouped = new Map<string, AnalyticsRecord[]>();
   for (const record of records) {
-    const key = record.salesManagerId || "unknown";
+    const key = salesManagerKey(record);
     grouped.set(key, [...(grouped.get(key) ?? []), record]);
   }
   for (const record of wonRecords) {
-    const key = record.salesManagerId || "unknown"; wonGrouped.set(key, [...(wonGrouped.get(key) ?? []), record]);
+    const key = salesManagerKey(record); wonGrouped.set(key, [...(wonGrouped.get(key) ?? []), record]);
   }
   const ids = new Set([...grouped.keys(), ...wonGrouped.keys()]);
   return [...ids].map((id) => { const rows = grouped.get(id) ?? []; const won = wonGrouped.get(id) ?? []; return ({
@@ -250,7 +251,7 @@ function buildManagers(records: AnalyticsRecord[], wonRecords: AnalyticsRecord[]
     beforeCall: rows.filter((row) => row.stageChangedBeforeCall).length,
     successTime: average(rows.map((row) => row.firstSuccessfulCallBusinessMinutes)),
     lowQuality: rows.filter((row) => row.lossReasonGroup === "MARKETING").length,
-    lost: rows.filter((row) => row.salesStatus === "LOST").length,
+    lost: countSalesLost(rows),
     active: rows.filter((row) => row.salesStatus === "ACTIVE").length,
     sales: won.length, cohortSales: rows.filter((row) => row.salesStatus === "WON").length, amount: won.reduce((sum, row) => sum + row.opportunity, 0),
     conversion: pct(rows.filter((row) => row.salesStatus === "WON").length, rows.length),
@@ -339,7 +340,7 @@ function DashboardView({ records, salesRecords, previousRecords, previousSalesRe
   const managers = buildManagers(records, salesRecords);
   const lowQuality = records.filter((row) => row.lossReasonGroup === "MARKETING");
   const routing = records.filter((row) => row.lossReasonGroup === "ROUTING");
-  const lost = records.filter((row) => row.lossReasonGroup === "SALES");
+  const lost = records.filter(isSalesLost);
   const active = records.filter((row) => row.salesStatus === "ACTIVE");
   const qualified = records.filter((row) => row.qualified);
   const cohortSales = records.filter((row) => row.salesStatus === "WON");
@@ -440,10 +441,10 @@ function TrendChart({ records }: { records: AnalyticsRecord[] }) {
 }
 
 function ManagerDetailView({ manager, cohortRecords, salesRecords, currentStages, onBack }: { manager: ManagerRow; cohortRecords: AnalyticsRecord[]; salesRecords: AnalyticsRecord[]; currentStages: CurrentStageRecord[] | null; onBack: () => void }) {
-  const belongs = (row: AnalyticsRecord) => (row.salesManagerId || "unknown") === manager.id;
+  const belongs = (row: AnalyticsRecord) => salesManagerKey(row) === manager.id;
   const leads = cohortRecords.filter(belongs); const sales = salesRecords.filter(belongs);
   const qualified = leads.filter((row) => row.qualified); const active = currentStages?.filter((row) => (row.assignedManagerId || "unknown") === manager.id) ?? leads.filter((row) => row.salesStatus === "ACTIVE");
-  const marketing = leads.filter((row) => row.lossReasonGroup === "MARKETING"); const lost = leads.filter((row) => row.lossReasonGroup === "SALES");
+  const marketing = leads.filter((row) => row.lossReasonGroup === "MARKETING"); const lost = leads.filter(isSalesLost);
   const amount = sales.reduce((sum, row) => sum + row.opportunity, 0);
   const sources = groupedCount(leads, (row) => row.source).map((source) => ({
     ...source,
@@ -532,7 +533,7 @@ function groupedCount<T>(records: T[], key: (row: T) => string) {
 
 function QualityView({ records }: { records: AnalyticsRecord[] }) {
   const low = records.filter((row) => row.lossReasonGroup === "MARKETING");
-  const lost = records.filter((row) => row.lossReasonGroup === "SALES");
+  const lost = records.filter(isSalesLost);
   const routing = records.filter((row) => row.lossReasonGroup === "ROUTING");
   const lowReasons = groupedCount(low, (row) => row.lossReason); const lostReasons = groupedCount(lost, (row) => row.lossReason);
   const routingReasons = groupedCount(routing, (row) => row.lossReason);
