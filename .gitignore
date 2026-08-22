@@ -51,3 +51,6 @@ next-env.d.ts
 *.dump
 *.backup
 *.bak
+
+# generated Cloudflare deploy config (contains account-scoped ids)
+wrangler.generated.jsonc

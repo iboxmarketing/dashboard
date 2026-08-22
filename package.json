@@ -14,7 +14,12 @@
     "lint": "bash scripts/sites-env.sh -- eslint . --ignore-pattern dist --ignore-pattern .next",
     "secrets:check": "bash scripts/check-secrets.sh",
     "verify": "npm run secrets:check && npm run lint && npm test",
-    "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate"
+    "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate",
+    "cf:config": "bash scripts/cf-config.sh",
+    "cf:migrate:local": "bash scripts/cf-migrate.sh --local",
+    "cf:migrate:remote": "bash scripts/cf-migrate.sh --remote",
+    "cf:deploy:dry": "bash scripts/cf-deploy.sh --dry-run",
+    "cf:deploy": "bash scripts/cf-deploy.sh"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
