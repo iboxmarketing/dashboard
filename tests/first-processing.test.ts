@@ -81,7 +81,7 @@ test("8: tarix yo‘q, joriy stage keyingi bosqich → ishlov vaqti to‘qib chi
   assert.equal(row.processingAt, null);
   assert.equal(row.processingBusinessMinutes, null);
   assert.equal(row.processingSource, "NO_PROCESSING_EVIDENCE");
-  assert.equal(row.slaStatus, "NO_PROCESSING");
+  assert.equal(row.slaStatus, "UNKNOWN_EVIDENCE", "dalil yo‘q — SLA maxrajiga kirmaydi");
 });
 
 test("9: nomi o‘zgargan bosqichlar sozlangan ID bilan aniqlanadi", () => {

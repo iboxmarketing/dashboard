@@ -1,4 +1,5 @@
 import { calculateBusinessMinutes, getSlaStart, isInsideWorkingTime } from "./business-time";
+import { resolveSlaState } from "./sla";
 import { classifyLossReasonGroup, classifySalesStatus, fieldDisplayValue, isLowQualityStage, isPaymentStage, isQualificationStage } from "./sales-logic";
 import type { StageSemantics } from "./stage-config";
 import type { SalesSnapshot } from "./storage";
@@ -259,7 +260,9 @@ export function buildAnalyticsRecords(input: {
       firstSuccessfulCallAt: successes[0]?.at.toISOString() ?? null, firstSuccessfulCallBusinessMinutes: successes[0] ? calculateBusinessMinutes(slaStart, successes[0].at, input.settings) : null,
       firstStageChangeAt: stageChange?.at.toISOString() ?? null, firstStageChangeTo: stageChange ? stageName(stageChange.stageId, input.stages) : null, firstStageChangeBusinessMinutes: stageMinutes,
       stageChangedBeforeCall, stageAttributionInferred: Boolean(stageChange), processingSource, processingAt: processingAt?.toISOString() ?? null, processingBusinessMinutes: processingMinutes,
-      slaStatus: processingMinutes === null ? "NO_PROCESSING" : processingMinutes <= input.settings.slaMinutes ? "ON_TIME" : "LATE",
+      // Point-in-time snapshot; the dashboard re-resolves it live so a lead can
+      // cross its deadline without needing another sync.
+      slaStatus: resolveSlaState({ processingBusinessMinutes: processingMinutes, processingSource, slaStart: slaStart.toISOString() }, input.settings),
       outgoingCallCount: calls.length, answeredCallCount: calls.filter((row) => callOutcome(row, statsByActivity.get(string(row.ID))).outcome === "Ko‘tardi").length,
       unansweredCallCount: calls.filter((row) => !["Ko‘tardi", "Noma’lum"].includes(callOutcome(row, statsByActivity.get(string(row.ID))).outcome)).length, latestCallOutcome: latestOutcome,
       dataUnavailable: (!input.activitiesAvailable || !input.stageHistoryAvailable) && !processingAt,

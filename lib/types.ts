@@ -106,7 +106,7 @@ export type CallOutcome =
   | "Noma’lum";
 
 export type ProcessingSource = "QUALIFICATION_STAGE" | "NO_PROCESSING_EVIDENCE" | "NO_PROCESSING";
-export type SlaStatus = "ON_TIME" | "LATE" | "NO_PROCESSING";
+export type SlaStatus = "ON_TIME" | "LATE" | "PENDING" | "OVERDUE_UNPROCESSED" | "UNKNOWN_EVIDENCE";
 export type CreationPeriod = "WORK_HOURS" | "AFTER_HOURS";
 export type SalesStatus = "ACTIVE" | "LOW_QUALITY" | "LOST" | "WON";
 export type LossReasonGroup = "MARKETING" | "SALES" | "ROUTING" | "NONE";

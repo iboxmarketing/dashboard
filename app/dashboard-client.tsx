@@ -11,6 +11,7 @@ import type { AnalyticsRecord, CrmFieldOption, CurrentStageRecord, DashboardSett
 import { countSalesLost, dealOutcomeLabel, isSalesLost, salesLostRate, salesManagerKey } from "@/lib/sales-logic";
 import { countDuplicates, isDuplicate, markDuplicates } from "@/lib/duplicates";
 import { stageConfigConflicts } from "@/lib/stage-config";
+import { SLA_LABELS, SLA_TONES, resolveSlaState, summarizeSla } from "@/lib/sla";
 
 type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "diagnostics" | "settings";
 type SyncState = SyncProgressState;
@@ -71,6 +72,11 @@ function fmtDate(value: string | null, withTime = true) {
     timeZone: "Asia/Tashkent", day: "2-digit", month: "2-digit", year: "numeric",
     ...(withTime ? { hour: "2-digit", minute: "2-digit" } : {}),
   }).format(date);
+}
+/** Re-resolves SLA state against the current clock so a lead can cross its
+ * deadline without waiting for another sync. */
+function withLiveSlaState(rows: AnalyticsRecord[], settings: DashboardSettings, now = new Date()): AnalyticsRecord[] {
+  return rows.map((row) => ({ ...row, slaStatus: resolveSlaState(row, settings, now) }));
 }
 function hydrateRecord(row: AnalyticsRecord): AnalyticsRecord {
   return {
@@ -226,7 +232,7 @@ function buildManagers(records: AnalyticsRecord[], wonRecords: AnalyticsRecord[]
     id, name: rows[0]?.salesManager ?? won[0]?.salesManager ?? "Aniqlanmagan", deals: rows.length,
     avg: average(rows.map((row) => row.processingBusinessMinutes)),
     median: median(rows.map((row) => row.processingBusinessMinutes)),
-    noProcessing: rows.filter((row) => row.processingSource === "NO_PROCESSING").length,
+    noProcessing: summarizeSla(rows).overdue,
     lowQuality: rows.filter((row) => row.lossReasonGroup === "MARKETING").length,
     lost: countSalesLost(rows),
     active: rows.filter((row) => row.salesStatus === "ACTIVE").length,
@@ -253,7 +259,7 @@ function ManagerTable({ rows, onSelect }: { rows: ManagerRow[]; onSelect: (manag
   return <div className="table-wrap"><table className="data-table manager-table"><thead><tr>
     <th>{header("Sotuvchi", "name")}</th><th>{header("Lead", "deals")}</th><th>{header("Davr sotuv", "sales")}</th><th>{header("Cohort sotuv", "cohortSales")}</th><th>{header("Summa", "amount")}</th>
     <th>{header("Konversiya", "conversion")}</th><th>{header("Sifatsiz", "lowQuality")}</th><th>{header("Sotilmadi", "lost")}</th><th>{header("Cohort aktiv", "active")}</th>
-    <th>{header("Avg ishlov", "avg")}</th><th>{header("Ishlov berilmagan", "noProcessing")}</th>
+    <th>{header("Avg ishlov", "avg")}</th><th>{header("Muddati o‘tgan", "noProcessing")}</th>
   </tr></thead><tbody>{sorted.map((row) => <tr key={row.id} onClick={() => onSelect(row)}>
     <td><div className="manager-cell"><span>{row.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span><strong>{row.name}</strong></div></td>
     <td>{row.deals}</td><td><strong className="success-text">{row.sales}</strong></td><td>{row.cohortSales}</td><td>{row.amount.toLocaleString("uz-UZ")}</td>
@@ -297,18 +303,17 @@ function FiltersBar({ filters, setFilters, records, currentStages, mode = "cohor
       <Select label="Manba" value={filters.source} onChange={(value) => set("source", value)}><option value="">Barcha manbalar</option>{sources.map((value) => <option key={value}>{value}</option>)}</Select>
       <Select label="Status" value={filters.stage} onChange={(value) => set("stage", value)}><option value="">Barcha statuslar</option>{stages.map((value) => <option key={value}>{value}</option>)}</Select>
       <Select label="Ish vaqti" value={filters.period} onChange={(value) => set("period", value)}><option value="">Ish vaqti: barchasi</option><option value="WORK_HOURS">Ish vaqtida</option><option value="AFTER_HOURS">Ish vaqtidan tashqarida</option></Select>
-      <Select label="SLA" value={filters.sla} onChange={(value) => set("sla", value)}><option value="">SLA: barchasi</option><option value="ON_TIME">SLA ichida</option><option value="LATE">Kechikkan</option><option value="NO_PROCESSING">Obrabotka qilinmagan</option></Select>
+      <Select label="SLA" value={filters.sla} onChange={(value) => set("sla", value)}><option value="">SLA: barchasi</option>{(Object.keys(SLA_LABELS) as (keyof typeof SLA_LABELS)[]).map((state) => <option key={state} value={state}>{SLA_LABELS[state]}</option>)}</Select>
       <Select label="Obrabotka usuli" value={filters.processing} onChange={(value) => set("processing", value)}><option value="">Obrabotka: barchasi</option><option value="QUALIFICATION_STAGE">Ishlov berilgan</option><option value="NO_PROCESSING">Ishlov berilmagan</option><option value="NO_PROCESSING_EVIDENCE">Vaqti noma’lum</option></Select>
     </div>}
   </div>;
 }
 
 function DashboardView({ records, salesRecords, previousRecords, previousSalesRecords, onManager }: { records: AnalyticsRecord[]; salesRecords: AnalyticsRecord[]; previousRecords: AnalyticsRecord[]; previousSalesRecords: AnalyticsRecord[]; onManager: (manager: ManagerRow) => void }) {
-  const processed = records.filter((row) => row.processingBusinessMinutes !== null);
+  const sla = summarizeSla(records);
   const noProcessing = records.filter((row) => row.processingSource === "NO_PROCESSING");
   const unknownProcessing = records.filter((row) => row.processingSource === "NO_PROCESSING_EVIDENCE");
   const afterHours = records.filter((row) => row.creationPeriod === "AFTER_HOURS");
-  const slaOnTime = processed.filter((row) => row.slaStatus === "ON_TIME");
   const managers = buildManagers(records, salesRecords);
   const lowQuality = records.filter((row) => row.lossReasonGroup === "MARKETING");
   const routing = records.filter((row) => row.lossReasonGroup === "ROUTING");
@@ -322,7 +327,8 @@ function DashboardView({ records, salesRecords, previousRecords, previousSalesRe
   const segment = (rows: AnalyticsRecord[]) => ({
     count: rows.length, avg: average(rows.map((row) => row.processingBusinessMinutes)),
     median: median(rows.map((row) => row.processingBusinessMinutes)),
-    no: pct(rows.filter((row) => row.processingSource === "NO_PROCESSING").length, rows.length),
+    sla: summarizeSla(rows).rate,
+    overdue: summarizeSla(rows).overdue,
   });
   const workSegment = segment(records.filter((row) => row.creationPeriod === "WORK_HOURS"));
   const afterSegment = segment(afterHours);
@@ -350,9 +356,10 @@ function DashboardView({ records, salesRecords, previousRecords, previousSalesRe
       <KpiCard label="Jami Deal" value={String(records.length)} detail="Tanlangan davr" icon={Database} />
       <KpiCard label="O‘rtacha birinchi ishlov" value={fmtMinutes(average(records.map((row) => row.processingBusinessMinutes)))} detail="Lead SQL yoki Not Relevant bosqichiga o‘tguncha" icon={Clock3} tone="indigo" />
       <KpiCard label="Median birinchi ishlov" value={fmtMinutes(median(records.map((row) => row.processingBusinessMinutes)))} detail="Ekstremal qiymatlarsiz markaz" icon={TimerReset} tone="violet" />
-      <KpiCard label="SLA ichida" value={`${pct(slaOnTime.length, processed.length)}%`} detail={`${slaOnTime.length} / ${processed.length} obrabotka`} icon={Gauge} tone="green" />
-      <KpiCard label="Ishlov vaqti noma’lum" value={String(unknownProcessing.length)} detail="Keyingi bosqichda, tarix yo‘q" icon={RefreshCw} tone="amber" />
-      <KpiCard label="Ishlov berilmagan" value={String(noProcessing.length)} detail={`${pct(noProcessing.length, records.length)}% jami Deal’dan`} icon={AlertTriangle} tone="red" />
+      <KpiCard label="SLA ichida" value={`${sla.rate}%`} detail={`${sla.onTime} / ${sla.denominator} · muddati aniqlangan lead`} icon={Gauge} tone="green" />
+      <KpiCard label="Ishlov muddati o‘tgan" value={String(sla.overdue)} detail="SLA tugagan, hali ishlov berilmagan" icon={AlertTriangle} tone="red" />
+      <KpiCard label="SLA muddati ichida" value={String(sla.pending)} detail="Hali muddati tugamagan — SLA’ga kirmaydi" icon={TimerReset} tone="cyan" />
+      <KpiCard label="Ishlov vaqti noma’lum" value={String(sla.unknown)} detail="Tarix yetishmaydi — SLA’ga kirmaydi" icon={RefreshCw} tone="amber" />
       <KpiCard label="Ish vaqtidan tashqarida" value={String(afterHours.length)} detail={`${pct(afterHours.length, records.length)}% jami Deal’dan`} icon={CalendarDays} tone="slate" />
     </section>
     <section className="panel"><SectionHeader title="Birinchi ishlov manbai" subtitle="Lead SQL yoki Not Relevant bosqichiga o‘tgan payt CRM’da qayd etilgan" /><BarList rows={[
@@ -366,7 +373,7 @@ function DashboardView({ records, salesRecords, previousRecords, previousSalesRe
         { title: "Ish vaqtidan tashqarida tushgan", data: afterSegment, tone: "after" },
       ].map(({ title, data, tone }) => <div className={`segment-card ${tone}`} key={title}>
         <div className="segment-title"><span>{tone === "work" ? <ArrowUpRight size={18} /> : <ArrowDownRight size={18} />}</span><div><strong>{title}</strong><small>{data.count} ta Deal</small></div></div>
-        <div className="segment-metrics"><div><span>Avg obrabotka</span><strong>{fmtMinutes(data.avg)}</strong></div><div><span>Median</span><strong>{fmtMinutes(data.median)}</strong></div><div><span>Ishlov berilmagan</span><strong>{data.no}%</strong></div></div>
+        <div className="segment-metrics"><div><span>Avg obrabotka</span><strong>{fmtMinutes(data.avg)}</strong></div><div><span>Median</span><strong>{fmtMinutes(data.median)}</strong></div><div><span>SLA</span><strong>{data.sla}%</strong></div><div><span>Muddati o‘tgan</span><strong>{data.overdue}</strong></div></div>
       </div>)}</div>
     </section>
     <section className="panel"><SectionHeader title="Menejerlar performance" subtitle="Qatorni bossangiz dashboard shu menejer bo‘yicha filtrlanadi" /><ManagerTable rows={managers.slice(0, 8)} onSelect={onManager} /></section>
@@ -381,7 +388,7 @@ function TrendChart({ records }: { records: AnalyticsRecord[] }) {
     return [...map.entries()].sort(([a], [b]) => a.localeCompare(b)).slice(-30).map(([date, rows]) => ({
       date, avg: average(rows.map((row) => row.processingBusinessMinutes)) ?? 0,
       median: median(rows.map((row) => row.processingBusinessMinutes)) ?? 0,
-      sla: pct(rows.filter((row) => row.slaStatus === "ON_TIME").length, rows.filter((row) => row.processingBusinessMinutes !== null).length),
+      sla: summarizeSla(rows).rate,
       count: rows.length,
     }));
   }, [records]);
@@ -408,9 +415,9 @@ function ManagerDetailView({ manager, cohortRecords, salesRecords, currentStages
   const reasons = groupedCount(leads.filter((row) => row.lossReasonGroup !== "NONE"), (row) => `${row.lossReasonGroup === "MARKETING" ? "Marketing" : row.lossReasonGroup === "ROUTING" ? "Routing" : "Sales"} · ${row.lossReason}`);
   const stageRows = groupedCount(active, (row) => row.stage).map((stage) => ({ ...stage, overdue: active.filter((row) => row.stage === stage.label && row.stageOverdue).length }));
   return <><div className="page-title manager-detail-title"><div><button className="back-button" onClick={onBack}><ArrowLeft size={16} />Menejerlarga qaytish</button><p className="eyebrow">INDIVIDUAL PERFORMANCE</p><h1>{manager.name}</h1><p>Lead manbasi, SQL, sotuv, yo‘qotish, stage yuklamasi va tezlik bitta profilga jamlandi.</p></div><div className="manager-identity"><span>{manager.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span><div><strong>{manager.name}</strong><small>{manager.id === "unknown" ? "Sotuvchi aniqlanmagan" : `Bitrix user #${manager.id}`}</small></div></div></div>
-    <section className="kpi-grid sales-kpis"><KpiCard label="Yangi lead" value={String(leads.length)} detail="Tanlangan cohort" icon={Database} /><KpiCard label="SQL" value={String(qualified.length)} detail={`${pct(qualified.length, leads.length)}% qabul qilingan`} icon={Check} tone="green" /><KpiCard label="Davr sotuv" value={String(sales.length)} detail={`${pct(leads.filter((row) => row.salesStatus === "WON").length, leads.length)}% cohort konversiya`} icon={CircleDollarSign} tone="cyan" /><KpiCard label="Sotuv summasi" value={amount.toLocaleString("uz-UZ")} detail={sales[0]?.currencyId || "Bitrix valyutasi"} icon={CircleDollarSign} tone="indigo" /><KpiCard label="Marketing sifatsiz" value={String(marketing.length)} detail={`${pct(marketing.length, leads.length)}% lead’dan`} icon={AlertTriangle} tone="amber" /><KpiCard label="Sotilmadi" value={String(lost.length)} detail={`${salesLostRate(leads)}% SQL’dan sotilmagan`} icon={XCircle} tone="red" /><KpiCard label="Savdo sikli" value={fmtHours(average(sales.map((row) => row.salesCycleHours)))} detail="Yaratilishdan Oplata’gacha" icon={TimerReset} tone="violet" /><KpiCard label="Birinchi ishlov vaqti" value={fmtMinutes(average(leads.map((row) => row.processingBusinessMinutes)))} detail={`${leads.filter((row) => row.processingSource === "NO_PROCESSING").length} ta ishlov berilmagan lead`} icon={Clock3} tone="slate" /></section>
+    <section className="kpi-grid sales-kpis"><KpiCard label="Yangi lead" value={String(leads.length)} detail="Tanlangan cohort" icon={Database} /><KpiCard label="SQL" value={String(qualified.length)} detail={`${pct(qualified.length, leads.length)}% qabul qilingan`} icon={Check} tone="green" /><KpiCard label="Davr sotuv" value={String(sales.length)} detail={`${pct(leads.filter((row) => row.salesStatus === "WON").length, leads.length)}% cohort konversiya`} icon={CircleDollarSign} tone="cyan" /><KpiCard label="Sotuv summasi" value={amount.toLocaleString("uz-UZ")} detail={sales[0]?.currencyId || "Bitrix valyutasi"} icon={CircleDollarSign} tone="indigo" /><KpiCard label="Marketing sifatsiz" value={String(marketing.length)} detail={`${pct(marketing.length, leads.length)}% lead’dan`} icon={AlertTriangle} tone="amber" /><KpiCard label="Sotilmadi" value={String(lost.length)} detail={`${salesLostRate(leads)}% SQL’dan sotilmagan`} icon={XCircle} tone="red" /><KpiCard label="Savdo sikli" value={fmtHours(average(sales.map((row) => row.salesCycleHours)))} detail="Yaratilishdan Oplata’gacha" icon={TimerReset} tone="violet" /><KpiCard label="Birinchi ishlov vaqti" value={fmtMinutes(average(leads.map((row) => row.processingBusinessMinutes)))} detail={`${summarizeSla(leads).overdue} ta muddati o‘tgan lead`} icon={Clock3} tone="slate" /></section>
     <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Qaysi source’dan nechta lead" subtitle="Sotuv — Oplata sanasi, qolganlari lead yaratilgan sanasi" /><div className="table-wrap"><table className="data-table"><thead><tr><th>Source</th><th>Lead</th><th>SQL</th><th>Sifatsiz</th><th>Sotilmadi</th><th>Sotuv</th></tr></thead><tbody>{sources.map((row) => <tr key={row.label}><td><strong>{row.label}</strong></td><td>{row.value}</td><td>{row.sql}</td><td>{row.low}</td><td>{row.lost}</td><td><strong className="success-text">{row.sales}</strong></td></tr>)}</tbody></table></div></article><article className="panel"><SectionHeader title="Joriy stage yuklamasi" subtitle={currentStages ? "Bitrix live · Assigned by ID" : "Sync bazasi · qizil raqam limitdan oshgan"} /><div className="stage-load-list">{stageRows.map((row) => <div key={row.label}><span>{row.label}</span><strong>{row.value}</strong><small className={row.overdue ? "danger-text" : ""}>{row.overdue} overdue</small></div>)}{!stageRows.length && <div className="empty-table">Aktiv lead yo‘q.</div>}</div></article></section>
-    <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Sabablar profili" subtitle="Marketing / Sales / Routing alohida" /><BarList rows={reasons.slice(0, 15).map((row) => ({ ...row, total: reasons.reduce((sum, item) => sum + item.value, 0), color: row.label.startsWith("Marketing") ? "#f59e0b" : row.label.startsWith("Routing") ? "#8a5dd1" : "#ef5962" }))} /></article><article className="panel compact-kpis"><SectionHeader title="Chek va ishlov sifati" /><div><span>O‘rtacha chek</span><strong>{(average(sales.map((row) => row.opportunity)) ?? 0).toLocaleString("uz-UZ", { maximumFractionDigits: 0 })}</strong></div><div><span>Median chek</span><strong>{(median(sales.map((row) => row.opportunity)) ?? 0).toLocaleString("uz-UZ", { maximumFractionDigits: 0 })}</strong></div><div><span>Ishlov qayd etilgan</span><strong>{pct(leads.filter((row) => row.processingBusinessMinutes !== null).length, leads.length)}%</strong></div><div><span>SLA ichida</span><strong>{pct(leads.filter((row) => row.slaStatus === "ON_TIME").length, leads.filter((row) => row.processingBusinessMinutes !== null).length)}%</strong></div></article></section>
+    <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Sabablar profili" subtitle="Marketing / Sales / Routing alohida" /><BarList rows={reasons.slice(0, 15).map((row) => ({ ...row, total: reasons.reduce((sum, item) => sum + item.value, 0), color: row.label.startsWith("Marketing") ? "#f59e0b" : row.label.startsWith("Routing") ? "#8a5dd1" : "#ef5962" }))} /></article><article className="panel compact-kpis"><SectionHeader title="Chek va ishlov sifati" /><div><span>O‘rtacha chek</span><strong>{(average(sales.map((row) => row.opportunity)) ?? 0).toLocaleString("uz-UZ", { maximumFractionDigits: 0 })}</strong></div><div><span>Median chek</span><strong>{(median(sales.map((row) => row.opportunity)) ?? 0).toLocaleString("uz-UZ", { maximumFractionDigits: 0 })}</strong></div><div><span>Ishlov qayd etilgan</span><strong>{pct(leads.filter((row) => row.processingBusinessMinutes !== null).length, leads.length)}%</strong></div><div><span>SLA ichida</span><strong>{summarizeSla(leads).rate}%</strong></div></article></section>
   </>;
 }
 
@@ -422,7 +429,7 @@ function LeadFlowView({ records }: { records: AnalyticsRecord[] }) {
   const peakHours = [...hours].sort((a, b) => b.rows.length - a.rows.length).slice(0, 3);
   const busiestDay = [...dayRows].sort((a, b) => b.rows.length - a.rows.length)[0];
   const afterHours = records.filter((row) => row.creationPeriod === "AFTER_HOURS");
-  const noProcessingAtPeak = peakHours.flatMap((row) => row.rows).filter((row) => row.processingSource === "NO_PROCESSING").length;
+  const noProcessingAtPeak = summarizeSla(peakHours.flatMap((row) => row.rows)).overdue;
   const heat = weekdays.map((label, weekday) => ({ label, cells: Array.from({ length: 12 }, (_, bucket) => records.filter((row) => { const part = zonedCreationParts(row.createdAt); return part.weekday === weekday && Math.floor(part.hour / 2) === bucket; })) }));
   const heatMax = Math.max(1, ...heat.flatMap((row) => row.cells.map((cell) => cell.length)));
   const dailyMap = new Map<string, number>();
@@ -430,7 +437,7 @@ function LeadFlowView({ records }: { records: AnalyticsRecord[] }) {
   const daily = [...dailyMap.entries()].sort(([a], [b]) => a.localeCompare(b)).slice(-45).map(([date, count]) => ({ date, count }));
   const dailyMax = Math.max(1, ...daily.map((row) => row.count));
   return <><div className="page-title"><div><p className="eyebrow">STAFFING ANALYTICS</p><h1>Deal yaratilish dinamikasi</h1><p>Qaysi kun va soatda lead oqimi oshishini ko‘rib, sotuvchilar smenasini talabga moslang.</p></div></div>
-    <section className="kpi-grid"><KpiCard label="Peak soat" value={peakHours[0] ? `${String(peakHours[0].hour).padStart(2, "0")}:00` : "—"} detail={`${peakHours[0]?.rows.length ?? 0} ta lead`} icon={Clock3} tone="indigo" /><KpiCard label="Eng band kun" value={busiestDay?.label ?? "—"} detail={`${busiestDay?.rows.length ?? 0} ta lead`} icon={CalendarDays} tone="blue" /><KpiCard label="After-hours" value={`${pct(afterHours.length, records.length)}%`} detail={`${afterHours.length} ta lead ish vaqtidan tashqari`} icon={TimerReset} tone="amber" /><KpiCard label="Peak’da harakatsiz" value={String(noProcessingAtPeak)} detail="Top-3 soatda no processing" icon={AlertTriangle} tone="red" /></section>
+    <section className="kpi-grid"><KpiCard label="Peak soat" value={peakHours[0] ? `${String(peakHours[0].hour).padStart(2, "0")}:00` : "—"} detail={`${peakHours[0]?.rows.length ?? 0} ta lead`} icon={Clock3} tone="indigo" /><KpiCard label="Eng band kun" value={busiestDay?.label ?? "—"} detail={`${busiestDay?.rows.length ?? 0} ta lead`} icon={CalendarDays} tone="blue" /><KpiCard label="After-hours" value={`${pct(afterHours.length, records.length)}%`} detail={`${afterHours.length} ta lead ish vaqtidan tashqari`} icon={TimerReset} tone="amber" /><KpiCard label="Peak’da muddati o‘tgan" value={String(noProcessingAtPeak)} detail="Top-3 soatda ishlov berilmagan" icon={AlertTriangle} tone="red" /></section>
     <section className="panel"><SectionHeader title="Hafta kuni × 2 soat heatmap" subtitle="To‘q rang — lead hajmi yuqori. Vaqt Asia/Tashkent bo‘yicha." /><div className="heatmap-wrap"><div className="heatmap-head"><span />{Array.from({ length: 12 }, (_, bucket) => <small key={bucket}>{String(bucket * 2).padStart(2, "0")}:00</small>)}</div>{heat.map((row) => <div className="heatmap-row" key={row.label}><strong>{row.label.slice(0, 3)}</strong>{row.cells.map((cell, bucket) => { const alpha = cell.length ? 0.14 + (cell.length / heatMax) * 0.78 : 0.04; return <span key={bucket} title={`${row.label}, ${String(bucket * 2).padStart(2, "0")}:00–${String(bucket * 2 + 2).padStart(2, "0")}:00 · ${cell.length} lead`} style={{ backgroundColor: `rgba(36, 107, 253, ${alpha})`, color: alpha > .55 ? "white" : "#526078" }}>{cell.length || ""}</span>; })}</div>)}</div></section>
     <section className="panel"><SectionHeader title="Kunlik Deal dinamikasi" subtitle="Oxirgi 45 kalendar kun; ustun ustiga borsangiz aniq son ko‘rinadi" /><div className="daily-flow-chart">{daily.map((row) => <div key={row.date} title={`${row.date} · ${row.count} lead`}><span style={{ height: `${Math.max(5, (row.count / dailyMax) * 100)}%` }} /><small>{row.date.slice(5)}</small></div>)}</div>{!daily.length && <div className="empty-chart">Kunlik dinamika uchun ma’lumot yo‘q.</div>}</section>
     <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Soatlik lead hajmi" subtitle="24 soatlik taqsimot" /><div className="hour-chart">{hours.map((row) => <div key={row.hour} title={`${String(row.hour).padStart(2, "0")}:00 · ${row.rows.length} lead`}><span style={{ height: `${Math.max(row.rows.length ? 8 : 2, (row.rows.length / maxHour) * 100)}%` }} /><small>{row.hour % 2 === 0 ? String(row.hour).padStart(2, "0") : ""}</small></div>)}</div></article><article className="panel"><SectionHeader title="Smena uchun tavsiya" subtitle="Tanlangan davrdagi real oqimdan hisoblandi" /><div className="staffing-callout"><BarChart3 size={24} /><div><strong>{peakHours.map((row) => `${String(row.hour).padStart(2, "0")}:00`).join(", ")} oralig‘ini kuchaytiring</strong><p>Top-3 soatda jami {peakHours.reduce((sum, row) => sum + row.rows.length, 0)} ta lead tushgan. {afterHours.length ? `Ish vaqtidan tashqari ${afterHours.length} ta lead bor — navbatchi yoki kechki smenani sinab ko‘ring.` : "After-hours oqimi past, asosiy smenani peak soatlarga jamlash mumkin."}</p></div></div><BarList rows={dayRows.map((row) => ({ label: row.label, value: row.rows.length, total: records.length, color: "#246bfd" }))} /></article></section>
@@ -461,7 +468,7 @@ function DealsTable({ records }: { records: AnalyticsRecord[] }) {
       <td><span className={row.stageOverdue ? "danger-text" : ""}>{Math.round(row.stageAgeHours)} soat</span><small>Limit: {row.stageLimitHours} soat</small></td>
       <td><span>{row.source}</span><small>{row.lossReasonGroup !== "NONE" ? `${row.lossReasonGroup} · ${row.lossReason}` : row.lossReason || "—"}</small></td>
       <td><span className="source-pill">{row.processingSource === "QUALIFICATION_STAGE" ? "✅ Ishlov" : row.processingSource === "NO_PROCESSING_EVIDENCE" ? "❔ Noma’lum" : "⚠️ Yo‘q"}</span><small>{fmtMinutes(row.processingBusinessMinutes)}</small></td>
-      <td><span className={`pill ${row.slaStatus === "ON_TIME" ? "success" : row.slaStatus === "LATE" ? "warning" : "danger"}`}>{row.slaStatus === "ON_TIME" ? "SLA ichida" : row.slaStatus === "LATE" ? "Kechikkan" : "Obrabotka yo‘q"}</span></td>
+      <td><span className={`pill ${SLA_TONES[row.slaStatus]}`}>{SLA_LABELS[row.slaStatus]}</span></td>
     </tr>; })}</tbody></table>{!rows.length && <div className="empty-table">Tanlangan filtr bo‘yicha Deal topilmadi.</div>}</div>
     <div className="pagination"><span>{safePage} / {pages} sahifa</span><div><button disabled={safePage <= 1} onClick={() => setPage((value) => value - 1)}>Oldingi</button><button disabled={safePage >= pages} onClick={() => setPage((value) => value + 1)}>Keyingi</button></div></div>
   </section>;
@@ -690,7 +697,7 @@ export default function DashboardClient() {
         const selectedOrigins = new Set(payload.settings.selectedPipelineIds.map(String));
         const selectedProjectCategories = new Set([...payload.settings.selectedPipelineIds, ...payload.settings.postSalePipelineIds].map(String));
         const projectRecords = (payload.records ?? []).map(hydrateRecord).filter((row) => !selectedOrigins.size || selectedOrigins.has(String(row.originCategoryId)) || selectedProjectCategories.has(String(row.categoryId)));
-        setRecords(markDuplicates(projectRecords)); setSettings(payload.settings); setSync(payload.sync); setProviders(payload.providers ?? []);
+        setRecords(markDuplicates(withLiveSlaState(projectRecords, payload.settings))); setSettings(payload.settings); setSync(payload.sync); setProviders(payload.providers ?? []);
         void loadCurrentStages();
       }
     } catch (caught) { setLoadError(caught instanceof Error ? caught.message : "Dashboard yuklanmadi"); }
