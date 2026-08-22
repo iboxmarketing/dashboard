@@ -40,10 +40,7 @@ const call = (responsibleId: string) => ({
   START_TIME: "2026-01-05T10:00:00+05:00", CREATED: "2026-01-05T10:00:00+05:00", RESPONSIBLE_ID: responsibleId,
 });
 
-let DatabaseSync: (new (path: string) => {
-  exec(sql: string): void;
-  prepare(sql: string): { run(...params: (string | null)[]): unknown; get(): Record<string, string | null> | undefined };
-}) | null = null;
+let DatabaseSync: typeof import("node:sqlite").DatabaseSync | null = null;
 try { ({ DatabaseSync } = await import("node:sqlite")); } catch { /* runtime without node:sqlite */ }
 
 /** Applies the real production upsert to a real SQLite table from the migration. */
@@ -56,7 +53,7 @@ function withDb(seed?: { managerId: string | null; wonAt: string; createdAt: str
   }
   const save = (managerId: string | null, wonAt: string, source: string, createdAt = "2026-06-01T00:00:00.000Z") =>
     db.prepare(SALES_SNAPSHOT_UPSERT).run("1", wonAt, managerId, managerId ? `Menejer ${managerId}` : null, source, createdAt);
-  const row = () => db.prepare("SELECT deal_id, won_at, manager_id, manager_name, attribution_source, created_at FROM deal_sales_snapshots").get()!;
+  const row = () => db.prepare("SELECT deal_id, won_at, manager_id, manager_name, attribution_source, created_at FROM deal_sales_snapshots").get()! as Record<string, string | null>;
   return { save, row };
 }
 

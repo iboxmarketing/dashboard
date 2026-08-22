@@ -437,3 +437,6 @@ footer { margin-top: 22px; padding-top: 14px; display: flex; justify-content: sp
 .stage-semantic-head small { color: var(--muted, #667085); font-size: 12px; }
 
 .quality-grid > div small { display: block; margin-top: 4px; color: var(--muted, #667085); font-size: 11px; line-height: 1.4; }
+
+.view-error { display: grid; gap: 14px; }
+.view-error .setup-actions { display: flex; gap: 10px; flex-wrap: wrap; }

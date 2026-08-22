@@ -55,7 +55,7 @@ export async function listPipelineStages(categoryIds: string[]): Promise<Pipelin
     .sort((a, b) => a.categoryId.localeCompare(b.categoryId) || a.sort - b.sort || a.name.localeCompare(b.name));
 }
 
-function localizedValue(raw: unknown) {
+function localizedValue(raw: unknown): string {
   if (raw === null || raw === undefined) return "";
   if (typeof raw !== "object") return String(raw);
   if (Array.isArray(raw)) {

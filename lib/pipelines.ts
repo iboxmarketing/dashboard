@@ -38,7 +38,7 @@ export function resolvePostSalePipelines(options: PipelineOption[], selectedIds:
   const postSaleWords = /обуч|сопров|obuch|training|support|onboard/;
   const candidates = options.filter((option) => postSaleWords.test(normalizePipelineName(option.name)));
   const desiredBrands = selectedNames.length
-    ? [...new Set(selectedNames.map(pipelineBrand).filter((brand): brand is string => Boolean(brand)))]
+    ? [...new Set(selectedNames.map(pipelineBrand).filter((brand): brand is "ibox" | "sd" => Boolean(brand)))]
     : ["ibox"];
   const matches = desiredBrands.flatMap((brandName) => {
     const exact = candidates.find((option) => pipelineBrand(option.name) === brandName && desired.some((name) => name.includes(brandName) && (name === normalizePipelineName(option.name) || postSaleWords.test(name))));

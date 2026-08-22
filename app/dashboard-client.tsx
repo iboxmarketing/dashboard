@@ -6,9 +6,12 @@ import {
   Loader2, Menu, RefreshCw, Search, Settings, ShieldCheck,
   SlidersHorizontal, TimerReset, Users, X, XCircle, CircleDollarSign, ClipboardList, Layers3,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ErrorInfo, ReactNode } from "react";
 import type { AnalyticsRecord, CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, StageReconciliation, SyncProgressState } from "@/lib/types";
 import { ANALYTICS_VERSION } from "@/lib/analytics";
+import { canonicalizeFieldOptions, normalizeCrmFields } from "@/lib/crm-fields";
+import { normalizeSettings } from "@/lib/settings-safety";
 import { countSalesLost, dealOutcomeLabel, isEligibleCohortDeal, isSalesLost, salesLostRate, salesManagerKey } from "@/lib/sales-logic";
 import { markDuplicates } from "@/lib/duplicates";
 import { stageConfigConflicts } from "@/lib/stage-config";
@@ -545,19 +548,20 @@ function StagePicker({ title, hint, stages, selected, onToggle }: { title: strin
 }
 
 function SettingsView({ settings, syncing, onSave, onFullSync }: { settings: DashboardSettings; syncing: boolean; onSave: (settings: DashboardSettings) => Promise<void>; onFullSync: (settings: DashboardSettings, pipelineId: string) => Promise<void> }) {
-  const [draft, setDraft] = useState(settings); const [holiday, setHoliday] = useState("");
+  const [draft, setDraft] = useState(() => normalizeSettings(settings)); const [holiday, setHoliday] = useState("");
   const [saving, setSaving] = useState(false); const [saved, setSaved] = useState(false);
   const [pipelines, setPipelines] = useState<PipelineOption[]>([]); const [pipelineError, setPipelineError] = useState<string | null>(null);
   const [fields, setFields] = useState<CrmFieldOption[]>([]); const [stages, setStages] = useState<PipelineStageOption[]>([]);
+  // Every array below is guaranteed by normalizeSettings, so no view needs a guard.
   const [customFieldCount, setCustomFieldCount] = useState(0);
   const days = [[1, "Dushanba"], [2, "Seshanba"], [3, "Chorshanba"], [4, "Payshanba"], [5, "Juma"], [6, "Shanba"], [0, "Yakshanba"]] as const;
   useEffect(() => {
     void fetch("/api/pipelines", { cache: "no-store" }).then(async (response) => {
       const payload = await response.json() as { pipelines?: PipelineOption[]; selectedIds?: string[]; reportingIds?: string[]; fields?: CrmFieldOption[]; customFieldCount?: number; detectedFailureReasonField?: string | null; stages?: PipelineStageOption[]; error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Pipeline’lar yuklanmadi");
-      const options = payload.pipelines ?? [];
+      const options = Array.isArray(payload.pipelines) ? payload.pipelines : [];
       setPipelines(options);
-      const loadedFields = payload.fields ?? []; const loadedStages = payload.stages ?? [];
+      const loadedFields = normalizeCrmFields(payload.fields); const loadedStages = Array.isArray(payload.stages) ? payload.stages : [];
       setFields(loadedFields); setCustomFieldCount(payload.customFieldCount ?? 0); setStages(loadedStages);
       setDraft((current) => {
         const visibleStageIds = new Set(loadedStages.map((stage) => stage.id));
@@ -603,7 +607,7 @@ function SettingsView({ settings, syncing, onSave, onFullSync }: { settings: Das
   const fieldOptions = fields.map((field) => <option key={field.key} value={field.key}>{field.title}{field.sampleValue ? ` · namuna: ${field.sampleValue}` : ""}</option>);
   const stageConflicts = stageConfigConflicts(draft);
   // Enumeration fields are the only sensible Причина провала candidates.
-  const reasonFieldOptions = canonicalizeFieldOptions(fields.filter((field) => /enum/i.test(field.type) || field.options.length > 0));
+  const reasonFieldOptions = canonicalizeFieldOptions(fields.filter((field) => /enum/i.test(field.type) || (field.options ?? []).length > 0));
   const reasonMissing = draft.selectedPipelineIds
     .filter((id) => !draft.failureReasonFieldByPipeline?.[id])
     .map((id) => draft.selectedPipelineNames[draft.selectedPipelineIds.indexOf(id)] ?? id);
@@ -667,6 +671,43 @@ function SettingsView({ settings, syncing, onSave, onFullSync }: { settings: Das
   </>;
 }
 
+/**
+ * Keeps one failing view from unmounting the whole dashboard.
+ *
+ * A missing import previously blanked the entire app when Settings rendered.
+ * The message is deliberately generic: an error string could otherwise carry a
+ * URL or credential into the DOM.
+ */
+class ViewErrorBoundary extends Component<{ children: ReactNode; onBack: () => void }, { failed: boolean }> {
+  constructor(props: { children: ReactNode; onBack: () => void }) {
+    super(props);
+    this.state = { failed: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("View render failed:", error.message, info.componentStack);
+  }
+
+  componentDidUpdate(previous: { children: ReactNode }) {
+    if (this.state.failed && previous.children !== this.props.children) this.setState({ failed: false });
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return <section className="panel view-error">
+      <div className="notice error page-notice"><XCircle size={18} /><span><strong>Sozlamalarni ochishda xato yuz berdi.</strong> Sahifaning qolgan qismi ishlashda davom etadi.</span></div>
+      <div className="setup-actions">
+        <button className="button primary" onClick={() => { this.setState({ failed: false }); this.props.onBack(); }}>Dashboardga qaytish</button>
+        <button className="button secondary" onClick={() => window.location.reload()}><RefreshCw size={16} />Sahifani yangilash</button>
+      </div>
+    </section>;
+  }
+}
+
 export default function DashboardClient() {
   const [loading, setLoading] = useState(true);
   const [configured, setConfigured] = useState(false);
@@ -706,7 +747,7 @@ export default function DashboardClient() {
       const bootstrapResponse = await fetch("/api/bootstrap", { cache: "no-store" });
       const bootstrap = await bootstrapResponse.json() as { configured: boolean; settings: DashboardSettings; sync: SyncState; providers: ProviderDiagnostic[]; error?: string };
       if (!bootstrapResponse.ok) throw new Error(bootstrap.error ?? "Dashboard yuklanmadi");
-      setConfigured(bootstrap.configured); setSettings(bootstrap.settings); setSync(bootstrap.sync);
+      setConfigured(bootstrap.configured); setSettings(normalizeSettings(bootstrap.settings)); setSync(bootstrap.sync);
       if (bootstrap.configured) {
         const response = await fetch("/api/dashboard", { cache: "no-store" });
         const payload = await response.json() as { records: AnalyticsRecord[]; settings: DashboardSettings; sync: SyncState; providers: ProviderDiagnostic[]; error?: string };
@@ -714,7 +755,7 @@ export default function DashboardClient() {
         const selectedOrigins = new Set(payload.settings.selectedPipelineIds.map(String));
         const selectedProjectCategories = new Set([...payload.settings.selectedPipelineIds, ...payload.settings.postSalePipelineIds].map(String));
         const projectRecords = (payload.records ?? []).map(hydrateRecord).filter((row) => !selectedOrigins.size || selectedOrigins.has(String(row.originCategoryId)) || selectedProjectCategories.has(String(row.categoryId)));
-        setRecords(markDuplicates(withLiveSlaState(projectRecords, payload.settings))); setSettings(payload.settings); setSync(payload.sync);
+        setRecords(markDuplicates(withLiveSlaState(projectRecords, normalizeSettings(payload.settings)))); setSettings(normalizeSettings(payload.settings)); setSync(payload.sync);
         void loadCurrentStages();
       }
     } catch (caught) { setLoadError(caught instanceof Error ? caught.message : "Dashboard yuklanmadi"); }
@@ -818,7 +859,7 @@ export default function DashboardClient() {
   async function saveSettings(next: DashboardSettings) {
     const response = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next) });
     const payload = await response.json() as { settings?: DashboardSettings; error?: string };
-    if (!response.ok || !payload.settings) throw new Error(payload.error ?? "Sozlamalar saqlanmadi"); setSettings(payload.settings); void loadCurrentStages();
+    if (!response.ok || !payload.settings) throw new Error(payload.error ?? "Sozlamalar saqlanmadi"); setSettings(normalizeSettings(payload.settings)); void loadCurrentStages();
   }
   async function saveAndFullSync(next: DashboardSettings, pipelineId: string) {
     await saveSettings(next);
@@ -867,6 +908,7 @@ export default function DashboardClient() {
         {hasLegacyData && sync.status !== "running" && <div className="notice warning page-notice"><AlertTriangle size={18} /><span>Eski sync ma’lumotlari bor. Yangi sales analytics to‘liq ishlashi uchun Sozlamalarda CRM field’larini tekshirib, <strong>“To‘liq qayta sync”</strong>ni bosing.</span><button onClick={() => setView("settings")}>Sozlamalar</button></div>}
         {["running", "paused", "error"].includes(sync.status) && <SyncProgress sync={sync} busy={refreshing} onPause={() => void pauseCurrentSync()} onResume={() => void syncLoop("resume")} />}
         {view !== "settings" && view !== "diagnostics" && <FiltersBar filters={filters} setFilters={setFilters} records={records} currentStages={effectiveCurrentStages} mode={view === "stages" ? "current" : "cohort"} />}
+        <ViewErrorBoundary onBack={() => setView("dashboard")}>
         {view === "dashboard" && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{cohortFiltered.filter(isEligibleCohortDeal).length} Leadlar</strong></div></div><DashboardView records={cohortFiltered} salesRecords={wonFiltered} previousRecords={previousCohortFiltered} previousSalesRecords={previousWonFiltered} metricIds={settings.dashboardMetricIds} onManager={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /><TrendChart records={cohortFiltered} /></>}
         {view === "managers" && <><div className="page-title"><div><p className="eyebrow">TEAM PERFORMANCE</p><h1>Menejerlar</h1><p>Lead, sifatsizlik, sales loss, sotuv soni va Opportunity kesimida.</p></div></div><section className="panel"><SectionHeader title="Menejerlar reytingi" subtitle="Lead va cohort konversiya — yaratilgan sana; davr sotuv — Oplata sanasi bo‘yicha" /><ManagerTable rows={buildManagers(cohortFiltered, wonFiltered)} onSelect={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /></section></>}
         {view === "managerDetail" && selectedManager && <ManagerDetailView manager={selectedManager} cohortRecords={cohortFiltered} salesRecords={wonFiltered} currentStages={currentStageRecords} onBack={() => setView("managers")} />}
@@ -876,6 +918,7 @@ export default function DashboardClient() {
         {view === "deals" && <><div className="page-title"><div><p className="eyebrow">DETAIL REPORT</p><h1>Deal’lar</h1><p>Sotuv holati, sotuvchi attribution’i, stage yoshi va processing yagona jadvalda.</p></div></div><DealsTable records={detailFiltered} /></>}
         {view === "diagnostics" && <DiagnosticsView sync={sync} records={records} reconciliation={stageReconciliation} settings={settings} />}
         {view === "settings" && <SettingsView settings={settings} syncing={refreshing || sync.status === "running"} onSave={saveSettings} onFullSync={saveAndFullSync} />}
+        </ViewErrorBoundary>
         <footer><span>Bitrix24 Deal Processing Dashboard</span><span>Timezone: Asia/Tashkent · Business minutes only</span></footer>
       </div>
     </main>

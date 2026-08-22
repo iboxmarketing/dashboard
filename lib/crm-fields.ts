@@ -47,3 +47,29 @@ export function canonicalizeFieldOptions(fields: CrmFieldOption[]): CrmFieldOpti
   }
   return [...merged.values()];
 }
+
+/**
+ * Guarantees the shape Settings relies on, whatever a live API or an old cached
+ * D1 dictionary supplies. Every consumer may then call `.length`, `.filter` and
+ * `.map` on `options` without a guard.
+ */
+export function normalizeCrmField(raw: Partial<CrmFieldOption> & { key?: unknown }): CrmFieldOption {
+  const key = String(raw?.key ?? "").trim();
+  return {
+    key,
+    title: String(raw?.title ?? "").trim() || key,
+    type: String(raw?.type ?? "").trim() || "unknown",
+    options: (Array.isArray(raw?.options) ? raw.options : [])
+      .filter((option) => option && typeof option === "object")
+      .map((option) => ({ id: String(option.id ?? ""), value: String(option.value ?? "") }))
+      .filter((option) => option.id),
+    ...(raw?.sampleValue === undefined ? {} : { sampleValue: String(raw.sampleValue) }),
+    ...(raw?.discoverySource === undefined ? {} : { discoverySource: raw.discoverySource }),
+  };
+}
+
+export function normalizeCrmFields(raw: unknown): CrmFieldOption[] {
+  return (Array.isArray(raw) ? raw : [])
+    .map((field) => normalizeCrmField((field ?? {}) as Partial<CrmFieldOption>))
+    .filter((field) => field.key);
+}
