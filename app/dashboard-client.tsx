@@ -9,9 +9,10 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AnalyticsRecord, CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, StageReconciliation, SyncProgressState } from "@/lib/types";
 import { countSalesLost, dealOutcomeLabel, isSalesLost, salesLostRate, salesManagerKey } from "@/lib/sales-logic";
-import { countDuplicates, isDuplicate, markDuplicates } from "@/lib/duplicates";
+import { isDuplicate, markDuplicates } from "@/lib/duplicates";
 import { stageConfigConflicts } from "@/lib/stage-config";
 import { SLA_LABELS, SLA_TONES, resolveSlaState, summarizeSla } from "@/lib/sla";
+import { stageConfigReadiness, summarizeDataQuality } from "@/lib/diagnostics";
 
 type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "diagnostics" | "settings";
 type SyncState = SyncProgressState;
@@ -525,16 +526,36 @@ function StageControlView({ records, historicalRecords, reconciliation, loading,
   </>;
 }
 
-function DiagnosticsView({ sync, providers, records, reconciliation, onProviderChange }: { sync: SyncState; providers: ProviderDiagnostic[]; records: AnalyticsRecord[]; reconciliation: StageReconciliation | null; onProviderChange: (key: string, mode: string) => void }) {
+function DiagnosticsView({ sync, providers, records, reconciliation, settings, onProviderChange }: { sync: SyncState; providers: ProviderDiagnostic[]; records: AnalyticsRecord[]; reconciliation: StageReconciliation | null; settings: DashboardSettings; onProviderChange: (key: string, mode: string) => void }) {
   const permissions = [["Deal API", sync.permissions.deals], ["Activity API", sync.permissions.activities], ["Stage history", sync.permissions.stageHistory], ["User API", sync.permissions.managers], ["Telephony / Call Statistics", sync.permissions.telephony]];
-  const qualities = [["Deals without stage history", records.filter((row) => !row.stageTimeline.length).length], ["First processing time unknown", records.filter((row) => row.processingSource === "NO_PROCESSING_EVIDENCE").length], ["Missing sales manager", records.filter((row) => !row.salesManagerId).length], ["Missing failure reason", records.filter((row) => ["LOW_QUALITY", "LOST"].includes(row.salesStatus) && row.lossReason === "Sabab ko‘rsatilmagan").length], ["Seller fallback: current responsible", records.filter((row) => row.salesManagerAttribution === "CURRENT_RESPONSIBLE").length], ["Duplicate leads", countDuplicates(records)], ["Data unavailable", records.filter((row) => row.dataUnavailable).length]] as const;
+  const quality = summarizeDataQuality(records);
+  const readiness = stageConfigReadiness(settings);
+  const conflicts = stageConfigConflicts(settings);
+  const qualities: { label: string; hint: string; count: number }[] = [
+    { label: "Sotuv vaqti aniqlanmagan", hint: "Sotuv hisoblangan, lekin aniq sotuv sanasi yo‘q", count: quality.wonWithoutSaleDate },
+    { label: "Sotuvchi aniqlanmagan", hint: "Hech bir manbadan sotuvchi topilmadi", count: quality.missingSalesManager },
+    { label: "Manager ID = 0", hint: "Atributsiya ma’nosi hali tasdiqlanmagan", count: quality.managerIdZero },
+    { label: "Birinchi ishlov vaqti noma’lum", hint: "Tarix yetishmaydi — SLA’ga kirmaydi", count: quality.unknownProcessingTime },
+    { label: "Stage history yo‘q", hint: "Deal uchun bosqich tarixi yuklanmagan", count: quality.missingStageHistory },
+    { label: "Provala sababi yo‘q", hint: "Yopilgan lead’da Причина провала to‘ldirilmagan", count: quality.missingFailureReason },
+    { label: "Sotuvchi joriy mas’uldan olindi", hint: "Eng zaif atributsiya manbai", count: quality.currentResponsibleFallback },
+    { label: "Takroriy lead", hint: "Contact ID, keyin Company ID bo‘yicha", count: quality.duplicateLeads },
+    { label: "Ma’lumot mavjud emas", hint: "Activity yoki stage history olinmagan", count: quality.dataUnavailable },
+  ];
   return <><div className="page-title"><div><p className="eyebrow">ADMIN</p><h1>Diagnostika</h1><p>API ruxsatlari, call provider’lar va data quality nazorati.</p></div></div>
-    {sync.permissions.telephony !== "ok" && <div className="notice warning page-notice"><AlertTriangle size={18} />Qo‘ng‘iroq natijasini aniqlash uchun Bitrix Telephony / Call Statistics ruxsati kerak. SLA va first outgoing call analytics ishlashda davom etadi.</div>}
+    {sync.permissions.telephony !== "ok" && <div className="notice warning page-notice"><AlertTriangle size={18} />Bitrix Telephony / Call Statistics ruxsati yo‘q. Qo‘ng‘iroq sotuvchi atributsiyasida zaxira manba sifatida ishlatiladi; SLA va birinchi ishlov vaqti bunga bog‘liq emas.</div>}
     <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Bitrix24 ruxsatlari" /><div className="permission-list">{permissions.map(([label, state]) => <div key={label}><StatusDot state={state ?? "error"} /><span>{label}</span><strong>{state === "ok" ? "Tayyor" : state === "warning" ? "Cheklangan" : "Tekshirish kerak"}</strong></div>)}</div></article>
       <article className="panel"><SectionHeader title="Data counts" /><div className="diagnostic-counts"><div><span>Deal</span><strong>{sync.counts.deals ?? records.length}</strong></div><div><span>Activity</span><strong>{sync.counts.activities ?? 0}</strong></div><div><span>Outgoing calls</span><strong>{sync.counts.outgoingCalls ?? 0}</strong></div><div><span>Stage history</span><strong>{sync.counts.stageHistory ?? 0}</strong></div><div><span>Telephony</span><strong>{sync.counts.telephony ?? 0}</strong></div></div></article>
     </section>
     <section className="panel"><SectionHeader title="Call providers" subtitle="AUTO — Bitrix type va direction bo‘yicha aniqlaydi. USE / IGNORE keyingi sync’da qo‘llanadi." /><div className="table-wrap"><table className="data-table"><thead><tr><th>PROVIDER_ID</th><th>PROVIDER_TYPE_ID</th><th>TYPE_ID</th><th>DIRECTION</th><th>Count</th><th>Sample subject</th><th>Holat</th></tr></thead><tbody>{providers.map((provider) => <tr key={provider.key}><td><code>{provider.providerId}</code></td><td><code>{provider.providerTypeId}</code></td><td>{provider.typeId}</td><td>{provider.direction}</td><td>{provider.count}</td><td>{provider.sampleSubject}</td><td><Select label="Provider holati" value={provider.mode} onChange={(mode) => onProviderChange(provider.key, mode)}><option value="AUTO">Auto</option><option value="USE">Use</option><option value="IGNORE">Ignore</option></Select></td></tr>)}</tbody></table>{!providers.length && <div className="empty-table">Providerlar birinchi sync’dan keyin ko‘rinadi.</div>}</div></section>
-    <section className="panel"><SectionHeader title="Data Quality" subtitle="No processing va data unavailable alohida hisoblanadi" /><div className="quality-grid">{qualities.map(([label, count]) => <div key={label}><span>{label}</span><strong>{count}</strong></div>)}</div></section>
+    <section className="panel"><SectionHeader title="Data quality" subtitle="O‘lchov uchun; bu sonlar hech qanday funnel ko‘rsatkichini o‘zgartirmaydi" /><div className="quality-grid">{qualities.map((row) => <div key={row.label}><span>{row.label}</span><strong>{row.count}</strong><small>{row.hint}</small></div>)}</div>
+      {quality.wonWithoutSaleDate > 0 && <div className="notice warning page-notice"><AlertTriangle size={17} /><span>{quality.wonWithoutSaleDate} ta sotuv Cohort sotuvda hisoblanadi, lekin sotuv sanasi yo‘qligi uchun Davr sotuvi, summa, o‘rtacha chek va savdo sikliga kirmaydi.</span></div>}
+    </section>
+    <section className="panel"><SectionHeader title="Konfiguratsiya tayyorligi" subtitle="Bosqich nomi bo‘yicha zaxira aniqlash ishlaydi, shuning uchun bu xato emas — tayyorlik darajasi" />
+      <div className={`field-discovery ${readiness.complete ? "ok" : "warning"}`}>Bosqich ID konfiguratsiyasi: {readiness.configured}/{readiness.total}{readiness.complete ? " — to‘liq" : `. Stage ID konfiguratsiyasi to‘liq emas: ${readiness.missing.join(", ")}`}</div>
+      {conflicts.length > 0 && <div className="field-discovery warning">Bir bosqich bir nechta ma’noda: {conflicts.map((conflict) => `${conflict.stageId} (${conflict.groups.join(", ")})`).join("; ")}</div>}
+      <div className="field-discovery ok">Oxirgi to‘liq sync talab qilinadi: avvalgi sprintlar tarixiy hisob-kitobni o‘zgartirdi. Sozlamalardan har bir Sales funnel uchun full sync’ni qo‘lda bajaring.</div>
+    </section>
     {reconciliation && <section className="panel"><SectionHeader title="Bitrix ↔ analytics reconciliation" subtitle="Joriy ochiq deal’lar tarixiy sync bazasidan alohida tekshiriladi" /><div className="quality-grid reconciliation-grid"><div><span>Bitrix joriy</span><strong>{reconciliation.liveCount}</strong></div><div><span>Analytics cache</span><strong>{reconciliation.cachedCount}</strong></div><div><span>Cache’da yetishmaydi</span><strong>{reconciliation.missingCount}</strong></div><div><span>Cache’da eskirgan</span><strong>{reconciliation.staleCount}</strong></div><div><span>Stage farqi</span><strong>{reconciliation.stageMismatchCount}</strong></div></div></section>}
     {sync.safeError && <div className="notice error page-notice"><XCircle size={18} />{sync.safeError}</div>}
   </>;
@@ -836,7 +857,7 @@ export default function DashboardClient() {
   if (!configured || (configured && !records.length && sync.status !== "success")) return <SetupScreen configured={configured} sync={sync} syncing={refreshing} externalError={loadError} onStart={() => void syncLoop("start", true, 30, settings?.selectedPipelineIds[0])} onPause={() => void pauseCurrentSync()} onResume={() => void syncLoop("resume")} />;
   if (!settings) return <div className="fatal-error"><XCircle /><p>Sozlamalar yuklanmadi.</p></div>;
   const title = view === "managerDetail" ? selectedManager?.name ?? "Menejer" : navItems.find((item) => item.id === view)?.label ?? "Dashboard";
-  const hasLegacyData = records.some((record) => record.analyticsVersion < 3);
+  const hasLegacyData = records.some((record) => record.analyticsVersion < 4);
   const syncOptions = settings.selectedPipelineIds.map((id, index) => ({ id, name: settings.selectedPipelineNames[index] ?? `Sales funnel #${id}` }));
   const activeSyncPipelineId = syncOptions.some((pipeline) => pipeline.id === syncPipelineId) ? syncPipelineId : syncOptions[0]?.id ?? "";
 
@@ -862,7 +883,7 @@ export default function DashboardClient() {
         {view === "quality" && <QualityView records={cohortFiltered} />}
         {view === "stages" && <StageControlView records={filteredCurrentStages} historicalRecords={stageHistoricalRecords} reconciliation={stageReconciliation} loading={currentStageLoading} error={currentStageError} onRefresh={() => void loadCurrentStages()} />}
         {view === "deals" && <><div className="page-title"><div><p className="eyebrow">DETAIL REPORT</p><h1>Deal’lar</h1><p>Sotuv holati, sotuvchi attribution’i, stage yoshi va processing yagona jadvalda.</p></div></div><DealsTable records={detailFiltered} /></>}
-        {view === "diagnostics" && <DiagnosticsView sync={sync} providers={providers} records={records} reconciliation={stageReconciliation} onProviderChange={changeProvider} />}
+        {view === "diagnostics" && <DiagnosticsView sync={sync} providers={providers} records={records} reconciliation={stageReconciliation} settings={settings} onProviderChange={changeProvider} />}
         {view === "settings" && <SettingsView settings={settings} syncing={refreshing || sync.status === "running"} onSave={saveSettings} onFullSync={saveAndFullSync} />}
         <footer><span>Bitrix24 Deal Processing Dashboard</span><span>Timezone: Asia/Tashkent · Business minutes only</span></footer>
       </div>
