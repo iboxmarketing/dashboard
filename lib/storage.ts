@@ -1,5 +1,6 @@
 import { getD1 } from "@/db";
 import { defaultSettings } from "./business-time";
+import { SALES_SNAPSHOT_UPSERT } from "./sales-snapshots";
 import type { AnalyticsRecord, DashboardSettings, ProviderDiagnostic, SyncProgressState } from "./types";
 
 export async function ensureSchema() {
@@ -160,7 +161,7 @@ export async function saveSalesSnapshots(records: AnalyticsRecord[]) {
   const won = records.filter((record) => record.salesStatus === "WON" && record.wonAt);
   const db = getD1();
   for (let index = 0; index < won.length; index += 40) {
-    const statements = won.slice(index, index + 40).map((record) => db.prepare("INSERT OR IGNORE INTO deal_sales_snapshots(deal_id, won_at, manager_id, manager_name, attribution_source, created_at) VALUES(?, ?, ?, ?, ?, ?)")
+    const statements = won.slice(index, index + 40).map((record) => db.prepare(SALES_SNAPSHOT_UPSERT)
       .bind(record.dealId, record.wonAt, record.salesManagerId, record.salesManager, record.salesManagerAttribution, new Date().toISOString()));
     if (statements.length) await db.batch(statements);
   }

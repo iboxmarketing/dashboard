@@ -190,11 +190,18 @@ export function buildAnalyticsRecords(input: {
 
     const snapshot = snapshots.get(dealId); const customManagerId = input.settings.salesManagerField ? employeeId(deal[input.settings.salesManagerField]) : "";
     const firstCallManagerId = firstCall ? string(firstCall.RESPONSIBLE_ID) : ""; const moverId = string(deal.MOVED_BY_ID);
-    let salesManagerId = snapshot?.managerId ?? ""; let salesManager = snapshot?.managerName ?? ""; let salesManagerAttribution = (snapshot?.attributionSource as SalesManagerAttribution | undefined) ?? "UNKNOWN";
-    if (!snapshot && customManagerId) { salesManagerId = customManagerId; salesManagerAttribution = "CUSTOM_FIELD"; }
-    else if (!snapshot && firstCallManagerId) { salesManagerId = firstCallManagerId; salesManagerAttribution = "FIRST_CALL"; }
-    else if (!snapshot && moverId) { salesManagerId = moverId; salesManagerAttribution = "STAGE_MOVER"; }
-    else if (!snapshot && assignedManagerId) { salesManagerId = assignedManagerId; salesManagerAttribution = "CURRENT_RESPONSIBLE"; }
+    // Two different immutability rules. The sale date is frozen as soon as a
+    // snapshot exists, but seller attribution is frozen only once a real seller
+    // was actually resolved: a snapshot holding an UNKNOWN seller must not block
+    // the fallback chain forever, otherwise the deal can never be attributed.
+    const snapshotManagerId = snapshot?.managerId ?? "";
+    let salesManagerId = snapshotManagerId;
+    let salesManager = snapshotManagerId ? snapshot?.managerName ?? "" : "";
+    let salesManagerAttribution: SalesManagerAttribution = snapshotManagerId ? (snapshot?.attributionSource as SalesManagerAttribution) : "UNKNOWN";
+    if (!snapshotManagerId && customManagerId) { salesManagerId = customManagerId; salesManagerAttribution = "CUSTOM_FIELD"; }
+    else if (!snapshotManagerId && firstCallManagerId) { salesManagerId = firstCallManagerId; salesManagerAttribution = "FIRST_CALL"; }
+    else if (!snapshotManagerId && moverId) { salesManagerId = moverId; salesManagerAttribution = "STAGE_MOVER"; }
+    else if (!snapshotManagerId && assignedManagerId) { salesManagerId = assignedManagerId; salesManagerAttribution = "CURRENT_RESPONSIBLE"; }
     if (!salesManager && salesManagerId) salesManager = managerName(salesManagerId, input.users);
 
     const reasonField = input.settings.failureReasonField; const sourceField = input.settings.marketingChannelField;
