@@ -141,9 +141,21 @@ export function buildAnalyticsRecords(input: {
     const originCategoryId = string(firstMainHistory?.CATEGORY_ID) || (mainIds.has(currentCategoryId) ? currentCategoryId : string(histories.find((row) => !postSaleIds.has(string(row.CATEGORY_ID)))?.CATEGORY_ID)) || currentCategoryId;
     const paymentHistory = histories.find((row) => isPaymentStage(stageName(string(row.STAGE_ID), input.stages)));
     const postSaleHistory = histories.find((row) => postSaleIds.has(string(row.CATEGORY_ID)));
-    const wonEvent = paymentHistory ?? postSaleHistory; const wonAt = wonEvent ? timestamp(wonEvent.CREATED_TIME)?.toISOString() ?? null : null;
+    // Sitting in the payment stage is itself proof of a sale. Deriving this from
+    // stage history alone let a missing/denied history permission silently
+    // demote a paid deal back to ACTIVE and under-count Sales.
+    const currentStageIsPayment = isPaymentStage(currentStage);
+    // MOVED_TIME is Bitrix's "moved to current stage" timestamp (its partner
+    // field is MOVED_BY_ID), already trusted as current-stage entry by
+    // stageEntered below and by buildCurrentStageRecords. While the current
+    // stage IS the payment stage it is therefore real payment-entry evidence.
+    // Nothing else is substituted: DATE_MODIFY is any edit and would fabricate
+    // a revenue date, so a missing MOVED_TIME leaves wonAt null on purpose.
+    const currentPaymentAt = currentStageIsPayment ? timestamp(deal.MOVED_TIME) : null;
+    const wonEvent = paymentHistory ?? postSaleHistory;
+    const wonAt = (wonEvent ? timestamp(wonEvent.CREATED_TIME) : null)?.toISOString() ?? currentPaymentAt?.toISOString() ?? null;
     const currentHistory = [...histories].reverse().find((row) => string(row.STAGE_ID) === currentStageId && (!row.CATEGORY_ID || string(row.CATEGORY_ID) === currentCategoryId));
-    const baseSalesStatus = classifySalesStatus({ stage: currentStage, semantic: string(currentHistory?.STAGE_SEMANTIC_ID), paymentReached: Boolean(paymentHistory), inPostSalePipeline: postSaleIds.has(currentCategoryId) || Boolean(postSaleHistory) });
+    const baseSalesStatus = classifySalesStatus({ stage: currentStage, semantic: string(currentHistory?.STAGE_SEMANTIC_ID), paymentReached: Boolean(paymentHistory) || currentStageIsPayment, inPostSalePipeline: postSaleIds.has(currentCategoryId) || Boolean(postSaleHistory) });
     const stageEntered = timestamp(currentHistory?.CREATED_TIME ?? deal.MOVED_TIME ?? deal.DATE_MODIFY) ?? created;
     const stageAgeHours = Math.max(0, (Date.now() - stageEntered.getTime()) / 3_600_000);
     const stageLimitHours = Number(input.settings.stageLimits[currentStageId] ?? input.settings.defaultStageLimitHours);
