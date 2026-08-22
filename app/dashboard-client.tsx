@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AnalyticsRecord, CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, StageReconciliation, SyncProgressState } from "@/lib/types";
 import { countSalesLost, dealOutcomeLabel, isSalesLost, salesLostRate, salesManagerKey } from "@/lib/sales-logic";
 import { countDuplicates, isDuplicate, markDuplicates } from "@/lib/duplicates";
+import { stageConfigConflicts } from "@/lib/stage-config";
 
 type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "calls" | "diagnostics" | "settings";
 type SyncState = SyncProgressState;
@@ -583,6 +584,22 @@ function DiagnosticsView({ sync, providers, records, reconciliation, onProviderC
   </>;
 }
 
+type StageSemanticKey = "qualifiedStageIds" | "lowQualityStageIds" | "paymentStageIds" | "closedLostStageIds";
+const stageSemanticFields: { key: StageSemanticKey; title: string; hint: string }[] = [
+  { key: "qualifiedStageIds", title: "SQL bosqichi", hint: "Obrabotka — sifatli deb qabul qilingan lead" },
+  { key: "lowQualityStageIds", title: "Not Relevant bosqichi", hint: "Marketing sifatsizligi; Sotilmadi’ga qo‘shilmaydi" },
+  { key: "paymentStageIds", title: "Sotuv / To‘lov bosqichi", hint: "Bu bosqichga yetgan deal sotilgan hisoblanadi" },
+  { key: "closedLostStageIds", title: "Sotilmadi bosqichi", hint: "Закрыто и нереализовано — sotuvda yo‘qotilgan" },
+];
+
+function StagePicker({ title, hint, stages, selected, onToggle }: { title: string; hint: string; stages: PipelineStageOption[]; selected: string[]; onToggle: (stageId: string, checked: boolean) => void }) {
+  return <div className="stage-semantic-group">
+    <div className="stage-semantic-head"><strong>{title}</strong><small>{hint}</small></div>
+    <div className="sql-stage-options">{stages.map((stage) => { const checked = selected.includes(stage.id); return <label key={`${stage.categoryId}:${stage.id}`} className={checked ? "selected" : ""}><input type="checkbox" checked={checked} onChange={(event) => onToggle(stage.id, event.target.checked)} /><span><Check size={13} /></span><strong>{stage.name}</strong></label>; })}</div>
+    {!stages.length && <small>Bitrix’dan stage’lar yuklanmoqda…</small>}
+  </div>;
+}
+
 function SettingsView({ settings, syncing, onSave, onFullSync }: { settings: DashboardSettings; syncing: boolean; onSave: (settings: DashboardSettings) => Promise<void>; onFullSync: (settings: DashboardSettings, pipelineId: string) => Promise<void> }) {
   const [draft, setDraft] = useState(settings); const [holiday, setHoliday] = useState("");
   const [saving, setSaving] = useState(false); const [saved, setSaved] = useState(false);
@@ -643,6 +660,8 @@ function SettingsView({ settings, syncing, onSave, onFullSync }: { settings: Das
   async function fullSync(pipelineId: string) { setSaving(true); setSaved(false); try { await onFullSync(draft, pipelineId); } finally { setSaving(false); } }
   const fieldOptions = fields.map((field) => <option key={field.key} value={field.key}>{field.title}{field.sampleValue ? ` · namuna: ${field.sampleValue}` : ""}</option>);
   const failureField = fields.find((field) => field.key === draft.failureReasonField);
+  const stageConflicts = stageConfigConflicts(draft);
+  const stageNameById = new Map(stages.map((stage) => [stage.id, stage.name]));
   const pairedProjectCount = draft.selectedPipelineIds.filter((id) => { const main = pipelines.find((item) => item.id === id); return main && draft.postSalePipelineNames.some((name) => brandOf(name) === brandOf(main.name)); }).length;
   const validConfig = draft.selectedPipelineIds.length >= 1 && pairedProjectCount === draft.selectedPipelineIds.length;
   return <><div className="page-title"><div><p className="eyebrow">ADMIN</p><h1>Sozlamalar</h1><p>Sales pipeline, CRM field’lari va hisoblash qoidalari.</p></div><div className="settings-actions"><button className="button primary" onClick={save} disabled={saving || !validConfig}>{saving ? <Loader2 size={17} className="spin" /> : saved ? <Check size={17} /> : <Settings size={17} />}{saved ? "Saqlandi" : "Sozlamalarni saqlash"}</button></div></div>
@@ -659,7 +678,12 @@ function SettingsView({ settings, syncing, onSave, onFullSync }: { settings: Das
       <label>Marketing kanal<input list="crm-field-options" value={draft.marketingChannelField ?? ""} placeholder="Bo‘sh bo‘lsa standart SOURCE_ID" onChange={(event) => setDraft({ ...draft, marketingChannelField: event.target.value.trim() || null })} /><small>Custom marketing kanal field kodi</small></label>
       <label>Sales manager field<input list="crm-field-options" value={draft.salesManagerField ?? ""} placeholder="Bo‘sh bo‘lsa avtomatik attribution" onChange={(event) => setDraft({ ...draft, salesManagerField: event.target.value.trim() || null })} /><small>Sotuvchi yozilgan employee field bo‘lsa</small></label>
     </div></section>
-    <section className="panel"><SectionHeader title="SQL qabul qilingan bosqich" subtitle={`${draft.selectedPipelineNames.join(" + ") || "Tanlangan Sales funnel"} stage’lari. Not Relevant keyinroq tanlansa ham marketing sifatsizligi bo‘lib qoladi.`} /><div className="sql-stage-options">{stages.map((stage) => { const checked = draft.qualifiedStageIds.includes(stage.id); return <label key={`${stage.categoryId}:${stage.id}`} className={checked ? "selected" : ""}><input type="checkbox" checked={checked} onChange={(event) => setDraft({ ...draft, qualifiedStageIds: event.target.checked ? [...new Set([...draft.qualifiedStageIds, stage.id])] : draft.qualifiedStageIds.filter((id) => id !== stage.id) })} /><span><Check size={13} /></span><strong>{stage.name}</strong></label>; })}</div><div className="field-discovery ok">Faqat tanlangan Sales funnel stage’lari ko‘rsatiladi. “Обработка” avtomatik tanlanadi.</div></section>
+    <section className="panel"><SectionHeader title="Bosqich ma’nolari" subtitle={`${draft.selectedPipelineNames.join(" + ") || "Tanlangan Sales funnel"} stage’lari. Stage ID saqlanadi, shuning uchun Bitrix’da nom o‘zgarsa ham hisob buzilmaydi.`} />
+      {stageSemanticFields.map((field) => <StagePicker key={field.key} title={field.title} hint={field.hint} stages={stages} selected={draft[field.key]} onToggle={(stageId, checked) => setDraft({ ...draft, [field.key]: checked ? [...new Set([...draft[field.key], stageId])] : draft[field.key].filter((id) => id !== stageId) })} />)}
+      <div className={`field-discovery ${stageConflicts.length ? "warning" : "ok"}`}>{stageConflicts.length
+        ? `Bir bosqich bir nechta ma’noga biriktirilgan: ${stageConflicts.map((conflict) => `${stageNameById.get(conflict.stageId) ?? conflict.stageId} (${conflict.groups.join(", ")})`).join("; ")}. Hisoblashda Not Relevant ustun turadi.`
+        : "Bo‘sh qoldirilsa avvalgidek stage nomi bo‘yicha aniqlanadi. Faqat tanlangan Sales funnel stage’lari ko‘rsatiladi."}</div>
+    </section>
     <section className="settings-grid"><article className="panel"><SectionHeader title="Routing sabablari" subtitle="Bu so‘zlar topilsa lead marketing sifatsizligiga qo‘shilmaydi." /><label className="wide-field">Kalit so‘zlar<textarea value={draft.routingReasonPatterns.join(", ")} onChange={(event) => setDraft({ ...draft, routingReasonPatterns: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} rows={3} /></label></article><article className="panel"><SectionHeader title="Avtomatik yangilash" subtitle="Dashboard ochiq bo‘lganda incremental sync avtomatik boshlanadi; uzilgan sync keyingi ochilishda davom etadi." /><label className="field-label">Interval<select value={draft.autoSyncMinutes} onChange={(event) => setDraft({ ...draft, autoSyncMinutes: Number(event.target.value) })}><option value="0">O‘chirilgan</option><option value="10">10 minut</option><option value="15">15 minut</option><option value="30">30 minut</option><option value="60">60 minut</option></select></label></article></section>
     <section className="panel"><SectionHeader title="Har bir stage uchun limit" subtitle="Faqat tanlangan Sales funnel stage’lari. Aktiv Deal limitdan oshsa Stage nazoratida qizil ko‘rinadi." /><div className="stage-limits"><label className="field-label">Default limit<input type="number" min="1" max="720" value={draft.defaultStageLimitHours} onChange={(event) => setDraft({ ...draft, defaultStageLimitHours: Number(event.target.value) })} /><span>soat</span></label>{stages.map((stage) => <label key={`${stage.categoryId}:${stage.id}`}><span>{stage.name}</span><input type="number" min="1" max="720" value={draft.stageLimits[stage.id] ?? draft.defaultStageLimitHours} onChange={(event) => setDraft({ ...draft, stageLimits: { ...draft.stageLimits, [stage.id]: Number(event.target.value) } })} /><small>soat</small></label>)}</div></section>
     <section className="settings-grid"><article className="panel"><SectionHeader title="Ish vaqti" subtitle={`Timezone: ${draft.timezone}`} /><div className="schedule-list">{days.map(([key, label]) => { const day = draft.schedule[key]; return <div key={key} className={!day.enabled ? "disabled" : ""}><label className="check-label"><input type="checkbox" checked={day.enabled} onChange={(event) => setDraft({ ...draft, schedule: { ...draft.schedule, [key]: { ...day, enabled: event.target.checked } } })} /><span><Check size={13} /></span><strong>{label}</strong></label><input type="time" value={day.start} disabled={!day.enabled} onChange={(event) => setDraft({ ...draft, schedule: { ...draft.schedule, [key]: { ...day, start: event.target.value } } })} /><span>—</span><input type="time" value={day.end} disabled={!day.enabled} onChange={(event) => setDraft({ ...draft, schedule: { ...draft.schedule, [key]: { ...day, end: event.target.value } } })} /></div>; })}</div></article>

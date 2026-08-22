@@ -1,5 +1,6 @@
 import { defaultSettings } from "@/lib/business-time";
 import { getSettings, saveSettings } from "@/lib/storage";
+import { stageIdList } from "@/lib/stage-config";
 import type { DashboardSettings } from "@/lib/types";
 
 export async function POST(request: Request) {
@@ -24,7 +25,10 @@ export async function POST(request: Request) {
       salesManagerField: typeof payload.salesManagerField === "string" && payload.salesManagerField ? payload.salesManagerField : null,
       defaultStageLimitHours: Math.min(720, Math.max(1, Number(payload.defaultStageLimitHours ?? current.defaultStageLimitHours))),
       stageLimits: payload.stageLimits && typeof payload.stageLimits === "object" ? Object.fromEntries(Object.entries(payload.stageLimits).map(([key, value]) => [key, Math.min(720, Math.max(1, Number(value))) ])) : current.stageLimits,
-      qualifiedStageIds: Array.isArray(payload.qualifiedStageIds) ? [...new Set(payload.qualifiedStageIds.map(String))] : current.qualifiedStageIds,
+      qualifiedStageIds: Array.isArray(payload.qualifiedStageIds) ? stageIdList(payload.qualifiedStageIds) : current.qualifiedStageIds,
+      lowQualityStageIds: Array.isArray(payload.lowQualityStageIds) ? stageIdList(payload.lowQualityStageIds) : current.lowQualityStageIds,
+      paymentStageIds: Array.isArray(payload.paymentStageIds) ? stageIdList(payload.paymentStageIds) : current.paymentStageIds,
+      closedLostStageIds: Array.isArray(payload.closedLostStageIds) ? stageIdList(payload.closedLostStageIds) : current.closedLostStageIds,
       routingReasonPatterns: Array.isArray(payload.routingReasonPatterns) ? [...new Set(payload.routingReasonPatterns.map(String).map((value) => value.trim()).filter(Boolean))].slice(0, 30) : current.routingReasonPatterns,
       autoSyncMinutes: [0, 10, 15, 30, 60].includes(Number(payload.autoSyncMinutes)) ? Number(payload.autoSyncMinutes) : current.autoSyncMinutes,
     };

@@ -430,3 +430,8 @@ footer { margin-top: 22px; padding-top: 14px; display: flex; justify-content: sp
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+.stage-semantic-group { margin-bottom: 18px; }
+.stage-semantic-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
+.stage-semantic-head strong { font-size: 14px; }
+.stage-semantic-head small { color: var(--muted, #667085); font-size: 12px; }

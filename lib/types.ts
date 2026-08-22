@@ -20,6 +20,9 @@ export type DashboardSettings = {
   defaultStageLimitHours: number;
   stageLimits: Record<string, number>;
   qualifiedStageIds: string[];
+  lowQualityStageIds: string[];
+  paymentStageIds: string[];
+  closedLostStageIds: string[];
   routingReasonPatterns: string[];
   autoSyncMinutes: number;
 };

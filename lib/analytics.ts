@@ -1,5 +1,6 @@
 import { calculateBusinessMinutes, getSlaStart, isInsideWorkingTime } from "./business-time";
 import { classifyLossReasonGroup, classifySalesStatus, fieldDisplayValue, isPaymentStage, isQualificationStage } from "./sales-logic";
+import type { StageSemantics } from "./stage-config";
 import type { SalesSnapshot } from "./storage";
 import type { AnalyticsRecord, CallOutcome, DashboardSettings, ProviderDiagnostic, SalesManagerAttribution } from "./types";
 
@@ -131,6 +132,10 @@ export function buildAnalyticsRecords(input: {
   const statsByActivity = new Map<string, RawCallStat>();
   for (const stat of input.callStats) { const id = string(stat.CRM_ACTIVITY_ID); if (id) statsByActivity.set(id, stat); }
   const mainIds = new Set(input.settings.selectedPipelineIds); const postSaleIds = new Set(input.settings.postSalePipelineIds);
+  const stageSemantics: StageSemantics = {
+    lowQualityStageIds: input.settings.lowQualityStageIds, paymentStageIds: input.settings.paymentStageIds,
+    closedLostStageIds: input.settings.closedLostStageIds, qualifiedStageIds: input.settings.qualifiedStageIds,
+  };
   const fieldOptions = input.fieldOptions ?? new Map<string, Map<string, string>>(); const snapshots = input.snapshots ?? new Map<string, SalesSnapshot>();
 
   return input.deals.flatMap((deal): AnalyticsRecord[] => {
@@ -139,12 +144,12 @@ export function buildAnalyticsRecords(input: {
     const currentStage = stageName(currentStageId, input.stages);
     const firstMainHistory = histories.find((row) => mainIds.has(string(row.CATEGORY_ID)));
     const originCategoryId = string(firstMainHistory?.CATEGORY_ID) || (mainIds.has(currentCategoryId) ? currentCategoryId : string(histories.find((row) => !postSaleIds.has(string(row.CATEGORY_ID)))?.CATEGORY_ID)) || currentCategoryId;
-    const paymentHistory = histories.find((row) => isPaymentStage(stageName(string(row.STAGE_ID), input.stages)));
+    const paymentHistory = histories.find((row) => isPaymentStage(stageName(string(row.STAGE_ID), input.stages), string(row.STAGE_ID), stageSemantics));
     const postSaleHistory = histories.find((row) => postSaleIds.has(string(row.CATEGORY_ID)));
     // Sitting in the payment stage is itself proof of a sale. Deriving this from
     // stage history alone let a missing/denied history permission silently
     // demote a paid deal back to ACTIVE and under-count Sales.
-    const currentStageIsPayment = isPaymentStage(currentStage);
+    const currentStageIsPayment = isPaymentStage(currentStage, currentStageId, stageSemantics);
     // MOVED_TIME is Bitrix's "moved to current stage" timestamp (its partner
     // field is MOVED_BY_ID), already trusted as current-stage entry by
     // stageEntered below and by buildCurrentStageRecords. While the current
@@ -155,14 +160,17 @@ export function buildAnalyticsRecords(input: {
     const wonEvent = paymentHistory ?? postSaleHistory;
     const wonAt = (wonEvent ? timestamp(wonEvent.CREATED_TIME) : null)?.toISOString() ?? currentPaymentAt?.toISOString() ?? null;
     const currentHistory = [...histories].reverse().find((row) => string(row.STAGE_ID) === currentStageId && (!row.CATEGORY_ID || string(row.CATEGORY_ID) === currentCategoryId));
-    const baseSalesStatus = classifySalesStatus({ stage: currentStage, semantic: string(currentHistory?.STAGE_SEMANTIC_ID), paymentReached: Boolean(paymentHistory) || currentStageIsPayment, inPostSalePipeline: postSaleIds.has(currentCategoryId) || Boolean(postSaleHistory) });
+    const baseSalesStatus = classifySalesStatus({
+      stage: currentStage, stageId: currentStageId, semantic: string(currentHistory?.STAGE_SEMANTIC_ID),
+      paymentReached: Boolean(paymentHistory), currentStagePayment: currentStageIsPayment,
+      inPostSalePipeline: postSaleIds.has(currentCategoryId) || Boolean(postSaleHistory), config: stageSemantics,
+    });
     const stageEntered = timestamp(currentHistory?.CREATED_TIME ?? deal.MOVED_TIME ?? deal.DATE_MODIFY) ?? created;
     const stageAgeHours = Math.max(0, (Date.now() - stageEntered.getTime()) / 3_600_000);
     const stageLimitHours = Number(input.settings.stageLimits[currentStageId] ?? input.settings.defaultStageLimitHours);
     const terminalAt = baseSalesStatus === "ACTIVE" ? null : timestamp(deal.CLOSEDATE ?? deal.DATE_MODIFY) ?? (wonAt ? new Date(wonAt) : null);
     const stageTimeline = buildStageTimeline({ histories, currentCategoryId, currentStageId, currentStageEnteredAt: stageEntered, createdAt: created, terminalAt, pipelines: input.pipelines, stages: input.stages });
-    const qualifiedIds = new Set(input.settings.qualifiedStageIds);
-    const qualifiedEvent = stageTimeline.find((entry) => mainIds.has(entry.categoryId) && (qualifiedIds.has(entry.stageId) || isQualificationStage(entry.stage)));
+    const qualifiedEvent = stageTimeline.find((entry) => mainIds.has(entry.categoryId) && isQualificationStage(entry.stage, entry.stageId, stageSemantics));
     const salesStatus = baseSalesStatus;
     // Not Relevant is always a marketing-quality rejection. A previous SQL-stage visit must
     // not silently reclassify it as a salesperson loss. Won and genuine closed-loss deals

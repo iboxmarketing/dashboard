@@ -1,21 +1,33 @@
 import { normalizePipelineName } from "./pipelines";
+import { hasConfiguredStage, type StageSemantics } from "./stage-config";
 import type { LossReasonGroup, SalesStatus } from "./types";
 
 function normalized(value: unknown) {
   return normalizePipelineName(String(value ?? ""));
 }
 
-export function isLowQualityStage(stage: string) {
+// Every predicate is stage-ID first, stage-name second. A configured id is the
+// trustworthy signal because Bitrix ids survive renames; the name match stays as
+// the backward-compatible fallback, so an empty config behaves exactly as before.
+export function isLowQualityStage(stage: string, stageId = "", config: StageSemantics = {}) {
+  if (hasConfiguredStage(config.lowQualityStageIds, stageId)) return true;
   const value = normalized(stage);
   return value.includes("not relevant") || value.includes("не релевант") || value.includes("sifatsiz");
 }
 
-export function isPaymentStage(stage: string) {
+export function isPaymentStage(stage: string, stageId = "", config: StageSemantics = {}) {
+  // Low quality outranks payment for the SAME stage, so a stage id configured
+  // into both groups is never read as a sale — including as stage history.
+  // Payment proven by a different stage still wins, which is what keeps a
+  // paid-then-Not-Relevant deal classified exactly as before.
+  if (isLowQualityStage(stage, stageId, config)) return false;
+  if (hasConfiguredStage(config.paymentStageIds, stageId)) return true;
   const value = normalized(stage);
   return (value.includes("oplata") && (value.includes("poluch") || value.includes("olindi"))) || value.includes("оплата получена");
 }
 
-export function isQualificationStage(stage: string) {
+export function isQualificationStage(stage: string, stageId = "", config: StageSemantics = {}) {
+  if (hasConfiguredStage(config.qualifiedStageIds, stageId)) return true;
   const value = normalized(stage);
   return value.includes("обработ") || value.includes("processing") || value.includes("qabul qil") || value.includes("sql");
 }
@@ -42,16 +54,39 @@ export function classifyLossReasonGroup(input: {
   return "NONE";
 }
 
-export function isClosedLostStage(stage: string, semantic = "") {
-  if (isLowQualityStage(stage)) return false;
+export function isClosedLostStage(stage: string, semantic = "", stageId = "", config: StageSemantics = {}) {
+  // Not Relevant is never a Sales loss, however Bitrix labels the stage.
+  if (isLowQualityStage(stage, stageId, config)) return false;
+  if (hasConfiguredStage(config.closedLostStageIds, stageId)) return true;
   const value = normalized(stage);
   return semantic.toUpperCase() === "F" || (value.includes("закрыт") && value.includes("не реализ")) || value.includes("yopildi sotilmadi");
 }
 
-export function classifySalesStatus(input: { stage: string; semantic?: string; paymentReached: boolean; inPostSalePipeline: boolean }): SalesStatus {
+/**
+ * Precedence: historical/post-sale sale → LOW_QUALITY → current-stage payment
+ * → LOST → ACTIVE.
+ *
+ * Low quality outranks a payment signal read from the CURRENT stage, so a stage
+ * id configured into both groups resolves to LOW_QUALITY. It does not outrank
+ * payment proven by stage history or a post-sale move: that evidence predates
+ * the current stage and kept its existing precedence, which is what keeps an
+ * empty configuration behaving exactly as before.
+ */
+export function classifySalesStatus(input: {
+  stage: string;
+  stageId?: string;
+  semantic?: string;
+  paymentReached: boolean;
+  currentStagePayment?: boolean;
+  inPostSalePipeline: boolean;
+  config?: StageSemantics;
+}): SalesStatus {
+  const stageId = input.stageId ?? "";
+  const config = input.config ?? {};
   if (input.paymentReached || input.inPostSalePipeline) return "WON";
-  if (isLowQualityStage(input.stage)) return "LOW_QUALITY";
-  if (isClosedLostStage(input.stage, input.semantic)) return "LOST";
+  if (isLowQualityStage(input.stage, stageId, config)) return "LOW_QUALITY";
+  if (input.currentStagePayment ?? isPaymentStage(input.stage, stageId, config)) return "WON";
+  if (isClosedLostStage(input.stage, input.semantic, stageId, config)) return "LOST";
   return "ACTIVE";
 }
 

@@ -188,6 +188,9 @@ export const defaultSettings: DashboardSettings = {
   defaultStageLimitHours: 24,
   stageLimits: {},
   qualifiedStageIds: [],
+  lowQualityStageIds: [],
+  paymentStageIds: [],
+  closedLostStageIds: [],
   routingReasonPatterns: ["idoko", "sd", "передан", "перевод", "routing", "yo'naltir", "yo‘naltir", "o'tkaz", "o‘tkaz"],
   autoSyncMinutes: 15,
 };
