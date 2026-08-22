@@ -115,3 +115,39 @@ export function buildDashboardMetrics(cohortRecords: AnalyticsRecord[], periodSa
     },
   };
 }
+
+/**
+ * Splits records into the two populations `buildDashboardMetrics` expects.
+ * Shared so Custom Pages compute Sales numbers from the same definitions as
+ * the Sales dashboard rather than re-deriving them.
+ */
+export function selectPeriodPopulations(records: AnalyticsRecord[], fromMs: number, toMs: number) {
+  const inRange = (value: string | null) => {
+    if (!value) return false;
+    const time = new Date(value).getTime();
+    return Number.isFinite(time) && time >= fromMs && time <= toMs;
+  };
+  return {
+    cohort: records.filter((row) => inRange(row.createdAt)),
+    periodSales: records.filter((row) => row.salesStatus === "WON" && inRange(row.wonAt)),
+  };
+}
+
+/** Presentation accessor over an already-computed metrics object. */
+export function resolveDashboardMetric(metrics: DashboardMetrics, id: DashboardMetricId): { label: string; value: string } {
+  const label = DASHBOARD_METRICS.find((metric) => metric.id === id)?.label ?? id;
+  const number = (value: number | null) => (value === null ? "—" : Math.round(value).toLocaleString("uz-UZ"));
+  switch (id) {
+    case "leads": case "sql": case "not_relevant": case "sales_lost":
+    case "cohort_sales": case "period_sales": case "duplicates": case "active_cohort":
+      return { label, value: String(metrics.counts[id]) };
+    case "lead_to_sql": case "lead_to_sale": case "sql_to_sale": case "sla":
+      return { label, value: `${metrics.rates[id]}%` };
+    case "revenue": return { label, value: metrics.money.revenue.toLocaleString("uz-UZ") };
+    case "avg_check": return { label, value: number(metrics.money.avg_check) };
+    case "median_check": return { label, value: number(metrics.money.median_check) };
+    case "avg_processing": return { label, value: number(metrics.timing.avg_processing) };
+    case "sales_cycle": return { label, value: number(metrics.timing.sales_cycle) };
+    default: return { label, value: "—" };
+  }
+}

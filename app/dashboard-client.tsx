@@ -12,14 +12,23 @@ import type { AnalyticsRecord, CrmFieldOption, CurrentStageRecord, DashboardSett
 import { ANALYTICS_VERSION } from "@/lib/analytics";
 import { canonicalizeFieldOptions, normalizeCrmFields } from "@/lib/crm-fields";
 import { normalizeSettings } from "@/lib/settings-safety";
+import {
+  DEADLINE_STATES, filterProjects, isOverdue, latestUpdate, projectUpdates,
+  statusBreakdown, statusOptions, summarizeProjects, type Project, type ProjectUpdate,
+} from "@/lib/projects";
+import {
+  MANUAL_KPI_FORMATS, PAGE_RANGES, PAGE_TEMPLATES, WIDGET_REGISTRY, WIDGET_SOURCE_LABELS,
+  filterPages, formatManualValue, pageWidgets, widgetSource,
+  type CustomPage, type PageWidget, type WidgetType,
+} from "@/lib/custom-pages";
 import { countSalesLost, dealOutcomeLabel, isEligibleCohortDeal, isSalesLost, salesLostRate, salesManagerKey } from "@/lib/sales-logic";
 import { markDuplicates } from "@/lib/duplicates";
 import { stageConfigConflicts } from "@/lib/stage-config";
-import { DASHBOARD_METRICS, buildDashboardMetrics, resolveDashboardMetricIds, type DashboardMetricId } from "@/lib/dashboard-metrics";
+import { DASHBOARD_METRICS, buildDashboardMetrics, resolveDashboardMetric, resolveDashboardMetricIds, selectPeriodPopulations, type DashboardMetricId } from "@/lib/dashboard-metrics";
 import { SLA_LABELS, SLA_TONES, resolveSlaState, summarizeSla } from "@/lib/sla";
 import { stageConfigReadiness, summarizeDataQuality } from "@/lib/diagnostics";
 
-type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "diagnostics" | "settings";
+type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "projects" | "projectDetail" | "pages" | "pageDetail" | "diagnostics" | "settings";
 type SyncState = SyncProgressState;
 type Filters = {
   range: "today" | "yesterday" | "7" | "30" | "month" | "lastMonth" | "custom";
@@ -45,6 +54,8 @@ const navItems: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "quality", label: "Lead sifati", icon: ClipboardList },
   { id: "stages", label: "Stage nazorati", icon: Layers3 },
   { id: "deals", label: "Deal’lar", icon: Database },
+  { id: "projects", label: "Projects", icon: ClipboardList },
+  { id: "pages", label: "Pages", icon: LayoutDashboard },
   { id: "diagnostics", label: "Diagnostika", icon: Activity },
   { id: "settings", label: "Sozlamalar", icon: Settings },
 ];
@@ -708,6 +719,178 @@ class ViewErrorBoundary extends Component<{ children: ReactNode; onBack: () => v
   }
 }
 
+type ProjectDraft = { id?: string; name: string; description: string; status: string; deadline: string };
+type UpdateDraft = { id?: string; projectId: string; title: string; description: string; status: string; deadline: string };
+
+function StatusPill({ status, overdue }: { status: string; overdue?: boolean }) {
+  return <span className="status-pair"><span className="pill neutral">{status || "—"}</span>
+    {overdue && <span className="pill danger">Muddati o‘tgan</span>}</span>;
+}
+
+/** Free-typing input with suggestions from statuses already in use. */
+function StatusInput({ value, options, onChange }: { value: string; options: string[]; onChange: (value: string) => void }) {
+  return <label>Status
+    <input list="project-status-options" value={value} onChange={(event) => onChange(event.target.value)} placeholder="Masalan: Jarayonda" />
+    <datalist id="project-status-options">{options.map((option) => <option key={option} value={option} />)}</datalist>
+    <small>Ixtiyoriy matn — bo‘lim o‘z workflowini ishlatishi mumkin</small>
+  </label>;
+}
+
+function ProjectsView({ projects, updates, filters, setFilters, onOpen, onNew, busy }: {
+  projects: Project[]; updates: ProjectUpdate[];
+  filters: { status: string; deadline: string; search: string; includeArchived: boolean };
+  setFilters: React.Dispatch<React.SetStateAction<{ status: string; deadline: string; search: string; includeArchived: boolean }>>;
+  onOpen: (project: Project) => void; onNew: () => void; busy: boolean;
+}) {
+  const summary = summarizeProjects(projects);
+  const visible = filterProjects(projects, filters);
+  const statuses = statusOptions(projects, updates);
+  const breakdown = statusBreakdown(projects);
+  return <><div className="page-title"><div><p className="eyebrow">BOSHQARUV</p><h1>Projects</h1><p>Marketing, Sales, Product va Analytics bo‘yicha ishlar va ularning oxirgi holati.</p></div>
+    <button className="button primary" onClick={onNew} disabled={busy}><ClipboardList size={17} />Yangi loyiha</button></div>
+    <section className="kpi-grid">
+      <KpiCard label="Jami loyihalar" value={String(summary.total)} detail="Arxivlanmagan" icon={ClipboardList} />
+      <KpiCard label="Deadline o‘tgan" value={String(summary.overdue)} detail="Muddati o‘tib ketgan" icon={AlertTriangle} tone="red" />
+      <KpiCard label="Shu hafta yangilangan" value={String(summary.updatedThisWeek)} detail="Oxirgi 7 kun" icon={RefreshCw} tone="green" />
+      <KpiCard label="Shu hafta deadline" value={String(summary.deadlineThisWeek)} detail="Keyingi 7 kun ichida" icon={CalendarDays} tone="cyan" />
+    </section>
+    <div className="filters-shell"><div className="filters-main">
+      <div className="search-box"><Search size={16} /><input value={filters.search} onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} placeholder="Loyiha nomi yoki status…" /></div>
+      <Select label="Status" value={filters.status} onChange={(value) => setFilters((current) => ({ ...current, status: value }))}>
+        <option value="">Barcha statuslar</option>{statuses.map((status) => <option key={status}>{status}</option>)}
+      </Select>
+      <Select label="Deadline" value={filters.deadline} onChange={(value) => setFilters((current) => ({ ...current, deadline: value }))}>
+        {DEADLINE_STATES.map((state) => <option key={state.id} value={state.id}>{state.label}</option>)}
+      </Select>
+      <label className="check-label"><input type="checkbox" checked={filters.includeArchived} onChange={(event) => setFilters((current) => ({ ...current, includeArchived: event.target.checked }))} /><span><Check size={13} /></span><strong>Arxiv bilan</strong></label>
+    </div></div>
+    {breakdown.length > 0 && <section className="panel"><SectionHeader title="Statuslar" subtitle="Ma’lumotdagi haqiqiy statuslar bo‘yicha" />
+      <BarList rows={breakdown.map((row) => ({ label: row.status, value: row.count, total: summary.total, color: "#246bfd" }))} /></section>}
+    <section className="panel"><SectionHeader title="Loyihalar" subtitle={`${visible.length} ta ko‘rsatilmoqda`} />
+      <div className="project-list">{visible.map((project) => { const last = latestUpdate(updates, project.id); return <button key={project.id} className="project-card" onClick={() => onOpen(project)}>
+        <div className="project-card-head"><strong>{project.name}</strong><StatusPill status={project.status} overdue={isOverdue(project)} /></div>
+        <p>{last ? last.title : "Hali update yo‘q"}</p>
+        <span className="project-card-foot">{project.deadline ? `Deadline: ${project.deadline}` : "Deadline yo‘q"} · Yangilangan: {fmtDate(project.updatedAt)}{project.archivedAt ? " · arxivlangan" : ""}</span>
+      </button>; })}{!visible.length && <div className="empty-table">Loyiha topilmadi.</div>}</div>
+    </section></>;
+}
+
+function ProjectDetailView({ project, updates, onBack, onEditProject, onArchive, onNewUpdate, onEditUpdate, onDeleteUpdate, busy }: {
+  project: Project; updates: ProjectUpdate[]; onBack: () => void;
+  onEditProject: () => void; onArchive: () => void; onNewUpdate: () => void;
+  onEditUpdate: (update: ProjectUpdate) => void; onDeleteUpdate: (update: ProjectUpdate) => void; busy: boolean;
+}) {
+  const timeline = projectUpdates(updates, project.id);
+  return <><div className="page-title"><div><button className="back-button" onClick={onBack}><ArrowLeft size={16} />Loyihalarga qaytish</button>
+    <p className="eyebrow">LOYIHA</p><h1>{project.name}</h1><p>{project.description || "Tavsif kiritilmagan"}</p>
+    <div className="project-meta"><StatusPill status={project.status} overdue={isOverdue(project)} />
+      <small>{project.deadline ? `Deadline: ${project.deadline}` : "Deadline yo‘q"}</small>{project.archivedAt && <small>· arxivlangan</small>}</div></div>
+    <div className="settings-actions"><button className="button secondary" onClick={onEditProject} disabled={busy}><Settings size={16} />Tahrirlash</button>
+      <button className="button secondary" onClick={onArchive} disabled={busy}>{project.archivedAt ? "Arxivdan chiqarish" : "Arxivlash"}</button>
+      <button className="button primary" onClick={onNewUpdate} disabled={busy}><ClipboardList size={16} />Yangi update</button></div></div>
+    <section className="panel"><SectionHeader title="Update tarixi" subtitle="Eng yangisi yuqorida" />
+      <div className="update-timeline">{timeline.map((update) => <article key={update.id} className="update-item">
+        <div className="update-head"><strong>{update.title}</strong><StatusPill status={update.status} overdue={isOverdue({ deadline: update.deadline })} /></div>
+        {update.description && <p>{update.description}</p>}
+        <div className="update-foot"><small>{fmtDate(update.createdAt)}{update.deadline ? ` · deadline ${update.deadline}` : ""}</small>
+          <span><button className="button small secondary" onClick={() => onEditUpdate(update)} disabled={busy}>Tahrirlash</button>
+          <button className="button small secondary" onClick={() => onDeleteUpdate(update)} disabled={busy}>O‘chirish</button></span></div>
+      </article>)}{!timeline.length && <div className="empty-table">Bu loyihada hali update yo‘q.</div>}</div>
+    </section></>;
+}
+
+type PageDraft = { id?: string; name: string; description: string; audience: string; defaultRange: string };
+type WidgetDraft = { id?: string; pageId: string; widgetType: WidgetType; title: string; config: Record<string, unknown> };
+
+function pageRangeBounds(range: string) {
+  const now = new Date();
+  const start = range === "7" ? new Date(now.getTime() - 6 * 86_400_000)
+    : range === "month" ? new Date(now.getFullYear(), now.getMonth(), 1)
+      : new Date(now.getTime() - 29 * 86_400_000);
+  return { from: start.getTime(), to: now.getTime() };
+}
+
+/** Renders one widget. Sales numbers come from the canonical metric helper. */
+function WidgetBlock({ widget, records, projects, updates, pageRange, editing }: {
+  widget: PageWidget; records: AnalyticsRecord[]; projects: Project[]; updates: ProjectUpdate[];
+  pageRange: string; editing: boolean;
+}) {
+  const source = widgetSource(widget.widgetType);
+  const badge = editing ? <small className="widget-source">{WIDGET_SOURCE_LABELS[source]}</small> : null;
+
+  if (widget.widgetType === "SECTION_HEADER") {
+    return <div className="page-section-header"><h2>{widget.title || "Bo‘lim"}</h2>
+      {Boolean(widget.config.subtitle) && <p>{String(widget.config.subtitle)}</p>}{badge}</div>;
+  }
+
+  if (widget.widgetType === "SALES_KPI") {
+    const range = String(widget.config.range || "") || pageRange;
+    const bounds = pageRangeBounds(range);
+    const populations = selectPeriodPopulations(records, bounds.from, bounds.to);
+    const metrics = buildDashboardMetrics(populations.cohort, populations.periodSales);
+    const resolved = resolveDashboardMetric(metrics, String(widget.config.metricId) as DashboardMetricId);
+    return <KpiCard label={widget.title || resolved.label} value={resolved.value}
+      detail={<>{PAGE_RANGES.find((item) => item.id === range)?.label ?? range}{badge}</>} icon={BarChart3} tone="blue" />;
+  }
+
+  if (widget.widgetType === "MANUAL_KPI") {
+    return <KpiCard label={widget.title || String(widget.config.label ?? "KPI")} value={formatManualValue(widget.config)}
+      detail={<>{String(widget.config.note ?? "") || "Qo‘lda kiritilgan"}{badge}</>} icon={ClipboardList} tone="amber" />;
+  }
+
+  if (widget.widgetType === "TEXT_NOTE") {
+    return <article className="panel"><SectionHeader title={widget.title || "Izoh"} />
+      <p className="note-body">{String(widget.config.body ?? "") || "Matn kiritilmagan"}</p>{badge}</article>;
+  }
+
+  if (widget.widgetType === "PROJECT_SUMMARY") {
+    const summary = summarizeProjects(projects);
+    return <article className="panel"><SectionHeader title={widget.title || "Loyihalar xulosasi"} />
+      <div className="quality-grid"><div><span>Jami loyihalar</span><strong>{summary.total}</strong></div>
+        <div><span>Deadline o‘tgan</span><strong>{summary.overdue}</strong></div>
+        <div><span>Shu hafta yangilangan</span><strong>{summary.updatedThisWeek}</strong></div>
+        <div><span>Shu hafta deadline</span><strong>{summary.deadlineThisWeek}</strong></div></div>{badge}</article>;
+  }
+
+  if (widget.widgetType === "PROJECT_STATUS_BREAKDOWN") {
+    const breakdown = statusBreakdown(projects);
+    const total = breakdown.reduce((sum, row) => sum + row.count, 0);
+    return <article className="panel"><SectionHeader title={widget.title || "Statuslar"} />
+      <BarList rows={breakdown.map((row) => ({ label: row.status, value: row.count, total, color: "#246bfd" }))} />
+      {!breakdown.length && <div className="empty-table">Loyiha yo‘q.</div>}{badge}</article>;
+  }
+
+  if (widget.widgetType === "PROJECTS_LIST") {
+    const rows = filterProjects(projects, {
+      status: String(widget.config.status ?? ""), deadline: String(widget.config.deadline ?? ""),
+      includeArchived: widget.config.includeArchived === true,
+    }).slice(0, Number(widget.config.limit ?? 10));
+    return <article className="panel"><SectionHeader title={widget.title || "Loyihalar"} />
+      <div className="table-wrap"><table className="data-table"><thead><tr><th>Loyiha</th><th>Status</th><th>Deadline</th><th>Oxirgi update</th></tr></thead>
+        <tbody>{rows.map((project) => <tr key={project.id}><td><strong>{project.name}</strong></td>
+          <td><StatusPill status={project.status} overdue={isOverdue(project)} /></td>
+          <td>{project.deadline ?? "—"}</td><td>{latestUpdate(updates, project.id)?.title ?? "—"}</td></tr>)}</tbody></table>
+        {!rows.length && <div className="empty-table">Loyiha topilmadi.</div>}</div>{badge}</article>;
+  }
+
+  if (widget.widgetType === "LATEST_UPDATES") {
+    const projectId = String(widget.config.projectId ?? "");
+    const status = String(widget.config.status ?? "");
+    const rows = (projectId ? projectUpdates(updates, projectId) : projectUpdates(updates, "").length ? [] : [...updates])
+      .filter((update) => !projectId || update.projectId === projectId);
+    const source2 = (projectId ? rows : [...updates].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)))
+      .filter((update) => !status || update.status === status)
+      .slice(0, Number(widget.config.limit ?? 5));
+    return <article className="panel"><SectionHeader title={widget.title || "Oxirgi update’lar"} />
+      <div className="update-timeline">{source2.map((update) => <div key={update.id} className="update-item">
+        <div className="update-head"><strong>{update.title}</strong><StatusPill status={update.status} /></div>
+        <small>{projects.find((project) => project.id === update.projectId)?.name ?? "—"} · {fmtDate(update.createdAt)}</small>
+      </div>)}{!source2.length && <div className="empty-table">Update yo‘q.</div>}</div>{badge}</article>;
+  }
+
+  return null;
+}
+
 export default function DashboardClient() {
   const [loading, setLoading] = useState(true);
   const [configured, setConfigured] = useState(false);
@@ -725,6 +908,21 @@ export default function DashboardClient() {
   const [syncPipelineId, setSyncPipelineId] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [projectUpdateRows, setProjectUpdateRows] = useState<ProjectUpdate[]>([]);
+  const [projectFilters, setProjectFilters] = useState({ status: "", deadline: "", search: "", includeArchived: false });
+  const [openProjectId, setOpenProjectId] = useState<string | null>(null);
+  const [projectDraft, setProjectDraft] = useState<ProjectDraft | null>(null);
+  const [updateDraft, setUpdateDraft] = useState<UpdateDraft | null>(null);
+  const [projectBusy, setProjectBusy] = useState(false);
+  const [pages, setPages] = useState<CustomPage[]>([]);
+  const [widgets, setWidgets] = useState<PageWidget[]>([]);
+  const [openPageId, setOpenPageId] = useState<string | null>(null);
+  const [pageEditing, setPageEditing] = useState(false);
+  const [pageSearch, setPageSearch] = useState("");
+  const [pageDraft, setPageDraft] = useState<PageDraft | null>(null);
+  const [widgetDraft, setWidgetDraft] = useState<WidgetDraft | null>(null);
+  const [projectError, setProjectError] = useState<string | null>(null);
   const syncLoopRef = useRef(false);
   const autoSyncIndexRef = useRef(0);
   const syncRunnerRef = useRef<((mode: "start" | "resume", full?: boolean, daysOverride?: number, pipelineId?: string) => Promise<void>) | null>(null);
@@ -741,6 +939,48 @@ export default function DashboardClient() {
     } finally { setCurrentStageLoading(false); }
   }, []);
 
+  const loadProjects = useCallback(async () => {
+    try {
+      const response = await fetch("/api/projects", { cache: "no-store" });
+      const payload = await response.json() as { projects?: Project[]; updates?: ProjectUpdate[]; error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Loyihalar yuklanmadi");
+      setProjects(payload.projects ?? []); setProjectUpdateRows(payload.updates ?? []);
+    } catch (caught) { setProjectError(caught instanceof Error ? caught.message : "Loyihalar yuklanmadi"); }
+  }, []);
+
+  const projectAction = useCallback(async (body: Record<string, unknown>) => {
+    setProjectBusy(true); setProjectError(null);
+    try {
+      const response = await fetch("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Amal bajarilmadi");
+      await loadProjects();
+      return true;
+    } catch (caught) { setProjectError(caught instanceof Error ? caught.message : "Amal bajarilmadi"); return false; }
+    finally { setProjectBusy(false); }
+  }, [loadProjects]);
+
+  const loadPages = useCallback(async () => {
+    try {
+      const response = await fetch("/api/pages", { cache: "no-store" });
+      const payload = await response.json() as { pages?: CustomPage[]; widgets?: PageWidget[]; error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Sahifalar yuklanmadi");
+      setPages(payload.pages ?? []); setWidgets(payload.widgets ?? []);
+    } catch (caught) { setProjectError(caught instanceof Error ? caught.message : "Sahifalar yuklanmadi"); }
+  }, []);
+
+  const pageAction = useCallback(async (body: Record<string, unknown>) => {
+    setProjectBusy(true); setProjectError(null);
+    try {
+      const response = await fetch("/api/pages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const payload = await response.json() as { id?: string; error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Amal bajarilmadi");
+      await loadPages();
+      return payload.id ?? true;
+    } catch (caught) { setProjectError(caught instanceof Error ? caught.message : "Amal bajarilmadi"); return null; }
+    finally { setProjectBusy(false); }
+  }, [loadPages]);
+
   const load = useCallback(async () => {
     setLoadError(null);
     try {
@@ -756,11 +996,11 @@ export default function DashboardClient() {
         const selectedProjectCategories = new Set([...payload.settings.selectedPipelineIds, ...payload.settings.postSalePipelineIds].map(String));
         const projectRecords = (payload.records ?? []).map(hydrateRecord).filter((row) => !selectedOrigins.size || selectedOrigins.has(String(row.originCategoryId)) || selectedProjectCategories.has(String(row.categoryId)));
         setRecords(markDuplicates(withLiveSlaState(projectRecords, normalizeSettings(payload.settings)))); setSettings(normalizeSettings(payload.settings)); setSync(payload.sync);
-        void loadCurrentStages();
+        void loadCurrentStages(); void loadProjects(); void loadPages();
       }
     } catch (caught) { setLoadError(caught instanceof Error ? caught.message : "Dashboard yuklanmadi"); }
     finally { setLoading(false); }
-  }, [loadCurrentStages]);
+  }, [loadCurrentStages, loadProjects, loadPages]);
   useEffect(() => {
     const timer = window.setTimeout(() => { void load(); }, 0);
     return () => window.clearTimeout(timer);
@@ -889,6 +1129,10 @@ export default function DashboardClient() {
   if (!configured || (configured && !records.length && sync.status !== "success")) return <SetupScreen configured={configured} sync={sync} syncing={refreshing} externalError={loadError} onStart={() => void syncLoop("start", true, 30, settings?.selectedPipelineIds[0])} onPause={() => void pauseCurrentSync()} onResume={() => void syncLoop("resume")} />;
   if (!settings) return <div className="fatal-error"><XCircle /><p>Sozlamalar yuklanmadi.</p></div>;
   const title = view === "managerDetail" ? selectedManager?.name ?? "Menejer" : navItems.find((item) => item.id === view)?.label ?? "Dashboard";
+  const openProject = projects.find((project) => project.id === openProjectId) ?? null;
+  const projectStatusSuggestions = statusOptions(projects, projectUpdateRows);
+  const openPage = pages.find((page) => page.id === openPageId) ?? null;
+  const openPageWidgets = openPage ? pageWidgets(widgets, openPage.id) : [];
   const hasLegacyData = records.some((record) => record.analyticsVersion < ANALYTICS_VERSION);
   const syncOptions = settings.selectedPipelineIds.map((id, index) => ({ id, name: settings.selectedPipelineNames[index] ?? `Sales funnel #${id}` }));
   const activeSyncPipelineId = syncOptions.some((pipeline) => pipeline.id === syncPipelineId) ? syncPipelineId : syncOptions[0]?.id ?? "";
@@ -915,10 +1159,142 @@ export default function DashboardClient() {
         {view === "leadFlow" && <LeadFlowView records={cohortFiltered} />}
         {view === "quality" && <QualityView records={cohortFiltered} />}
         {view === "stages" && <StageControlView records={filteredCurrentStages} historicalRecords={stageHistoricalRecords} reconciliation={stageReconciliation} loading={currentStageLoading} error={currentStageError} onRefresh={() => void loadCurrentStages()} />}
+        {view === "projects" && <ProjectsView projects={projects} updates={projectUpdateRows} filters={projectFilters} setFilters={setProjectFilters} busy={projectBusy}
+          onOpen={(project) => { setOpenProjectId(project.id); setView("projectDetail"); }}
+          onNew={() => setProjectDraft({ name: "", description: "", status: "", deadline: "" })} />}
+        {view === "projectDetail" && openProject && <ProjectDetailView project={openProject} updates={projectUpdateRows} busy={projectBusy}
+          onBack={() => { setOpenProjectId(null); setView("projects"); }}
+          onEditProject={() => setProjectDraft({ id: openProject.id, name: openProject.name, description: openProject.description, status: openProject.status, deadline: openProject.deadline ?? "" })}
+          onArchive={() => void projectAction({ action: openProject.archivedAt ? "restoreProject" : "archiveProject", id: openProject.id })}
+          onNewUpdate={() => setUpdateDraft({ projectId: openProject.id, title: "", description: "", status: openProject.status, deadline: "" })}
+          onEditUpdate={(update) => setUpdateDraft({ id: update.id, projectId: update.projectId, title: update.title, description: update.description, status: update.status, deadline: update.deadline ?? "" })}
+          onDeleteUpdate={(update) => { if (window.confirm(`"${update.title}" update o‘chirilsinmi?`)) void projectAction({ action: "deleteUpdate", id: update.id }); }} />}
+        {view === "pages" && <>
+          <div className="page-title"><div><p className="eyebrow">BOSHQARUV</p><h1>Pages</h1><p>CEO, Marketing, Sales yoki boshqa auditoriya uchun alohida sahifalar.</p></div>
+            <button className="button primary" disabled={projectBusy} onClick={() => setPageDraft({ name: "", description: "", audience: "", defaultRange: "30" })}><LayoutDashboard size={17} />Yangi sahifa</button></div>
+          <section className="panel"><SectionHeader title="Shablonlar" subtitle="Tayyor tuzilma yaratadi — keyin to‘liq tahrirlash mumkin" />
+            <div className="setup-actions">{PAGE_TEMPLATES.map((template) => <button key={template.id} className="button secondary" disabled={projectBusy}
+              onClick={async () => { const id = await pageAction({ action: "createFromTemplate", templateId: template.id }); if (typeof id === "string") { setOpenPageId(id); setPageEditing(true); setView("pageDetail"); } }}>{template.label}</button>)}</div></section>
+          <div className="filters-shell"><div className="filters-main"><div className="search-box"><Search size={16} />
+            <input value={pageSearch} onChange={(event) => setPageSearch(event.target.value)} placeholder="Sahifa nomi yoki auditoriya…" /></div></div></div>
+          <section className="panel"><SectionHeader title="Sahifalar" />
+            <div className="project-list">{filterPages(pages, { search: pageSearch }).map((page) => <button key={page.id} className="project-card"
+              onClick={() => { setOpenPageId(page.id); setPageEditing(false); setView("pageDetail"); }}>
+              <div className="project-card-head"><strong>{page.name}</strong><span className="pill neutral">{page.audience || "Auditoriya yo‘q"}</span></div>
+              <span className="project-card-foot">{pageWidgets(widgets, page.id).length} ta widget · Yangilangan: {fmtDate(page.updatedAt)}{page.archivedAt ? " · arxivlangan" : ""}</span>
+            </button>)}{!filterPages(pages, { search: pageSearch }).length && <div className="empty-table">Sahifa topilmadi.</div>}</div></section>
+        </>}
+        {view === "pageDetail" && openPage && <>
+          <div className="page-title"><div><button className="back-button" onClick={() => { setOpenPageId(null); setView("pages"); }}><ArrowLeft size={16} />Sahifalarga qaytish</button>
+            <p className="eyebrow">{openPage.audience || "SAHIFA"}</p><h1>{openPage.name}</h1><p>{openPage.description || ""}</p></div>
+            <div className="settings-actions">
+              <button className="button secondary" onClick={() => setPageEditing(!pageEditing)}>{pageEditing ? "Ko‘rish rejimi" : "Tahrirlash"}</button>
+              {pageEditing && <><button className="button secondary" onClick={() => setPageDraft({ id: openPage.id, name: openPage.name, description: openPage.description, audience: openPage.audience, defaultRange: openPage.defaultRange })}><Settings size={16} />Sahifa sozlamasi</button>
+              <button className="button secondary" disabled={projectBusy} onClick={() => void pageAction({ action: openPage.archivedAt ? "restorePage" : "archivePage", id: openPage.id })}>{openPage.archivedAt ? "Arxivdan chiqarish" : "Arxivlash"}</button>
+              <button className="button secondary" disabled={projectBusy} onClick={() => { if (window.confirm(`"${openPage.name}" sahifasi butunlay o‘chirilsinmi?`)) void pageAction({ action: "deletePage", id: openPage.id, confirm: true }).then(() => { setOpenPageId(null); setView("pages"); }); }}>O‘chirish</button></>}
+            </div></div>
+          {pageEditing && <section className="panel"><SectionHeader title="Widget qo‘shish" subtitle={`Sahifa oralig‘i: ${PAGE_RANGES.find((r) => r.id === openPage.defaultRange)?.label ?? openPage.defaultRange}`} />
+            <div className="setup-actions">{WIDGET_REGISTRY.map((entry) => <button key={entry.type} className="button secondary" disabled={projectBusy}
+              onClick={() => setWidgetDraft({ pageId: openPage.id, widgetType: entry.type, title: entry.label,
+                config: entry.type === "SALES_KPI" ? { metricId: "leads", range: "" }
+                  : entry.type === "MANUAL_KPI" ? { label: "KPI", value: "", unit: "", note: "", format: "text" }
+                    : entry.type === "PROJECTS_LIST" ? { status: "", deadline: "", includeArchived: false, limit: 10 }
+                      : entry.type === "LATEST_UPDATES" ? { projectId: "", status: "", limit: 5 }
+                        : entry.type === "TEXT_NOTE" ? { body: "" } : { subtitle: "" } })}>{entry.label}</button>)}</div></section>}
+          <div className="page-canvas">{openPageWidgets.map((widget, index) => <div key={widget.id} className="page-widget">
+            <WidgetBlock widget={widget} records={records} projects={projects} updates={projectUpdateRows} pageRange={openPage.defaultRange} editing={pageEditing} />
+            {pageEditing && <div className="widget-controls">
+              <button className="button small secondary" disabled={projectBusy || index === 0} onClick={() => void pageAction({ action: "moveWidget", id: widget.id, pageId: openPage.id, direction: "up" })}>↑</button>
+              <button className="button small secondary" disabled={projectBusy || index === openPageWidgets.length - 1} onClick={() => void pageAction({ action: "moveWidget", id: widget.id, pageId: openPage.id, direction: "down" })}>↓</button>
+              <button className="button small secondary" disabled={projectBusy} onClick={() => setWidgetDraft({ id: widget.id, pageId: widget.pageId, widgetType: widget.widgetType, title: widget.title, config: widget.config })}>Sozlash</button>
+              <button className="button small secondary" disabled={projectBusy} onClick={() => { if (window.confirm("Widget o‘chirilsinmi?")) void pageAction({ action: "deleteWidget", id: widget.id, pageId: openPage.id }); }}>O‘chirish</button>
+            </div>}</div>)}
+            {!openPageWidgets.length && <div className="empty-table">Widget qo‘shilmagan.</div>}</div>
+        </>}
         {view === "deals" && <><div className="page-title"><div><p className="eyebrow">DETAIL REPORT</p><h1>Deal’lar</h1><p>Sotuv holati, sotuvchi attribution’i, stage yoshi va processing yagona jadvalda.</p></div></div><DealsTable records={detailFiltered} /></>}
         {view === "diagnostics" && <DiagnosticsView sync={sync} records={records} reconciliation={stageReconciliation} settings={settings} />}
         {view === "settings" && <SettingsView settings={settings} syncing={refreshing || sync.status === "running"} onSave={saveSettings} onFullSync={saveAndFullSync} />}
         </ViewErrorBoundary>
+        {pageDraft && <section className="panel editor-panel"><SectionHeader title={pageDraft.id ? "Sahifa sozlamasi" : "Yangi sahifa"} />
+          <div className="config-fields">
+            <label>Nomi<input value={pageDraft.name} onChange={(event) => setPageDraft({ ...pageDraft, name: event.target.value })} /></label>
+            <label>Auditoriya<input value={pageDraft.audience} onChange={(event) => setPageDraft({ ...pageDraft, audience: event.target.value })} placeholder="CEO, Marketing, Sales…" /><small>Ixtiyoriy matn</small></label>
+            <label>Sana oralig‘i<select value={pageDraft.defaultRange} onChange={(event) => setPageDraft({ ...pageDraft, defaultRange: event.target.value })}>
+              {PAGE_RANGES.map((range) => <option key={range.id} value={range.id}>{range.label}</option>)}</select><small>Sales widgetlar shu oraliqni meros oladi</small></label>
+          </div>
+          <label className="wide-field">Description<textarea rows={3} value={pageDraft.description} onChange={(event) => setPageDraft({ ...pageDraft, description: event.target.value })} /></label>
+          <div className="setup-actions">
+            <button className="button primary" disabled={projectBusy || !pageDraft.name.trim()} onClick={async () => {
+              const result = await pageAction({ action: pageDraft.id ? "updatePage" : "createPage", ...pageDraft });
+              if (result) setPageDraft(null);
+            }}>Saqlash</button>
+            <button className="button secondary" onClick={() => setPageDraft(null)}>Bekor qilish</button>
+          </div></section>}
+        {widgetDraft && <section className="panel editor-panel"><SectionHeader title={`${widgetDraft.id ? "Widget sozlamasi" : "Yangi widget"} · ${WIDGET_SOURCE_LABELS[widgetSource(widgetDraft.widgetType)]}`} />
+          <div className="config-fields">
+            <label>Sarlavha<input value={widgetDraft.title} onChange={(event) => setWidgetDraft({ ...widgetDraft, title: event.target.value })} /></label>
+            {widgetDraft.widgetType === "SALES_KPI" && <>
+              <label>Ko‘rsatkich<select value={String(widgetDraft.config.metricId ?? "leads")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, metricId: event.target.value } })}>
+                {DASHBOARD_METRICS.map((metric) => <option key={metric.id} value={metric.id}>{metric.label}</option>)}</select></label>
+              <label>Sana oralig‘i<select value={String(widgetDraft.config.range ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, range: event.target.value } })}>
+                <option value="">Sahifa oralig‘i</option>{PAGE_RANGES.map((range) => <option key={range.id} value={range.id}>{range.label}</option>)}</select></label></>}
+            {widgetDraft.widgetType === "MANUAL_KPI" && <>
+              <label>Label<input value={String(widgetDraft.config.label ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, label: event.target.value } })} /></label>
+              <label>Qiymat<input value={String(widgetDraft.config.value ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, value: event.target.value } })} /><small>Qo‘lda kiritiladi — Bitrix’dan olinmaydi</small></label>
+              <label>Format<select value={String(widgetDraft.config.format ?? "text")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, format: event.target.value } })}>
+                {MANUAL_KPI_FORMATS.map((format) => <option key={format} value={format}>{format}</option>)}</select></label>
+              <label>Unit<input value={String(widgetDraft.config.unit ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, unit: event.target.value } })} /></label>
+              <label>Izoh<input value={String(widgetDraft.config.note ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, note: event.target.value } })} /></label></>}
+            {widgetDraft.widgetType === "SECTION_HEADER" && <label>Subtitle<input value={String(widgetDraft.config.subtitle ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, subtitle: event.target.value } })} /></label>}
+            {widgetDraft.widgetType === "PROJECTS_LIST" && <>
+              <label>Status<input list="project-status-options" value={String(widgetDraft.config.status ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, status: event.target.value } })} /></label>
+              <label>Deadline<select value={String(widgetDraft.config.deadline ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, deadline: event.target.value } })}>
+                {DEADLINE_STATES.map((state) => <option key={state.id} value={state.id}>{state.label}</option>)}</select></label>
+              <label>Limit<input type="number" min="1" max="50" value={Number(widgetDraft.config.limit ?? 10)} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, limit: Number(event.target.value) } })} /></label></>}
+            {widgetDraft.widgetType === "LATEST_UPDATES" && <>
+              <label>Loyiha<select value={String(widgetDraft.config.projectId ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, projectId: event.target.value } })}>
+                <option value="">Barcha loyihalar</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+              <label>Limit<input type="number" min="1" max="50" value={Number(widgetDraft.config.limit ?? 5)} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, limit: Number(event.target.value) } })} /></label></>}
+          </div>
+          {widgetDraft.widgetType === "TEXT_NOTE" && <label className="wide-field">Matn<textarea rows={5} value={String(widgetDraft.config.body ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, body: event.target.value } })} /></label>}
+          <div className="setup-actions">
+            <button className="button primary" disabled={projectBusy} onClick={async () => {
+              const result = await pageAction(widgetDraft.id
+                ? { action: "updateWidget", id: widgetDraft.id, pageId: widgetDraft.pageId, widgetType: widgetDraft.widgetType, title: widgetDraft.title, config: widgetDraft.config }
+                : { action: "addWidget", pageId: widgetDraft.pageId, widgetType: widgetDraft.widgetType, title: widgetDraft.title, position: 0, config: widgetDraft.config });
+              if (result) setWidgetDraft(null);
+            }}>Saqlash</button>
+            <button className="button secondary" onClick={() => setWidgetDraft(null)}>Bekor qilish</button>
+          </div></section>}
+        {projectError && <div className="notice error page-notice"><XCircle size={18} />{projectError}<button onClick={() => setProjectError(null)}><X size={14} /></button></div>}
+        {projectDraft && <section className="panel editor-panel"><SectionHeader title={projectDraft.id ? "Loyihani tahrirlash" : "Yangi loyiha"} />
+          <div className="config-fields">
+            <label>Nomi<input value={projectDraft.name} onChange={(event) => setProjectDraft({ ...projectDraft, name: event.target.value })} /></label>
+            <StatusInput value={projectDraft.status} options={projectStatusSuggestions} onChange={(value) => setProjectDraft({ ...projectDraft, status: value })} />
+            <label>Deadline<input type="date" value={projectDraft.deadline} onChange={(event) => setProjectDraft({ ...projectDraft, deadline: event.target.value })} /><small>Ixtiyoriy</small></label>
+          </div>
+          <label className="wide-field">Description<textarea rows={4} value={projectDraft.description} onChange={(event) => setProjectDraft({ ...projectDraft, description: event.target.value })} /></label>
+          <div className="setup-actions">
+            <button className="button primary" disabled={projectBusy || !projectDraft.name.trim() || !projectDraft.status.trim()} onClick={async () => {
+              const ok = await projectAction({ action: projectDraft.id ? "updateProject" : "createProject", id: projectDraft.id, name: projectDraft.name, description: projectDraft.description, status: projectDraft.status, deadline: projectDraft.deadline });
+              if (ok) setProjectDraft(null);
+            }}>Saqlash</button>
+            <button className="button secondary" onClick={() => setProjectDraft(null)}>Bekor qilish</button>
+          </div></section>}
+        {updateDraft && <section className="panel editor-panel"><SectionHeader title={updateDraft.id ? "Update tahrirlash" : "Yangi update"} />
+          <div className="config-fields">
+            <label>Nomi<input value={updateDraft.title} onChange={(event) => setUpdateDraft({ ...updateDraft, title: event.target.value })} /></label>
+            <StatusInput value={updateDraft.status} options={projectStatusSuggestions} onChange={(value) => setUpdateDraft({ ...updateDraft, status: value })} />
+            <label>Deadline<input type="date" value={updateDraft.deadline} onChange={(event) => setUpdateDraft({ ...updateDraft, deadline: event.target.value })} /><small>Ixtiyoriy</small></label>
+          </div>
+          <label className="wide-field">Description<textarea rows={4} value={updateDraft.description} onChange={(event) => setUpdateDraft({ ...updateDraft, description: event.target.value })} /></label>
+          <div className="setup-actions">
+            <button className="button primary" disabled={projectBusy || !updateDraft.title.trim() || !updateDraft.status.trim()} onClick={async () => {
+              const ok = await projectAction({ action: updateDraft.id ? "updateUpdate" : "createUpdate", id: updateDraft.id, projectId: updateDraft.projectId, title: updateDraft.title, description: updateDraft.description, status: updateDraft.status, deadline: updateDraft.deadline });
+              if (ok) setUpdateDraft(null);
+            }}>Saqlash</button>
+            <button className="button secondary" onClick={() => setUpdateDraft(null)}>Bekor qilish</button>
+          </div></section>}
         <footer><span>Bitrix24 Deal Processing Dashboard</span><span>Timezone: Asia/Tashkent · Business minutes only</span></footer>
       </div>
     </main>

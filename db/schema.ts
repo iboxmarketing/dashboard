@@ -104,3 +104,53 @@ export const dealSalesSnapshots = sqliteTable("deal_sales_snapshots", {
   attributionSource: text("attribution_source").notNull(),
   createdAt: text("created_at").notNull(),
 });
+
+// Projects & Updates — management reporting. Independent of the analytics
+// pipeline: no Bitrix data and no metric depends on these tables.
+// `status` is free text by design; departments define their own workflows.
+export const projects = sqliteTable("projects", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  description: text("description").notNull(),
+  status: text("status").notNull(),
+  deadline: text("deadline"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  archivedAt: text("archived_at"),
+});
+
+export const projectUpdates = sqliteTable("project_updates", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  title: text("title").notNull(),
+  description: text("description").notNull(),
+  status: text("status").notNull(),
+  deadline: text("deadline"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+// Custom Pages — audience-specific management dashboards assembled from a
+// fixed widget registry. `config_json` holds per-widget settings only; never
+// secrets and never a formula.
+export const customPages = sqliteTable("custom_pages", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  description: text("description"),
+  audience: text("audience"),
+  defaultRange: text("default_range").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  archivedAt: text("archived_at"),
+});
+
+export const customPageWidgets = sqliteTable("custom_page_widgets", {
+  id: text("id").primaryKey(),
+  pageId: text("page_id").notNull(),
+  widgetType: text("widget_type").notNull(),
+  title: text("title"),
+  position: integer("position").notNull(),
+  configJson: text("config_json").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
