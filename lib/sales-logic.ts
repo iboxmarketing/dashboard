@@ -1,5 +1,5 @@
 import { normalizePipelineName } from "./pipelines";
-import { hasConfiguredStage, type StageSemantics } from "./stage-config";
+import { hasConfiguredStage, type StageMeta, type StageSemantics } from "./stage-config";
 import type { LossReasonGroup, SalesStatus } from "./types";
 
 function normalized(value: unknown) {
@@ -151,4 +151,44 @@ export function dealOutcomeLabel(row: { salesStatus?: SalesStatus; lossReasonGro
       : { label: "Sotilmadi", tone: "danger" };
   }
   return { label: "Aktiv", tone: "neutral" };
+}
+
+/**
+ * Quality acceptance evidence from a stage.
+ *
+ * True for the configured SQL stage AND for anything downstream of it in the
+ * same pipeline — Встреча, Согласие, Оплата all prove the lead was accepted.
+ * Ordering comes from the live Bitrix SORT, never from a display name, so a
+ * renamed stage keeps working. Not Relevant and closed-lost are excluded: they
+ * are terminal outcomes, not progression.
+ *
+ * With no threshold configured for the pipeline this degrades to the previous
+ * name/id match, so an unconfigured install behaves exactly as before.
+ */
+export function isSqlOrDownstreamStage(input: {
+  stageId: string;
+  stage: string;
+  categoryId: string;
+  semantic?: string;
+  thresholds?: Map<string, number>;
+  stageMeta?: Map<string, StageMeta>;
+  config?: StageSemantics;
+}) {
+  const config = input.config ?? {};
+  if (isLowQualityStage(input.stage, input.stageId, config)) return false;
+  if (isClosedLostStage(input.stage, input.semantic ?? "", input.stageId, config)) return false;
+  if (isQualificationStage(input.stage, input.stageId, config)) return true;
+  const threshold = input.thresholds?.get(input.categoryId);
+  const sort = input.stageMeta?.get(input.stageId)?.sort;
+  if (threshold === undefined || sort === undefined) return false;
+  return sort >= threshold;
+}
+
+/**
+ * Deals routed to another project (Idokon / SD) are stored and diagnosable but
+ * leave the IBOX eligible cohort: they never had a chance to convert here, so
+ * counting them would depress every IBOX conversion denominator.
+ */
+export function isEligibleCohortDeal(row: { lossReasonGroup?: LossReasonGroup | null }) {
+  return row.lossReasonGroup !== "ROUTING";
 }

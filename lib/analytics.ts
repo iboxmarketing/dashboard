@@ -1,9 +1,19 @@
 import { calculateBusinessMinutes, getSlaStart, isInsideWorkingTime } from "./business-time";
 import { resolveSlaState } from "./sla";
-import { classifyLossReasonGroup, classifySalesStatus, fieldDisplayValue, isLowQualityStage, isPaymentStage, isQualificationStage } from "./sales-logic";
-import type { StageSemantics } from "./stage-config";
+import { classifyLossReasonGroup, classifySalesStatus, fieldDisplayValue, isLowQualityStage, isPaymentStage, isSqlOrDownstreamStage } from "./sales-logic";
+import { sqlThresholdsByCategory, type StageMeta, type StageSemantics } from "./stage-config";
 import type { SalesSnapshot } from "./storage";
-import type { AnalyticsRecord, CallOutcome, DashboardSettings, ProcessingSource, ProviderDiagnostic, SalesManagerAttribution } from "./types";
+import type { AnalyticsRecord, DashboardSettings, ProcessingSource, SalesManagerAttribution } from "./types";
+
+/**
+ * Bumped whenever persisted AnalyticsRecord semantics change, so the stale-data
+ * banner can tell a rebuilt record from one written by older logic.
+ *
+ * 5 — Sprint 15/16: SOURCE_ID-based source, per-funnel failure reason,
+ *     downstream-stage qualification, qualification-based first processing and
+ *     the removal of call-derived seller attribution.
+ */
+export const ANALYTICS_VERSION = 5;
 
 export type RawDeal = Record<string, unknown>;
 export type RawActivity = Record<string, unknown>;
@@ -14,56 +24,6 @@ function string(value: unknown) { return value === null || value === undefined ?
 function timestamp(value: unknown) { const date = new Date(string(value)); return Number.isFinite(date.getTime()) ? date : null; }
 function managerName(id: string, users: Map<string, string>) { return users.get(id) ?? (id ? `Menejer #${id}` : "Aniqlanmagan"); }
 function employeeId(raw: unknown) { const value = Array.isArray(raw) ? raw[0] : raw; return string(value).match(/(?:user_)?(\d+)/i)?.[1] ?? ""; }
-
-export function activityProviderKey(activity: RawActivity) {
-  return [activity.PROVIDER_ID, activity.PROVIDER_TYPE_ID, activity.TYPE_ID, activity.DIRECTION].map(string).join("|");
-}
-
-export function isOutgoingCall(activity: RawActivity, providerRules: Record<string, string> = {}) {
-  const rule = providerRules[activityProviderKey(activity)];
-  if (rule === "IGNORE") return false;
-  if (rule === "USE") return true;
-  const provider = `${string(activity.PROVIDER_ID)} ${string(activity.PROVIDER_TYPE_ID)}`.toUpperCase();
-  return string(activity.DIRECTION) === "2" && (string(activity.TYPE_ID) === "2" || /CALL|VOXIMPLANT|TELEPHON/.test(provider));
-}
-
-export function discoverProviders(activities: RawActivity[]): ProviderDiagnostic[] {
-  const map = new Map<string, ProviderDiagnostic>();
-  for (const activity of activities) {
-    const direction = string(activity.DIRECTION); const typeId = string(activity.TYPE_ID);
-    const providerId = string(activity.PROVIDER_ID); const providerTypeId = string(activity.PROVIDER_TYPE_ID);
-    if (!direction && !providerId && typeId !== "2") continue;
-    const key = activityProviderKey(activity); const current = map.get(key);
-    if (current) current.count += 1;
-    else map.set(key, { key, providerId: providerId || "—", providerTypeId: providerTypeId || "—", typeId: typeId || "—", direction: direction || "—", count: 1, sampleSubject: string(activity.SUBJECT).slice(0, 100) || "—", mode: "AUTO" });
-  }
-  return [...map.values()].sort((a, b) => b.count - a.count);
-}
-
-function activityDealIds(activity: RawActivity) {
-  const ids = new Set<string>(); const bindings = Array.isArray(activity.BINDINGS) ? activity.BINDINGS : [];
-  for (const raw of bindings) {
-    const binding = raw as Record<string, unknown>; const type = string(binding.OWNER_TYPE_ID ?? binding.ENTITY_TYPE_ID); const id = string(binding.OWNER_ID ?? binding.ENTITY_ID);
-    if (type === "2" && id) ids.add(id);
-  }
-  if (string(activity.OWNER_TYPE_ID) === "2" && activity.OWNER_ID) ids.add(string(activity.OWNER_ID));
-  return [...ids];
-}
-
-export function normalizeCallOutcome(codeValue: unknown): CallOutcome {
-  const code = string(codeValue).toUpperCase();
-  if (code === "200") return "Ko‘tardi"; if (code === "304") return "Ko‘tarmadi"; if (code === "486") return "Band";
-  if (code === "603") return "Rad etdi"; if (code === "603-S") return "Bekor qilindi"; if (code === "404") return "Noto‘g‘ri raqam";
-  if (["480", "484", "503", "403", "402"].includes(code)) return "Ulanmadi"; if (code === "423") return "Bloklangan";
-  return "Noma’lum";
-}
-
-function callOutcome(activity: RawActivity, stat?: RawCallStat) {
-  let outcome = normalizeCallOutcome(stat?.CALL_FAILED_CODE ?? activity.RESULT_STATUS ?? activity.RESULT_VALUE); let inferred = false;
-  const duration = Number(stat?.CALL_DURATION ?? 0);
-  if (outcome === "Noma’lum" && duration > 0) { outcome = "Ko‘tardi"; inferred = true; }
-  return { outcome, inferred, duration: Number.isFinite(duration) ? duration : 0 };
-}
 
 function orderedHistory(histories: RawStageHistory[]) {
   return histories.filter((row) => timestamp(row.CREATED_TIME)).sort((a, b) => timestamp(a.CREATED_TIME)!.getTime() - timestamp(b.CREATED_TIME)!.getTime());
@@ -121,18 +81,19 @@ function buildStageTimeline(input: {
 }
 
 export function buildAnalyticsRecords(input: {
-  deals: RawDeal[]; activities: RawActivity[]; stageHistories: RawStageHistory[]; callStats: RawCallStat[];
-  settings: DashboardSettings; providerRules: Record<string, string>; users: Map<string, string>;
+  deals: RawDeal[]; stageHistories: RawStageHistory[];
+  // Calls are no longer a dashboard data source. These stay optional so existing
+  // callers keep compiling; nothing reads them.
+  activities?: RawActivity[]; callStats?: RawCallStat[]; providerRules?: Record<string, string>;
+  settings: DashboardSettings; users: Map<string, string>;
   pipelines: Map<string, string>; stages: Map<string, string>; sources: Map<string, string>; fieldOptions?: Map<string, Map<string, string>>;
-  snapshots?: Map<string, SalesSnapshot>; domain: string | null; activitiesAvailable: boolean; stageHistoryAvailable: boolean;
+  stageMeta?: Map<string, StageMeta>;
+  snapshots?: Map<string, SalesSnapshot>; domain: string | null; activitiesAvailable?: boolean; stageHistoryAvailable: boolean;
 }) {
-  const activitiesByDeal = new Map<string, RawActivity[]>();
-  for (const activity of input.activities) for (const dealId of activityDealIds(activity)) activitiesByDeal.set(dealId, [...(activitiesByDeal.get(dealId) ?? []), activity]);
   const historiesByDeal = new Map<string, RawStageHistory[]>();
   for (const history of input.stageHistories) { const id = string(history.OWNER_ID); if (id) historiesByDeal.set(id, [...(historiesByDeal.get(id) ?? []), history]); }
-  const statsByActivity = new Map<string, RawCallStat>();
-  for (const stat of input.callStats) { const id = string(stat.CRM_ACTIVITY_ID); if (id) statsByActivity.set(id, stat); }
   const mainIds = new Set(input.settings.selectedPipelineIds); const postSaleIds = new Set(input.settings.postSalePipelineIds);
+  const stageThresholds = sqlThresholdsByCategory(input.settings.qualifiedStageIds, input.stageMeta);
   const stageSemantics: StageSemantics = {
     lowQualityStageIds: input.settings.lowQualityStageIds, paymentStageIds: input.settings.paymentStageIds,
     closedLostStageIds: input.settings.closedLostStageIds, qualifiedStageIds: input.settings.qualifiedStageIds,
@@ -171,7 +132,9 @@ export function buildAnalyticsRecords(input: {
     const stageLimitHours = Number(input.settings.stageLimits[currentStageId] ?? input.settings.defaultStageLimitHours);
     const terminalAt = baseSalesStatus === "ACTIVE" ? null : timestamp(deal.CLOSEDATE ?? deal.DATE_MODIFY) ?? (wonAt ? new Date(wonAt) : null);
     const stageTimeline = buildStageTimeline({ histories, currentCategoryId, currentStageId, currentStageEnteredAt: stageEntered, createdAt: created, terminalAt, pipelines: input.pipelines, stages: input.stages });
-    const qualifiedEvent = stageTimeline.find((entry) => mainIds.has(entry.categoryId) && isQualificationStage(entry.stage, entry.stageId, stageSemantics));
+    const acceptsAsQualified = (stageId: string, name: string, categoryId: string, semantic = "") =>
+      isSqlOrDownstreamStage({ stageId, stage: name, categoryId, semantic, thresholds: stageThresholds, stageMeta: input.stageMeta, config: stageSemantics });
+    const qualifiedEvent = stageTimeline.find((entry) => mainIds.has(entry.categoryId) && acceptsAsQualified(entry.stageId, entry.stage, entry.categoryId));
     const salesStatus = baseSalesStatus;
     // Not Relevant is always a marketing-quality rejection. A previous SQL-stage visit must
     // not silently reclassify it as a salesperson loss. Won and genuine closed-loss deals
@@ -184,14 +147,7 @@ export function buildAnalyticsRecords(input: {
     const qualifiedAt = effectiveQualifiedEvent?.enteredAt ?? null;
 
     const assignedManagerId = string(deal.ASSIGNED_BY_ID);
-    const calls = (activitiesByDeal.get(dealId) ?? []).filter((row) => isOutgoingCall(row, input.providerRules)).filter((row) => { const at = timestamp(row.START_TIME ?? row.CREATED); return at && at >= created; }).sort((a, b) => timestamp(a.START_TIME ?? a.CREATED)!.getTime() - timestamp(b.START_TIME ?? b.CREATED)!.getTime());
-    const firstCall = calls[0] ?? null; const firstCallAt = firstCall ? timestamp(firstCall.START_TIME ?? firstCall.CREATED) : null;
-    const firstCallStat = firstCall ? statsByActivity.get(string(firstCall.ID)) : undefined;
-    const firstOutcome = firstCall ? callOutcome(firstCall, firstCallStat) : { outcome: "Noma’lum" as CallOutcome, inferred: false, duration: 0 };
-    const latestCall = calls.at(-1); const latestOutcome = latestCall ? callOutcome(latestCall, statsByActivity.get(string(latestCall.ID))).outcome : "Noma’lum";
-    const successes = calls.flatMap((activity) => { const at = timestamp(activity.START_TIME ?? activity.CREATED); return at && callOutcome(activity, statsByActivity.get(string(activity.ID))).outcome === "Ko‘tardi" ? [{ at }] : []; });
     const stageChange = firstStageChange(deal, histories); const slaStart = getSlaStart(created, input.settings);
-    const firstCallMinutes = firstCallAt ? calculateBusinessMinutes(slaStart, firstCallAt, input.settings) : null;
     const stageMinutes = stageChange ? calculateBusinessMinutes(slaStart, stageChange.at, input.settings) : null;
     // First processing is the CRM-recorded result of the first real qualification
     // conversation: the deal entering SQL/Обработка or Not Relevant. Calls are
@@ -199,27 +155,30 @@ export function buildAnalyticsRecords(input: {
     // call coverage is uneven and would bias manager and SLA comparisons.
     // Intermediate operational stages (No Answer, First Attempt, …) do not stop
     // the timer: only the two configured qualification outcomes do.
-    const isProcessingStage = (stageId: string, name: string) =>
-      isQualificationStage(name, stageId, stageSemantics) || isLowQualityStage(name, stageId, stageSemantics);
+    // Quality acceptance can be proven by any downstream sales progression, so a
+    // deal that skipped Обработка is processed at the moment it entered Встреча,
+    // Согласие or Оплата. No Обработка event is fabricated.
+    const isProcessingStage = (stageId: string, name: string, categoryId: string) =>
+      acceptsAsQualified(stageId, name, categoryId) || isLowQualityStage(name, stageId, stageSemantics);
     const processingHistory = histories.find((row) => {
       const at = timestamp(row.CREATED_TIME); const stageId = string(row.STAGE_ID);
-      return Boolean(at) && isProcessingStage(stageId, stageName(stageId, input.stages));
+      const categoryId = string(row.CATEGORY_ID || currentCategoryId);
+      return Boolean(at) && isProcessingStage(stageId, stageName(stageId, input.stages), categoryId);
     });
     // Without history we only trust MOVED_TIME, and only while the CURRENT stage
     // is itself a qualification outcome — then it is the exact entry time. For a
     // later stage the deal was clearly processed, but its first qualification
     // cannot be dated, so nothing is fabricated from DATE_MODIFY or creation.
-    const currentStageIsProcessing = isProcessingStage(currentStageId, currentStage);
+    const currentStageIsProcessing = isProcessingStage(currentStageId, currentStage, currentCategoryId);
     const processingAt = (processingHistory ? timestamp(processingHistory.CREATED_TIME) : null)
       ?? (currentStageIsProcessing ? timestamp(deal.MOVED_TIME) : null);
     const processingMinutes = processingAt ? calculateBusinessMinutes(slaStart, processingAt, input.settings) : null;
     const processingSource: ProcessingSource = processingAt
       ? "QUALIFICATION_STAGE"
       : histories.length ? "NO_PROCESSING" : "NO_PROCESSING_EVIDENCE";
-    const stageChangedBeforeCall = Boolean(stageChange && firstCallAt && stageChange.at < firstCallAt);
 
     const snapshot = snapshots.get(dealId); const customManagerId = input.settings.salesManagerField ? employeeId(deal[input.settings.salesManagerField]) : "";
-    const firstCallManagerId = firstCall ? string(firstCall.RESPONSIBLE_ID) : ""; const moverId = string(deal.MOVED_BY_ID);
+    const moverId = string(deal.MOVED_BY_ID);
     // Two different immutability rules. The sale date is frozen as soon as a
     // snapshot exists, but seller attribution is frozen only once a real seller
     // was actually resolved: a snapshot holding an UNKNOWN seller must not block
@@ -229,15 +188,21 @@ export function buildAnalyticsRecords(input: {
     let salesManager = snapshotManagerId ? snapshot?.managerName ?? "" : "";
     let salesManagerAttribution: SalesManagerAttribution = snapshotManagerId ? (snapshot?.attributionSource as SalesManagerAttribution) : "UNKNOWN";
     if (!snapshotManagerId && customManagerId) { salesManagerId = customManagerId; salesManagerAttribution = "CUSTOM_FIELD"; }
-    else if (!snapshotManagerId && firstCallManagerId) { salesManagerId = firstCallManagerId; salesManagerAttribution = "FIRST_CALL"; }
     else if (!snapshotManagerId && moverId) { salesManagerId = moverId; salesManagerAttribution = "STAGE_MOVER"; }
     else if (!snapshotManagerId && assignedManagerId) { salesManagerId = assignedManagerId; salesManagerAttribution = "CURRENT_RESPONSIBLE"; }
     if (!salesManager && salesManagerId) salesManager = managerName(salesManagerId, input.users);
 
-    const reasonField = input.settings.failureReasonField; const sourceField = input.settings.marketingChannelField;
+    // Each Sales funnel carries its own Причина провала field; fall back to the
+    // single configured field for installs that have not mapped per pipeline.
+    const reasonField = input.settings.failureReasonFieldByPipeline?.[originCategoryId]
+      ?? input.settings.failureReasonFieldByPipeline?.[currentCategoryId]
+      ?? input.settings.failureReasonField;
     const lossReason = reasonField ? fieldDisplayValue(deal[reasonField], fieldOptions.get(reasonField)) : "";
-    const customSource = sourceField ? fieldDisplayValue(deal[sourceField], fieldOptions.get(sourceField)) : "";
-    const sourceId = customSource || string(deal.SOURCE_ID); const source = customSource || input.sources.get(sourceId) || sourceId || "Ko‘rsatilmagan";
+    // Source is the standard Bitrix SOURCE_ID resolved through the live SOURCE
+    // dictionary. Custom "how did you hear" fields and UTM are separate
+    // dimensions and must not stand in for it.
+    const sourceId = string(deal.SOURCE_ID);
+    const source = input.sources.get(sourceId) || sourceId || "Aniqlanmagan";
     const opportunity = Number(deal.OPPORTUNITY ?? 0);
     const effectiveWonAt = snapshot?.wonAt ?? wonAt;
     const salesCycleHours = effectiveWonAt ? Math.max(0, (new Date(effectiveWonAt).getTime() - created.getTime()) / 3_600_000) : null;
@@ -247,7 +212,7 @@ export function buildAnalyticsRecords(input: {
     const lossReasonGroup = classifyLossReasonGroup({ status: salesStatus, reason: effectiveLossReason, routingPatterns: input.settings.routingReasonPatterns });
 
     return [{
-      analyticsVersion: 4, dealId, title: string(deal.TITLE) || `Deal #${dealId}`, createdAt: created.toISOString(), creationPeriod: isInsideWorkingTime(created, input.settings) ? "WORK_HOURS" : "AFTER_HOURS", slaStart: slaStart.toISOString(),
+      analyticsVersion: ANALYTICS_VERSION, dealId, title: string(deal.TITLE) || `Deal #${dealId}`, createdAt: created.toISOString(), creationPeriod: isInsideWorkingTime(created, input.settings) ? "WORK_HOURS" : "AFTER_HOURS", slaStart: slaStart.toISOString(),
       assignedManagerId, assignedManager: managerName(assignedManagerId, input.users), categoryId: currentCategoryId, pipeline: input.pipelines.get(currentCategoryId) ?? `Pipeline #${currentCategoryId}`,
       originCategoryId, originPipeline: input.pipelines.get(originCategoryId) ?? `Pipeline #${originCategoryId}`, operationalPipeline: mainIds.has(currentCategoryId),
       stageId: currentStageId, stage: currentStage, stageEnteredAt: stageEntered.toISOString(), stageAgeHours, stageLimitHours, stageOverdue: salesStatus === "ACTIVE" && stageAgeHours > stageLimitHours,
@@ -255,17 +220,17 @@ export function buildAnalyticsRecords(input: {
       wonAt: effectiveWonAt, salesCycleHours, opportunity: Number.isFinite(opportunity) ? opportunity : 0, currencyId: string(deal.CURRENCY_ID), lossReason: effectiveLossReason, lossReasonGroup,
       contactId: contactId || null, companyId: companyId || null, customerKey: contactId ? `contact:${contactId}` : companyId ? `company:${companyId}` : null, duplicateOfDealId: null, stageTimeline,
       salesManagerId: salesManagerId || null, salesManager: salesManager || null, salesManagerAttribution,
-      firstCallAt: firstCallAt?.toISOString() ?? null, firstCallActivityId: firstCall ? string(firstCall.ID) : null, firstCallManagerId: firstCallManagerId || null, firstCallManager: firstCallManagerId ? managerName(firstCallManagerId, input.users) : null,
-      firstCallBusinessMinutes: firstCallMinutes, firstCallOutcome: firstOutcome.outcome, firstCallDuration: firstCall ? firstOutcome.duration : null, outcomeInferred: firstOutcome.inferred,
-      firstSuccessfulCallAt: successes[0]?.at.toISOString() ?? null, firstSuccessfulCallBusinessMinutes: successes[0] ? calculateBusinessMinutes(slaStart, successes[0].at, input.settings) : null,
+      // Retained as inert columns so no destructive migration is needed.
+      firstCallAt: null, firstCallActivityId: null, firstCallManagerId: null, firstCallManager: null,
+      firstCallBusinessMinutes: null, firstCallOutcome: "Noma’lum", firstCallDuration: null, outcomeInferred: false,
+      firstSuccessfulCallAt: null, firstSuccessfulCallBusinessMinutes: null,
       firstStageChangeAt: stageChange?.at.toISOString() ?? null, firstStageChangeTo: stageChange ? stageName(stageChange.stageId, input.stages) : null, firstStageChangeBusinessMinutes: stageMinutes,
-      stageChangedBeforeCall, stageAttributionInferred: Boolean(stageChange), processingSource, processingAt: processingAt?.toISOString() ?? null, processingBusinessMinutes: processingMinutes,
+      stageChangedBeforeCall: false, stageAttributionInferred: Boolean(stageChange), processingSource, processingAt: processingAt?.toISOString() ?? null, processingBusinessMinutes: processingMinutes,
       // Point-in-time snapshot; the dashboard re-resolves it live so a lead can
       // cross its deadline without needing another sync.
       slaStatus: resolveSlaState({ processingBusinessMinutes: processingMinutes, processingSource, slaStart: slaStart.toISOString() }, input.settings),
-      outgoingCallCount: calls.length, answeredCallCount: calls.filter((row) => callOutcome(row, statsByActivity.get(string(row.ID))).outcome === "Ko‘tardi").length,
-      unansweredCallCount: calls.filter((row) => !["Ko‘tardi", "Noma’lum"].includes(callOutcome(row, statsByActivity.get(string(row.ID))).outcome)).length, latestCallOutcome: latestOutcome,
-      dataUnavailable: (!input.activitiesAvailable || !input.stageHistoryAvailable) && !processingAt,
+      outgoingCallCount: 0, answeredCallCount: 0, unansweredCallCount: 0, latestCallOutcome: "Noma’lum",
+      dataUnavailable: !input.stageHistoryAvailable && !processingAt,
       bitrixUrl: input.domain ? `https://${input.domain}/crm/deal/details/${encodeURIComponent(dealId)}/` : null,
     }];
   });

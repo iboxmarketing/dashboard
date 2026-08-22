@@ -183,6 +183,7 @@ export const defaultSettings: DashboardSettings = {
   postSalePipelineIds: [],
   postSalePipelineNames: ["IBOX Обучение Сопровождение"],
   failureReasonField: null,
+  failureReasonFieldByPipeline: {},
   marketingChannelField: null,
   salesManagerField: null,
   defaultStageLimitHours: 24,
@@ -193,4 +194,8 @@ export const defaultSettings: DashboardSettings = {
   closedLostStageIds: [],
   routingReasonPatterns: ["idoko", "sd", "передан", "перевод", "routing", "yo'naltir", "yo‘naltir", "o'tkaz", "o‘tkaz"],
   autoSyncMinutes: 15,
+  // Mirrors DEFAULT_DASHBOARD_METRIC_IDS in lib/dashboard-metrics.ts, which cannot
+  // be imported here without a cycle (it pulls in the SLA helper). A test asserts
+  // the two stay identical.
+  dashboardMetricIds: ["leads", "sql", "not_relevant", "sales_lost", "cohort_sales", "period_sales", "revenue", "avg_processing", "sla"],
 };

@@ -47,3 +47,28 @@ export function stageConfigConflicts(config: StageSemantics) {
     .filter(([, groups]) => groups.length > 1)
     .map(([stageId, groups]) => ({ stageId, groups }));
 }
+
+/** Live stage dictionary entry: Bitrix SORT plus the pipeline it belongs to. */
+export type StageMeta = { sort: number; categoryId: string };
+
+/**
+ * Lowest configured SQL-stage SORT per pipeline — the qualification threshold.
+ *
+ * Any stage at or beyond it, in the same pipeline, proves the lead was accepted:
+ * a seller does not have to physically pass through Обработка. Thresholds are
+ * per pipeline because IBOX and SD order their stages independently.
+ */
+export function sqlThresholdsByCategory(
+  qualifiedStageIds: string[] | undefined,
+  stageMeta: Map<string, StageMeta> | undefined,
+) {
+  const thresholds = new Map<string, number>();
+  if (!stageMeta) return thresholds;
+  for (const stageId of stageIdList(qualifiedStageIds)) {
+    const meta = stageMeta.get(stageId);
+    if (!meta) continue;
+    const current = thresholds.get(meta.categoryId);
+    if (current === undefined || meta.sort < current) thresholds.set(meta.categoryId, meta.sort);
+  }
+  return thresholds;
+}

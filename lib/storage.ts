@@ -2,6 +2,7 @@ import { getD1 } from "@/db";
 import { defaultSettings } from "./business-time";
 import { SALES_SNAPSHOT_UPSERT } from "./sales-snapshots";
 import { stageIdList } from "./stage-config";
+import { resolveDashboardMetricIds } from "./dashboard-metrics";
 import type { AnalyticsRecord, DashboardSettings, ProviderDiagnostic, SyncProgressState } from "./types";
 
 export async function ensureSchema() {
@@ -45,12 +46,16 @@ export async function getSettings(): Promise<DashboardSettings> {
       postSalePipelineIds: Array.isArray(parsed.postSalePipelineIds) ? parsed.postSalePipelineIds.map(String) : [],
       postSalePipelineNames: Array.isArray(parsed.postSalePipelineNames) ? parsed.postSalePipelineNames.map(String) : defaultSettings.postSalePipelineNames,
       stageLimits: parsed.stageLimits && typeof parsed.stageLimits === "object" ? parsed.stageLimits : {},
+      failureReasonFieldByPipeline: parsed.failureReasonFieldByPipeline && typeof parsed.failureReasonFieldByPipeline === "object"
+        ? Object.fromEntries(Object.entries(parsed.failureReasonFieldByPipeline).map(([key, value]) => [String(key), String(value)]).filter(([, value]) => Boolean(value)))
+        : {},
       qualifiedStageIds: stageIdList(parsed.qualifiedStageIds),
       lowQualityStageIds: stageIdList(parsed.lowQualityStageIds),
       paymentStageIds: stageIdList(parsed.paymentStageIds),
       closedLostStageIds: stageIdList(parsed.closedLostStageIds),
       routingReasonPatterns: Array.isArray(parsed.routingReasonPatterns) ? parsed.routingReasonPatterns.map(String).filter(Boolean) : defaultSettings.routingReasonPatterns,
       autoSyncMinutes: Number.isFinite(Number(parsed.autoSyncMinutes)) ? Number(parsed.autoSyncMinutes) : defaultSettings.autoSyncMinutes,
+      dashboardMetricIds: resolveDashboardMetricIds(parsed.dashboardMetricIds),
     };
   } catch {
     return defaultSettings;

@@ -49,7 +49,7 @@ test("2: Not Relevant bosqichiga o‘tish ham birinchi ishlov", () => {
 test("3: SQL’dan oldingi qo‘ng‘iroq taymerni to‘xtatmaydi", () => {
   const row = build({ stageId: SQL_ID, calls: ["10:02"], history: [{ stageId: "NEW", clock: "10:00" }, { stageId: SQL_ID, clock: "10:08" }] });
   assert.equal(row.processingBusinessMinutes, 8);
-  assert.equal(row.firstCallBusinessMinutes, 2, "qo‘ng‘iroq ma’lumoti saqlanadi, lekin ishlovni belgilamaydi");
+  assert.equal(row.firstCallBusinessMinutes, null, "qo‘ng‘iroq ma’lumoti umuman olinmaydi");
 });
 
 test("4: SQL’dan keyingi qo‘ng‘iroq ishlov vaqtini o‘zgartirmaydi", () => {
@@ -117,9 +117,10 @@ test("11: SLA endi SQL bosqichiga ko‘ra hisoblanadi", () => {
   assert.equal(minutes("10:02"), 2, "qo‘ng‘iroq vaqti hali ham hisoblanadi, lekin SLA’ni to‘xtatmaydi");
 });
 
-test("12: qo‘ng‘iroq sotuvchi atributsiyasida fallback bo‘lib qoladi", () => {
+test("12: qo‘ng‘iroq endi sotuvchi atributsiyasiga ta’sir qilmaydi", () => {
+  // Sprint 16 removed CALL from the chain; the next valid fallback wins.
   const row = build({ stageId: SQL_ID, calls: ["10:02"], history: [{ stageId: SQL_ID, clock: "10:07" }] });
-  assert.equal(row.salesManagerId, "5");
-  assert.equal(row.salesManagerAttribution, "FIRST_CALL");
-  assert.equal(row.outgoingCallCount, 1, "xom qo‘ng‘iroq ma’lumoti saqlanadi");
+  assert.equal(row.salesManagerId, "7", "ASSIGNED_BY_ID fallback");
+  assert.equal(row.salesManagerAttribution, "CURRENT_RESPONSIBLE");
+  assert.equal(row.outgoingCallCount, 0, "qo‘ng‘iroqlar sinxronlanmaydi");
 });

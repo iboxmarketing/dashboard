@@ -123,7 +123,8 @@ test("Case 6: wonAt manager holatidan qat’i nazar o‘zgarmas", { skip: !Datab
 test("Case 7: fallback tartibi o‘zgarmagan", () => {
   const nullSnap = () => snapshot(null);
   assert.equal(build({ [SELLER_FIELD]: "9", MOVED_BY_ID: "12", ASSIGNED_BY_ID: "7" }, nullSnap(), [call("5")]).salesManagerAttribution, "CUSTOM_FIELD");
-  assert.equal(build({ MOVED_BY_ID: "12", ASSIGNED_BY_ID: "7" }, nullSnap(), [call("5")]).salesManagerAttribution, "FIRST_CALL");
+  // CALL was removed from the chain in Sprint 16: a call no longer wins here.
+  assert.equal(build({ MOVED_BY_ID: "12", ASSIGNED_BY_ID: "7" }, nullSnap(), [call("5")]).salesManagerAttribution, "STAGE_MOVER");
   assert.equal(build({ MOVED_BY_ID: "12", ASSIGNED_BY_ID: "7" }, nullSnap()).salesManagerAttribution, "STAGE_MOVER");
   assert.equal(build({ ASSIGNED_BY_ID: "7" }, nullSnap()).salesManagerAttribution, "CURRENT_RESPONSIBLE");
   assert.equal(build({}, nullSnap()).salesManagerAttribution, "UNKNOWN");

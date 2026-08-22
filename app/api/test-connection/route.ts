@@ -18,23 +18,19 @@ export async function POST() {
   }
   try {
     await bitrixCall("profile", {});
-    const [deals, activities, stageHistory, managers, telephony] = await Promise.all([
+    const [deals, stageHistory, managers] = await Promise.all([
       test("crm.deal.list", { select: ["ID"], start: 0 }),
-      test("crm.activity.list", { select: ["ID"], start: 0 }),
       test("crm.stagehistory.list", { entityTypeId: 2, filter: { OWNER_ID: 0 }, select: ["ID"], start: 0 }),
       test("user.get", { FILTER: { ACTIVE: true }, start: 0 }),
-      test("voximplant.statistic.get", { FILTER: {}, start: 0 }, true),
     ]);
-    const permissions = { deals, activities, stageHistory, managers, telephony };
+    const permissions = { deals, stageHistory, managers };
     await saveSyncState({ status: "connected", permissions, safeError: null });
     return Response.json({
       configured: true,
       domain: getBitrixDomain(),
       bitrix: "ok",
       ...permissions,
-      callOutcomes: telephony === "ok" ? "ok" : "warning",
       checkedAt: new Date().toISOString(),
-      warning: telephony === "ok" ? null : "Qo‘ng‘iroq natijalarini aniqlash uchun Telephony / Call Statistics ruxsati kerak. Asosiy SLA ishlashda davom etadi.",
     });
   } catch (error) {
     return Response.json({ configured: true, bitrix: "error", error: safeBitrixMessage(error) }, { status: 400 });

@@ -68,14 +68,14 @@ test("qo‘ng‘iroq birinchi ishlov vaqtini to‘xtatmaydi", () => {
   const row = analytics({ stageAt: "2026-08-17T09:13", callAt: "2026-08-17T09:04" });
   assert.equal(row.processingSource, "QUALIFICATION_STAGE");
   assert.equal(row.processingBusinessMinutes, 13);
-  assert.equal(row.firstCallBusinessMinutes, 4, "qo‘ng‘iroq ma’lumoti saqlanib qoladi");
+  assert.equal(row.firstCallBusinessMinutes, null, "qo‘ng‘iroqlar endi umuman sinxronlanmaydi");
 });
 
 test("faqat qo‘ng‘iroq bo‘lsa, ishlov qayd etilmagan hisoblanadi", () => {
   const row = analytics({ callAt: "2026-08-17T09:05", failedCode: "304" });
   assert.equal(row.processingBusinessMinutes, null);
   assert.equal(row.processingSource, "NO_PROCESSING_EVIDENCE");
-  assert.equal(row.firstCallOutcome, "Ko‘tarmadi");
+  assert.equal(row.firstCallOutcome, "Noma’lum", "qo‘ng‘iroq natijasi endi olinmaydi");
 });
 
 test("Not Relevant oldin Obrabotka bo‘lgan bo‘lsa ham marketing sifatsizligi bo‘lib qoladi", () => {

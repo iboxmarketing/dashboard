@@ -15,6 +15,7 @@ export type DashboardSettings = {
   postSalePipelineIds: string[];
   postSalePipelineNames: string[];
   failureReasonField: string | null;
+  failureReasonFieldByPipeline: Record<string, string>;
   marketingChannelField: string | null;
   salesManagerField: string | null;
   defaultStageLimitHours: number;
@@ -25,6 +26,7 @@ export type DashboardSettings = {
   closedLostStageIds: string[];
   routingReasonPatterns: string[];
   autoSyncMinutes: number;
+  dashboardMetricIds: string[];
 };
 
 export type PipelineOption = {
@@ -75,7 +77,7 @@ export type CrmFieldOption = {
   discoverySource?: "DEAL_FIELDS" | "ITEM_FIELDS" | "USERFIELD_LIST" | "DEAL_SAMPLE";
 };
 
-export type SyncPhase = "deals" | "activities" | "stageHistory" | "telephony" | "lookups" | "analytics" | "done";
+export type SyncPhase = "deals" | "stageHistory" | "lookups" | "analytics" | "done";
 
 export type SyncProgressState = {
   status: "idle" | "running" | "paused" | "success" | "error";
@@ -110,7 +112,7 @@ export type SlaStatus = "ON_TIME" | "LATE" | "PENDING" | "OVERDUE_UNPROCESSED" |
 export type CreationPeriod = "WORK_HOURS" | "AFTER_HOURS";
 export type SalesStatus = "ACTIVE" | "LOW_QUALITY" | "LOST" | "WON";
 export type LossReasonGroup = "MARKETING" | "SALES" | "ROUTING" | "NONE";
-export type SalesManagerAttribution = "CUSTOM_FIELD" | "FIRST_CALL" | "STAGE_MOVER" | "CURRENT_RESPONSIBLE" | "UNKNOWN";
+export type SalesManagerAttribution = "CUSTOM_FIELD" | "STAGE_MOVER" | "CURRENT_RESPONSIBLE" | "UNKNOWN";
 
 export type StageTimelineEntry = {
   categoryId: string;
