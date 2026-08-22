@@ -2,6 +2,7 @@ import { defaultSettings } from "@/lib/business-time";
 import { getSettings, saveSettings } from "@/lib/storage";
 import { stageIdList } from "@/lib/stage-config";
 import { resolveDashboardMetricIds } from "@/lib/dashboard-metrics";
+import { canonicalDealFieldKey } from "@/lib/crm-fields";
 import type { DashboardSettings } from "@/lib/types";
 
 export async function POST(request: Request) {
@@ -23,7 +24,7 @@ export async function POST(request: Request) {
       postSalePipelineNames: Array.isArray(payload.postSalePipelineNames) ? [...new Set(payload.postSalePipelineNames.map(String))].slice(0, 2) : current.postSalePipelineNames,
       failureReasonField: typeof payload.failureReasonField === "string" && payload.failureReasonField ? payload.failureReasonField : null,
       failureReasonFieldByPipeline: payload.failureReasonFieldByPipeline && typeof payload.failureReasonFieldByPipeline === "object"
-        ? Object.fromEntries(Object.entries(payload.failureReasonFieldByPipeline).map(([key, value]) => [String(key), String(value)]).filter(([, value]) => Boolean(value)))
+        ? Object.fromEntries(Object.entries(payload.failureReasonFieldByPipeline).map(([key, value]) => [String(key), canonicalDealFieldKey(String(value))]).filter(([, value]) => Boolean(value)))
         : current.failureReasonFieldByPipeline,
       marketingChannelField: typeof payload.marketingChannelField === "string" && payload.marketingChannelField ? payload.marketingChannelField : null,
       salesManagerField: typeof payload.salesManagerField === "string" && payload.salesManagerField ? payload.salesManagerField : null,

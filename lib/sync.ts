@@ -10,6 +10,7 @@ import type { CrmFieldOption, PipelineOption, PipelineStageOption } from "./type
 export { normalizePipelineName, resolvePipelineSelection } from "./pipelines";
 import { normalizePipelineName, pairPostSalePipeline, resolvePipelineSelection, resolvePostSalePipelines } from "./pipelines";
 import { resolveSyncWindow } from "./sync-window";
+import { canonicalDealFieldKey, canonicalizeFieldOptions } from "./crm-fields";
 
 const stageDealBatchSize = 25;
 const analyticsDealBatchSize = 80;
@@ -122,7 +123,7 @@ export async function listCrmFields(categoryIds: string[] = []): Promise<CrmFiel
     const previous = merged.get(field.key);
     merged.set(field.key, { ...previous, ...field, sampleValue: field.sampleValue || previous?.sampleValue, options: field.options.length ? field.options : previous?.options ?? [] });
   }
-  return [...merged.values()].sort((a, b) => (a.key.startsWith("UF_") === b.key.startsWith("UF_") ? a.title.localeCompare(b.title) : a.key.startsWith("UF_") ? -1 : 1));
+  return canonicalizeFieldOptions([...merged.values()]).sort((a, b) => (a.key.startsWith("UF_") === b.key.startsWith("UF_") ? a.title.localeCompare(b.title) : a.key.startsWith("UF_") ? -1 : 1));
 }
 
 function detectField(fields: CrmFieldOption[], pattern: RegExp, type?: RegExp) {
@@ -249,7 +250,9 @@ async function dealStep(job: StoredSyncJob) {
   const ids = (job.dealScope === "postSale" ? job.reportingPipelines : job.selectedPipelines).map((item) => item.id);
   if (!ids.length && job.dealScope === "postSale") return move(job, "stageHistory", "Deal stage history ma’lumotlari yuklanmoqda…", job.counts.deals ?? 0);
   const settings = await getSettings();
-  const customFields = [...new Set([settings.failureReasonField, ...Object.values(settings.failureReasonFieldByPipeline ?? {}), settings.marketingChannelField, settings.salesManagerField])].filter((field): field is string => Boolean(field));
+  // Source comes from SOURCE_ID; the legacy marketing-channel field is no longer read.
+  const customFields = [...new Set([settings.failureReasonField, ...Object.values(settings.failureReasonFieldByPipeline ?? {}), settings.salesManagerField])]
+    .filter((field): field is string => Boolean(field)).map(canonicalDealFieldKey);
   const select = ["ID", "TITLE", "DATE_CREATE", "DATE_MODIFY", "CLOSEDATE", "MOVED_TIME", "MOVED_BY_ID", "ASSIGNED_BY_ID", "CATEGORY_ID", "STAGE_ID", "SOURCE_ID", "CONTACT_ID", "CONTACT_IDS", "COMPANY_ID", "OPPORTUNITY", "CURRENCY_ID", ...customFields];
 
   if (job.dealScope === "postSale") {

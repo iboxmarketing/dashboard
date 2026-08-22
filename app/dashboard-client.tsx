@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  Activity, AlertTriangle, ArrowDownRight, ArrowLeft, ArrowUpRight, BarChart3, CalendarDays, Check,
+  Activity, AlertTriangle, ArrowLeft, BarChart3, CalendarDays, Check,
   ChevronDown, Clock3, Database, Download, ExternalLink, Gauge, LayoutDashboard,
   Loader2, Menu, RefreshCw, Search, Settings, ShieldCheck,
   SlidersHorizontal, TimerReset, Users, X, XCircle, CircleDollarSign, ClipboardList, Layers3,
@@ -171,18 +171,18 @@ function SetupScreen({ configured, sync, syncing, externalError, onStart, onPaus
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Ulanishni tekshirib bo‘lmadi"); }
     finally { setTesting(false); }
   }
-  const checks = [["Bitrix24", result?.bitrix], ["Deal’lar", result?.deals], ["Activities", result?.activities], ["Stage history", result?.stageHistory], ["Menejerlar", result?.managers], ["Telephony", result?.telephony]];
+  const checks = [["Bitrix24", result?.bitrix], ["Deal’lar", result?.deals], ["Stage history", result?.stageHistory], ["Menejerlar", result?.managers]];
 
   return <main className="setup-page">
     <div className="setup-brand"><span>B24</span><strong>Deal Processing</strong></div>
     <section className="setup-card">
       <div className="setup-icon"><ShieldCheck size={30} /></div><p className="eyebrow">XAVFSIZ SERVER ULANISHI</p>
       <h1>{configured ? "Bitrix24 ulanishini tekshiring" : "Bitrix24 webhook ulanmagan."}</h1>
-      <p className="setup-copy">{configured ? "Webhook serverda topildi. Faqat IBOX Sales va SD Sales pipeline’lari eng yangi Deal’dan boshlab paketlarda sinxronlanadi; call center pipeline’lari olinmaydi." : <>Site Secrets ichiga <code>BITRIX24_WEBHOOK_URL</code> qo‘shing. Webhook brauzerga, loglarga yoki dashboard javoblariga chiqarilmaydi.</>}</p>
+      <p className="setup-copy">{configured ? "Webhook serverda topildi. Faqat tanlangan Sales pipeline’lari paketlarda sinxronlanadi; call center pipeline’lari olinmaydi." : <>Site Secrets ichiga <code>BITRIX24_WEBHOOK_URL</code> qo‘shing. Webhook brauzerga, loglarga yoki dashboard javoblariga chiqarilmaydi.</>}</p>
       <div className="setup-steps">
         <div><span>1</span><p><strong>Incoming webhook yarating</strong><small>CRM o‘qish va qisqa user ma’lumoti ruxsatlari</small></p></div>
         <div><span>2</span><p><strong>Secret sifatida qo‘shing</strong><small>BITRIX24_WEBHOOK_URL</small></p></div>
-        <div><span>3</span><p><strong>Ulanishni tekshiring</strong><small>Telephony bo‘lmasa ham asosiy SLA ishlaydi</small></p></div>
+        <div><span>3</span><p><strong>Ulanishni tekshiring</strong><small>Deal, stage history va menejer ruxsatlari yetarli</small></p></div>
       </div>
       {result && <div className="connection-grid">{checks.map(([label, state]) => <div key={label ?? ""}><StatusDot state={state ?? "error"} /><span>{label}</span><strong>{state === "ok" ? "Tayyor" : state === "warning" ? "Cheklangan" : "Xato"}</strong></div>)}</div>}
       {result?.warning && <div className="notice warning"><AlertTriangle size={18} />{result.warning}</div>}
@@ -194,7 +194,7 @@ function SetupScreen({ configured, sync, syncing, externalError, onStart, onPaus
         {result?.bitrix === "ok" && !["running", "paused"].includes(sync.status) && <button className="button primary" onClick={onStart} disabled={syncing}>{syncing ? <Loader2 className="spin" size={18} /> : <Database size={18} />}Birinchi sinxronizatsiyani boshlash</button>}
       </div>
     </section>
-    <p className="privacy-note">Telefon raqamlar, email, yozuvlar va call recording’lar olinmaydi.</p>
+    <p className="privacy-note">Telefon raqamlar, email va yozuvlar olinmaydi. Telefoniya ma’lumotlari umuman sinxronlanmaydi.</p>
   </main>;
 }
 
@@ -314,19 +314,7 @@ function FiltersBar({ filters, setFilters, records, currentStages, mode = "cohor
 
 function DashboardView({ records, salesRecords, previousRecords, previousSalesRecords, metricIds, onManager }: { records: AnalyticsRecord[]; salesRecords: AnalyticsRecord[]; previousRecords: AnalyticsRecord[]; previousSalesRecords: AnalyticsRecord[]; metricIds: string[]; onManager: (manager: ManagerRow) => void }) {
   const previousMetrics = buildDashboardMetrics(previousRecords, previousSalesRecords);
-  const sla = summarizeSla(records);
-  const noProcessing = records.filter((row) => row.processingSource === "NO_PROCESSING");
-  const unknownProcessing = records.filter((row) => row.processingSource === "NO_PROCESSING_EVIDENCE");
-  const afterHours = records.filter((row) => row.creationPeriod === "AFTER_HOURS");
   const managers = buildManagers(records, salesRecords);
-  const segment = (rows: AnalyticsRecord[]) => ({
-    count: rows.length, avg: average(rows.map((row) => row.processingBusinessMinutes)),
-    median: median(rows.map((row) => row.processingBusinessMinutes)),
-    sla: summarizeSla(rows).rate,
-    overdue: summarizeSla(rows).overdue,
-  });
-  const workSegment = segment(records.filter((row) => row.creationPeriod === "WORK_HOURS"));
-  const afterSegment = segment(afterHours);
   const metrics = buildDashboardMetrics(records, salesRecords);
   const selected = resolveDashboardMetricIds(metricIds);
   const cards: Record<DashboardMetricId, { value: string; detail: React.ReactNode; tone: string; icon: typeof Activity }> = {
@@ -354,31 +342,6 @@ function DashboardView({ records, salesRecords, previousRecords, previousSalesRe
         const card = cards[metric.id];
         return <KpiCard key={metric.id} label={metric.label} value={card.value} detail={card.detail} tone={card.tone} icon={card.icon} />;
       })}
-    </section>
-    <SectionHeader title="Lead processing" subtitle="Quyidagi KPI’lar faqat IBOX Sales va SD Sales’dagi yangi leadlar bo‘yicha" />
-    <section className="kpi-grid">
-      <KpiCard label="Jami Deal" value={String(records.length)} detail="Tanlangan davr" icon={Database} />
-      <KpiCard label="O‘rtacha birinchi ishlov" value={fmtMinutes(average(records.map((row) => row.processingBusinessMinutes)))} detail="Lead SQL yoki Not Relevant bosqichiga o‘tguncha" icon={Clock3} tone="indigo" />
-      <KpiCard label="Median birinchi ishlov" value={fmtMinutes(median(records.map((row) => row.processingBusinessMinutes)))} detail="Ekstremal qiymatlarsiz markaz" icon={TimerReset} tone="violet" />
-      <KpiCard label="SLA ichida" value={`${sla.rate}%`} detail={`${sla.onTime} / ${sla.denominator} · muddati aniqlangan lead`} icon={Gauge} tone="green" />
-      <KpiCard label="Ishlov muddati o‘tgan" value={String(sla.overdue)} detail="SLA tugagan, hali ishlov berilmagan" icon={AlertTriangle} tone="red" />
-      <KpiCard label="SLA muddati ichida" value={String(sla.pending)} detail="Hali muddati tugamagan — SLA’ga kirmaydi" icon={TimerReset} tone="cyan" />
-      <KpiCard label="Ishlov vaqti noma’lum" value={String(sla.unknown)} detail="Tarix yetishmaydi — SLA’ga kirmaydi" icon={RefreshCw} tone="amber" />
-      <KpiCard label="Ish vaqtidan tashqarida" value={String(afterHours.length)} detail={`${pct(afterHours.length, records.length)}% jami Deal’dan`} icon={CalendarDays} tone="slate" />
-    </section>
-    <section className="panel"><SectionHeader title="Birinchi ishlov manbai" subtitle="Lead SQL yoki Not Relevant bosqichiga o‘tgan payt CRM’da qayd etilgan" /><BarList rows={[
-      { label: "Ishlov qayd etilgan", value: records.length - noProcessing.length - unknownProcessing.length, total: records.length, color: "#246bfd", icon: "✅" },
-      { label: "Ishlov vaqti noma’lum", value: unknownProcessing.length, total: records.length, color: "#8a5dd1", icon: "�途" },
-      { label: "Ishlov berilmagan", value: noProcessing.length, total: records.length, color: "#ef5962", icon: "⚠️" },
-    ]} /></section>
-    <section className="panel"><SectionHeader title="Ish vaqti vs. ish vaqtidan tashqari" subtitle="After-hours SLA keyingi ish davri ochilishidan boshlanadi" />
-      <div className="segment-grid">{[
-        { title: "Ish vaqtida tushgan Deal’lar", data: workSegment, tone: "work" },
-        { title: "Ish vaqtidan tashqarida tushgan", data: afterSegment, tone: "after" },
-      ].map(({ title, data, tone }) => <div className={`segment-card ${tone}`} key={title}>
-        <div className="segment-title"><span>{tone === "work" ? <ArrowUpRight size={18} /> : <ArrowDownRight size={18} />}</span><div><strong>{title}</strong><small>{data.count} ta Deal</small></div></div>
-        <div className="segment-metrics"><div><span>Avg obrabotka</span><strong>{fmtMinutes(data.avg)}</strong></div><div><span>Median</span><strong>{fmtMinutes(data.median)}</strong></div><div><span>SLA</span><strong>{data.sla}%</strong></div><div><span>Muddati o‘tgan</span><strong>{data.overdue}</strong></div></div>
-      </div>)}</div>
     </section>
     <section className="panel"><SectionHeader title="Menejerlar performance" subtitle="Qatorni bossangiz dashboard shu menejer bo‘yicha filtrlanadi" /><ManagerTable rows={managers.slice(0, 8)} onSelect={onManager} /></section>
   </>;
@@ -498,7 +461,7 @@ function QualityView({ records }: { records: AnalyticsRecord[] }) {
     <section className="kpi-grid"><KpiCard label="Not Relevant" value={String(low.length)} detail={`${pct(low.length, eligible.length)}% · marketing sifati`} icon={AlertTriangle} tone="amber" /><KpiCard label="Sotilmadi" value={String(lost.length)} detail={`${salesLostRate(records)}% · SQL’dan sotilmagan`} icon={XCircle} tone="red" /><KpiCard label="Routing" value={String(routing.length)} detail="IDOKO / SD va boshqa yo‘naltirish" icon={RefreshCw} tone="violet" /><KpiCard label="Sababsiz yopilgan" value={String([...low, ...lost].filter((row) => row.lossReason === "Sabab ko‘rsatilmagan").length)} detail="Причина провала to‘ldirilmagan" icon={ClipboardList} tone="slate" /></section>
     <section className="quality-three"><article className="panel"><SectionHeader title="Marketing sifatsizligi sabablari" subtitle="Faqat haqiqiy Not Relevant" /><BarList rows={lowReasons.map((row) => ({ ...row, total: low.length, color: "#f59e0b" }))} /></article><article className="panel"><SectionHeader title="Sales’da sotilmagan sabablar" subtitle="SQL bo‘lgan, lekin sotilmagan" /><BarList rows={lostReasons.map((row) => ({ ...row, total: lost.length, color: "#ef5962" }))} /></article><article className="panel"><SectionHeader title="Routing sabablari" subtitle="Marketing sifatsizligiga qo‘shilmaydi" /><BarList rows={routingReasons.map((row) => ({ ...row, total: routing.length, color: "#8a5dd1" }))} /></article></section>
     <section className="panel"><SectionHeader title="Qaysi sabab qaysi menejerda ko‘p" subtitle="Menejer + Причина провала kombinatsiyasi" /><BarList rows={managerReasons.slice(0, 15).map((row) => ({ ...row, total: low.length + lost.length, color: "#8a5dd1" }))} /></section>
-    <section className="panel"><SectionHeader title="Source bo‘yicha sifat" subtitle="Marketing kanal custom field; topilmasa standart Source" /><div className="table-wrap"><table className="data-table"><thead><tr><th>Source</th><th>Lead</th><th>Not Relevant</th><th>Sifatsizlik %</th><th>Sotilmadi</th><th>Routing</th></tr></thead><tbody>{sources.map((row) => <tr key={row.label}><td><strong>{row.label}</strong></td><td>{row.value}</td><td>{row.low}</td><td><span className="pill warning">{pct(row.low, row.value)}%</span></td><td>{row.lost}</td><td>{row.routing}</td></tr>)}</tbody></table></div></section>
+    <section className="panel"><SectionHeader title="Source bo‘yicha sifat" subtitle="Manba standart Bitrix SOURCE_ID lug‘atidan olinadi" /><div className="table-wrap"><table className="data-table"><thead><tr><th>Source</th><th>Lead</th><th>Not Relevant</th><th>Sifatsizlik %</th><th>Sotilmadi</th><th>Routing</th></tr></thead><tbody>{sources.map((row) => <tr key={row.label}><td><strong>{row.label}</strong></td><td>{row.value}</td><td>{row.low}</td><td><span className="pill warning">{pct(row.low, row.value)}%</span></td><td>{row.lost}</td><td>{row.routing}</td></tr>)}</tbody></table></div></section>
   </>;
 }
 
@@ -532,7 +495,7 @@ function StageControlView({ records, historicalRecords, reconciliation, loading,
 }
 
 function DiagnosticsView({ sync, records, reconciliation, settings }: { sync: SyncState; records: AnalyticsRecord[]; reconciliation: StageReconciliation | null; settings: DashboardSettings }) {
-  // Calls are no longer a data source, so Activity/Telephony access is irrelevant.
+  // Calls are no longer a data source, so those API permissions are irrelevant.
   const permissions = [["Deal API", sync.permissions.deals], ["Stage history", sync.permissions.stageHistory], ["User API", sync.permissions.managers]];
   const quality = summarizeDataQuality(records);
   const readiness = stageConfigReadiness(settings);
@@ -587,7 +550,6 @@ function SettingsView({ settings, syncing, onSave, onFullSync }: { settings: Das
   const [pipelines, setPipelines] = useState<PipelineOption[]>([]); const [pipelineError, setPipelineError] = useState<string | null>(null);
   const [fields, setFields] = useState<CrmFieldOption[]>([]); const [stages, setStages] = useState<PipelineStageOption[]>([]);
   const [customFieldCount, setCustomFieldCount] = useState(0);
-  const [detectedFailureReasonField, setDetectedFailureReasonField] = useState<string | null>(null);
   const days = [[1, "Dushanba"], [2, "Seshanba"], [3, "Chorshanba"], [4, "Payshanba"], [5, "Juma"], [6, "Shanba"], [0, "Yakshanba"]] as const;
   useEffect(() => {
     void fetch("/api/pipelines", { cache: "no-store" }).then(async (response) => {
@@ -597,7 +559,6 @@ function SettingsView({ settings, syncing, onSave, onFullSync }: { settings: Das
       setPipelines(options);
       const loadedFields = payload.fields ?? []; const loadedStages = payload.stages ?? [];
       setFields(loadedFields); setCustomFieldCount(payload.customFieldCount ?? 0); setStages(loadedStages);
-      setDetectedFailureReasonField(payload.detectedFailureReasonField ?? null);
       setDraft((current) => {
         const visibleStageIds = new Set(loadedStages.map((stage) => stage.id));
         const keptQualified = current.qualifiedStageIds.filter((id) => visibleStageIds.has(id));
@@ -640,10 +601,9 @@ function SettingsView({ settings, syncing, onSave, onFullSync }: { settings: Das
   async function save() { setSaving(true); setSaved(false); await onSave(draft); setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 2500); }
   async function fullSync(pipelineId: string) { setSaving(true); setSaved(false); try { await onFullSync(draft, pipelineId); } finally { setSaving(false); } }
   const fieldOptions = fields.map((field) => <option key={field.key} value={field.key}>{field.title}{field.sampleValue ? ` · namuna: ${field.sampleValue}` : ""}</option>);
-  const failureField = fields.find((field) => field.key === draft.failureReasonField);
   const stageConflicts = stageConfigConflicts(draft);
   // Enumeration fields are the only sensible Причина провала candidates.
-  const reasonFieldOptions = fields.filter((field) => /enum/i.test(field.type) || field.options.length > 0);
+  const reasonFieldOptions = canonicalizeFieldOptions(fields.filter((field) => /enum/i.test(field.type) || field.options.length > 0));
   const reasonMissing = draft.selectedPipelineIds
     .filter((id) => !draft.failureReasonFieldByPipeline?.[id])
     .map((id) => draft.selectedPipelineNames[draft.selectedPipelineIds.indexOf(id)] ?? id);
@@ -658,17 +618,15 @@ function SettingsView({ settings, syncing, onSave, onFullSync }: { settings: Das
       <div className={`pipeline-selection-note ${validConfig ? "ok" : "warning"}`}>{validConfig ? `Faol loyiha: ${draft.selectedPipelineNames.join(" + ")}. Deal ID bo‘yicha unique hisoblanadi.` : "Kamida bitta Sales loyiha va uning post-sale funnel’i topilishi kerak."}</div>
     </section>
     <section className="panel"><SectionHeader title="Loyiha bo‘yicha alohida sinxronizatsiya" subtitle="Bir tugma Sales va unga bog‘langan Обучение / Сопровождение funnel’ini birga oladi." /><div className="scoped-sync-grid">{draft.selectedPipelineIds.map((id, index) => { const name = draft.selectedPipelineNames[index] ?? `Sales funnel #${id}`; const brand = brandOf(name) ?? "sales"; const postSale = draft.postSalePipelineNames.find((item) => brandOf(item) === brand) ?? "mos post-sale funnel"; return <article key={id}><div><span>{brand.toUpperCase()}</span><div><strong>{name}</strong><small>+ {postSale}</small></div></div><p>Oxirgi {draft.historyDays} kun. Sales va post-sale kartochkalari Deal ID bo‘yicha bitta lead hisoblanadi.</p><button className="button secondary" disabled={saving || syncing || !validConfig} onClick={() => void fullSync(id)}>{saving || syncing ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}{name} full sync</button></article>; })}</div></section>
-    <section className="panel"><SectionHeader title="Bitrix custom field’lari" subtitle="Ro‘yxatdan qidiring yoki Bitrix’dagi UF_CRM_... kodini qo‘lda kiriting." />
+    <section className="panel"><SectionHeader title="Bitrix custom field’lari" subtitle="Sotuvchi maydoni. Manba doim standart SOURCE_ID’dan olinadi, proval sababi esa quyida funnel bo‘yicha tanlanadi." />
       <div className={`field-discovery ${customFieldCount ? "ok" : "warning"}`}>{customFieldCount ? `${customFieldCount} ta custom field topildi. Input ichida nom yoki kod bo‘yicha qidiring.` : "Webhook custom field nomlarini bermadi. UF_CRM_... kodini qo‘lda kiritish mumkin."}</div>
       <datalist id="crm-field-options">{fieldOptions}</datalist><div className="config-fields">
-      <label>Причина провала<select value={draft.failureReasonField ?? ""} onChange={(event) => setDraft({ ...draft, failureReasonField: event.target.value || null })}><option value="">Tanlanmagan</option>{fieldOptions}</select><small>{failureField ? `Topildi: ${failureField.title} · ${failureField.key}${failureField.options.length ? ` · ${failureField.options.length} ta sabab` : ""}` : detectedFailureReasonField ? `Avtomatik topildi: ${detectedFailureReasonField}` : "Bitrix field nomi va kodi bo‘yicha qidirildi"}</small></label>
-      <label>Marketing kanal<input list="crm-field-options" value={draft.marketingChannelField ?? ""} placeholder="Bo‘sh bo‘lsa standart SOURCE_ID" onChange={(event) => setDraft({ ...draft, marketingChannelField: event.target.value.trim() || null })} /><small>Custom marketing kanal field kodi</small></label>
       <label>Sales manager field<input list="crm-field-options" value={draft.salesManagerField ?? ""} placeholder="Bo‘sh bo‘lsa avtomatik attribution" onChange={(event) => setDraft({ ...draft, salesManagerField: event.target.value.trim() || null })} /><small>Sotuvchi yozilgan employee field bo‘lsa</small></label>
     </div></section>
     <section className="panel"><SectionHeader title="Bosqich ma’nolari" subtitle={`${draft.selectedPipelineNames.join(" + ") || "Tanlangan Sales funnel"} stage’lari. Stage ID saqlanadi, shuning uchun Bitrix’da nom o‘zgarsa ham hisob buzilmaydi.`} />
       {stageSemanticFields.map((field) => <StagePicker key={field.key} title={field.title} hint={field.hint} stages={stages} selected={draft[field.key]} onToggle={(stageId, checked) => setDraft({ ...draft, [field.key]: checked ? [...new Set([...draft[field.key], stageId])] : draft[field.key].filter((id) => id !== stageId) })} />)}
       <div className={`field-discovery ${stageConflicts.length ? "warning" : "ok"}`}>{stageConflicts.length
-        ? `Bir bosqich bir nechta ma’noga biriktirilgan: ${stageConflicts.map((conflict) => `${stageNameById.get(conflict.stageId) ?? conflict.stageId} (${conflict.groups.join(", ")})`).join("; ")}. Hisoblashda Not Relevant ustun turadi.`
+        ? `Bir bosqich bir nechta ma’noga biriktirilgan: ${stageConflicts.map((conflict) => `${stageNameById.get(conflict.stageId) ?? conflict.stageId} (${conflict.groups.join(", ")})`).join("; ")}. SQL chegarasi eng erta tanlangan bosqichdan boshlanadi, shuning uchun keyingi bosqichlarni SQL ro‘yxatidan olib tashlang. Konflikt bor ekan full sync qilmang.`
         : "Bo‘sh qoldirilsa avvalgidek stage nomi bo‘yicha aniqlanadi. Faqat tanlangan Sales funnel stage’lari ko‘rsatiladi."}</div>
     </section>
     <section className="panel"><SectionHeader title="Proval sababi fieldi" subtitle="Har bir Sales funnel o‘z Причина провала maydonidan o‘qiladi. Sana bo‘yicha sync’dan oldin tanlang." />
@@ -909,7 +867,7 @@ export default function DashboardClient() {
         {hasLegacyData && sync.status !== "running" && <div className="notice warning page-notice"><AlertTriangle size={18} /><span>Eski sync ma’lumotlari bor. Yangi sales analytics to‘liq ishlashi uchun Sozlamalarda CRM field’larini tekshirib, <strong>“To‘liq qayta sync”</strong>ni bosing.</span><button onClick={() => setView("settings")}>Sozlamalar</button></div>}
         {["running", "paused", "error"].includes(sync.status) && <SyncProgress sync={sync} busy={refreshing} onPause={() => void pauseCurrentSync()} onResume={() => void syncLoop("resume")} />}
         {view !== "settings" && view !== "diagnostics" && <FiltersBar filters={filters} setFilters={setFilters} records={records} currentStages={effectiveCurrentStages} mode={view === "stages" ? "current" : "cohort"} />}
-        {view === "dashboard" && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{cohortFiltered.length} unique lead</strong></div></div><DashboardView records={cohortFiltered} salesRecords={wonFiltered} previousRecords={previousCohortFiltered} previousSalesRecords={previousWonFiltered} metricIds={settings.dashboardMetricIds} onManager={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /><TrendChart records={cohortFiltered} /></>}
+        {view === "dashboard" && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{cohortFiltered.filter(isEligibleCohortDeal).length} Leadlar</strong></div></div><DashboardView records={cohortFiltered} salesRecords={wonFiltered} previousRecords={previousCohortFiltered} previousSalesRecords={previousWonFiltered} metricIds={settings.dashboardMetricIds} onManager={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /><TrendChart records={cohortFiltered} /></>}
         {view === "managers" && <><div className="page-title"><div><p className="eyebrow">TEAM PERFORMANCE</p><h1>Menejerlar</h1><p>Lead, sifatsizlik, sales loss, sotuv soni va Opportunity kesimida.</p></div></div><section className="panel"><SectionHeader title="Menejerlar reytingi" subtitle="Lead va cohort konversiya — yaratilgan sana; davr sotuv — Oplata sanasi bo‘yicha" /><ManagerTable rows={buildManagers(cohortFiltered, wonFiltered)} onSelect={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /></section></>}
         {view === "managerDetail" && selectedManager && <ManagerDetailView manager={selectedManager} cohortRecords={cohortFiltered} salesRecords={wonFiltered} currentStages={currentStageRecords} onBack={() => setView("managers")} />}
         {view === "leadFlow" && <LeadFlowView records={cohortFiltered} />}

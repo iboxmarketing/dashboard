@@ -109,3 +109,40 @@ test("asosiy UI’da texnik atamalar yo‘q", () => {
   assert.ok(labels.includes("Kelgan leadlardan sotuv"));
   assert.ok(labels.includes("Shu davrdagi sotuvlar"));
 });
+
+// --- Sprint 17.1 user-visible acceptance audit (source + built artifact) ---
+const CLIENT = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../app/dashboard-client.tsx", import.meta.url), "utf8"));
+
+test("17.1: asosiy dashboard eski KPI blokini ko‘rsatmaydi", () => {
+  for (const label of ["Jami Deal", "O‘rtacha birinchi ishlov", "Median birinchi ishlov", "Birinchi ishlov manbai", "Ish vaqti vs"]) {
+    assert.equal(CLIENT.includes(label), false, `${label} olib tashlanishi kerak`);
+  }
+  // "Ish vaqtidan tashqarida" survives only as a filter option, never as a KPI card.
+  assert.equal(CLIENT.includes('label="Ish vaqtidan tashqarida"'), false);
+  assert.ok(CLIENT.includes('<option value="AFTER_HOURS">Ish vaqtidan tashqarida</option>'));
+});
+
+test("17.1: tasdiqlangan 9 ta karta nomi mavjud", () => {
+  for (const label of ["Leadlar", "SQL", "Not Relevant", "Sotilmadi", "Kelgan leadlardan sotuv", "Shu davrdagi sotuvlar", "Sotuv summasi", "Leadni saralash vaqti", "SLA"]) {
+    assert.ok(DASHBOARD_METRICS.some((metric) => metric.label === label), `${label} registrda bo‘lishi kerak`);
+  }
+});
+
+test("17.1: qo‘ng‘iroq/telephony UI umuman yo‘q", () => {
+  for (const label of ["Telephony", "Activities", "Qo‘ng‘iroq", "FIRST_CALL", "Call outcome", "Call providers"]) {
+    assert.equal(CLIENT.includes(label), false, `${label} UI’da qolmasligi kerak`);
+  }
+});
+
+test("17.1: Settings faqat bitta proval sababi yo‘li va SOURCE_ID’ni ko‘rsatadi", () => {
+  assert.ok(CLIENT.includes("Proval sababi fieldi"));
+  assert.ok(CLIENT.includes("Dashboard ko‘rsatkichlari"));
+  assert.equal(/<label>Причина провала</.test(CLIENT), false, "eski global selektor olib tashlandi");
+  assert.equal(CLIENT.includes("Marketing kanal<input"), false, "legacy marketing kanal inputi olib tashlandi");
+  assert.ok(CLIENT.includes("SOURCE_ID"));
+});
+
+test("17.1: davr sarlavhasi Leadlar bilan bir xil populyatsiyani ko‘rsatadi", () => {
+  assert.equal(CLIENT.includes("unique lead"), false);
+  assert.ok(CLIENT.includes("cohortFiltered.filter(isEligibleCohortDeal).length"));
+});

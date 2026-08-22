@@ -205,3 +205,33 @@ test("Sprint 16: Source filtri o‘qiladigan nomlarni ishlatadi", () => {
   assert.deepEqual(options, ["Aniqlanmagan", "CRM-форма"]);
   assert.equal(options.some((option) => /^\d+$/.test(option)), false, "xom SOURCE_ID ko‘rsatilmaydi");
 });
+
+test("17.1: UF_CRM kalitlari kanonik shaklga keltiriladi", async () => {
+  const { canonicalDealFieldKey, canonicalizeFieldOptions, isCustomDealField } = await import("../lib/crm-fields");
+  assert.equal(canonicalDealFieldKey("ufCrm_1748329407554"), "UF_CRM_1748329407554");
+  assert.equal(canonicalDealFieldKey("UF_CRM_1748329407554"), "UF_CRM_1748329407554");
+  assert.equal(canonicalDealFieldKey("ufcrm1742389301"), "UF_CRM_1742389301");
+  assert.equal(canonicalDealFieldKey("SOURCE_ID"), "SOURCE_ID", "standart maydon o‘zgarmaydi");
+  assert.equal(isCustomDealField("ufCrm_x"), true);
+  assert.equal(isCustomDealField("TITLE"), false);
+
+  // Both spellings collapse to ONE option carrying the richer metadata.
+  const collapsed = canonicalizeFieldOptions([
+    { key: "ufCrm_1748329407554", title: "причина провала", type: "enumeration", options: [{ id: "7087", value: "передано SD" }] },
+    { key: "UF_CRM_1748329407554", title: "Custom field UF_CRM_1748329407554", type: "unknown", options: [] },
+  ]);
+  assert.equal(collapsed.length, 1);
+  assert.equal(collapsed[0].key, "UF_CRM_1748329407554");
+  assert.equal(collapsed[0].title, "причина провала");
+  assert.equal(collapsed[0].options.length, 1);
+});
+
+test("17.1: eski camelCase sozlama bilan ham sabab o‘qiladi", () => {
+  // Legacy settings hold ufCrm_...; the deal payload only ever has UF_CRM_...
+  const row = build({
+    stageId: "C3:LOST",
+    deal: { UF_CRM_1748329407554: "7087" },
+    over: { failureReasonFieldByPipeline: {}, failureReasonField: "ufCrm_1748329407554" },
+  });
+  assert.equal(row.lossReason, "передано SD");
+});

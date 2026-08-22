@@ -2,6 +2,7 @@ import { calculateBusinessMinutes, getSlaStart, isInsideWorkingTime } from "./bu
 import { resolveSlaState } from "./sla";
 import { classifyLossReasonGroup, classifySalesStatus, fieldDisplayValue, isLowQualityStage, isPaymentStage, isSqlOrDownstreamStage } from "./sales-logic";
 import { sqlThresholdsByCategory, type StageMeta, type StageSemantics } from "./stage-config";
+import { canonicalDealFieldKey } from "./crm-fields";
 import type { SalesSnapshot } from "./storage";
 import type { AnalyticsRecord, DashboardSettings, ProcessingSource, SalesManagerAttribution } from "./types";
 
@@ -197,7 +198,9 @@ export function buildAnalyticsRecords(input: {
     const reasonField = input.settings.failureReasonFieldByPipeline?.[originCategoryId]
       ?? input.settings.failureReasonFieldByPipeline?.[currentCategoryId]
       ?? input.settings.failureReasonField;
-    const lossReason = reasonField ? fieldDisplayValue(deal[reasonField], fieldOptions.get(reasonField)) : "";
+    // Legacy settings may hold the camelCase spelling; deals only ever carry UF_CRM_*.
+    const reasonKey = reasonField ? canonicalDealFieldKey(reasonField) : "";
+    const lossReason = reasonKey ? fieldDisplayValue(deal[reasonKey] ?? deal[reasonField as string], fieldOptions.get(reasonKey) ?? fieldOptions.get(reasonField as string)) : "";
     // Source is the standard Bitrix SOURCE_ID resolved through the live SOURCE
     // dictionary. Custom "how did you hear" fields and UTM are separate
     // dimensions and must not stand in for it.
