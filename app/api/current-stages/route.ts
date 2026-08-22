@@ -9,6 +9,7 @@ function value(row: Record<string, unknown>, key: string) {
 }
 
 export async function GET() {
+  let truncated = false;
   try {
     const settings = await getSettings();
     const categoryIds = [...new Set(settings.selectedPipelineIds.map(String).filter(Boolean))];
@@ -22,7 +23,13 @@ export async function GET() {
           CLOSED: "N",
         },
         select: ["ID", "TITLE", "DATE_CREATE", "DATE_MODIFY", "MOVED_TIME", "ASSIGNED_BY_ID", "CATEGORY_ID", "STAGE_ID", "CLOSED"],
-      }, { maxPages: 100 }),
+      }, {
+        maxPages: 100,
+        onTruncated: (info) => {
+          truncated = true;
+          console.warn(`current-stages: ${info.method} ${info.maxPages} sahifada uzildi; faqat ${info.loaded} ta ochiq deal yuklandi.`);
+        },
+      }),
       listPipelineStages(categoryIds),
       getDictionary<Record<string, unknown>[]>("users", []),
       listAnalyticsRecords(),
@@ -36,9 +43,11 @@ export async function GET() {
     }
     const users = new Map(userRows.map((row) => [value(row, "ID"), [value(row, "NAME"), value(row, "LAST_NAME")].filter(Boolean).join(" ") || `Menejer #${value(row, "ID")}`]));
     const records = buildCurrentStageRecords({ deals, settings, pipelines, stages, users, domain: getBitrixDomain() });
-    const selectedIds = new Set(categoryIds);
-    const cached = cachedRecords.filter((row) => row.salesStatus === "ACTIVE" && selectedIds.has(String(row.categoryId)));
-    return Response.json({ records, reconciliation: reconcileCurrentStages(records, cached) });
+    // The full cache is handed over scoped by funnel only. Sales status must not
+    // gate membership, otherwise an open deal that reached payment (cached as
+    // WON, still CLOSED=N in Bitrix) is falsely reported as missing.
+    const reconciliation = reconcileCurrentStages(records, cachedRecords, new Date().toISOString(), { operationalCategoryIds: categoryIds });
+    return Response.json({ records, reconciliation, truncated });
   } catch (error) {
     return Response.json({ error: safeBitrixMessage(error) }, { status: 500 });
   }

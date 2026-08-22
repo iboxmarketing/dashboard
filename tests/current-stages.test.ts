@@ -29,3 +29,83 @@ test("reconciliation Bitrix 91 va cache 57 orasidagi 34 ta farqni ko‘rsatadi",
   assert.equal(result.missingCount, 34);
   assert.equal(result.staleCount, 0);
 });
+
+const SALES_FUNNEL = "3";
+const POST_SALE_FUNNEL = "13";
+
+function liveOpen(dealId: string, stageId: string) {
+  return { dealId, stageId } as CurrentStageRecord;
+}
+function cachedRecord(dealId: string, stageId: string, salesStatus: AnalyticsRecord["salesStatus"], categoryId = SALES_FUNNEL) {
+  return { dealId, stageId, salesStatus, categoryId } as AnalyticsRecord;
+}
+function reconcile(live: CurrentStageRecord[], cached: AnalyticsRecord[]) {
+  return reconcileCurrentStages(live, cached, "2026-08-21T00:00:00.000Z", { operationalCategoryIds: [SALES_FUNNEL] });
+}
+
+test("live ochiq va cache ACTIVE bir xil stage — hech qanday farq yo‘q", () => {
+  const result = reconcile([liveOpen("1", "PROCESS")], [cachedRecord("1", "PROCESS", "ACTIVE")]);
+  assert.equal(result.missingCount, 0);
+  assert.equal(result.staleCount, 0);
+  assert.equal(result.stageMismatchCount, 0);
+});
+
+test("Oplata olingan ochiq deal WON bo‘lsa ham missing hisoblanmaydi", () => {
+  // Bitrix CLOSED=N, analytics salesStatus=WON. The WON classification alone
+  // must never make a live open deal look absent from the cache.
+  const result = reconcile([liveOpen("1", "PAYMENT")], [cachedRecord("1", "PAYMENT", "WON")]);
+  assert.equal(result.missingCount, 0);
+  assert.deepEqual(result.missingDealIds, []);
+  assert.equal(result.staleCount, 0);
+  assert.equal(result.stageMismatchCount, 0);
+  assert.equal(result.cachedCount, 1);
+});
+
+test("bir xil deal ikkala tomonda, lekin stage farq qilsa stageMismatch oshadi", () => {
+  const result = reconcile([liveOpen("1", "PAYMENT")], [cachedRecord("1", "PROCESS", "ACTIVE")]);
+  assert.equal(result.stageMismatchCount, 1);
+  assert.equal(result.missingCount, 0);
+  assert.equal(result.staleCount, 0);
+});
+
+test("faqat Bitrix’da bor deal missing hisoblanadi", () => {
+  const result = reconcile([liveOpen("1", "PROCESS"), liveOpen("2", "PROCESS")], [cachedRecord("1", "PROCESS", "ACTIVE")]);
+  assert.equal(result.missingCount, 1);
+  assert.deepEqual(result.missingDealIds, ["2"]);
+});
+
+test("faqat cache’da ochiq deal stale hisoblanadi", () => {
+  const result = reconcile([liveOpen("1", "PROCESS")], [cachedRecord("1", "PROCESS", "ACTIVE"), cachedRecord("2", "PROCESS", "ACTIVE")]);
+  assert.equal(result.staleCount, 1);
+  assert.deepEqual(result.staleDealIds, ["2"]);
+  assert.equal(result.missingCount, 0);
+});
+
+test("post-sale funnel’dagi cache yozuvi Sales reconciliation’ini ifloslantirmaydi", () => {
+  const result = reconcile(
+    [liveOpen("1", "PROCESS")],
+    [cachedRecord("1", "PROCESS", "ACTIVE"), cachedRecord("99", "OBUCHENIE", "WON", POST_SALE_FUNNEL)],
+  );
+  assert.equal(result.cachedCount, 1);
+  assert.equal(result.missingCount, 0);
+  assert.equal(result.staleCount, 0);
+  assert.equal(result.stageMismatchCount, 0);
+});
+
+test("yopilgan WON/LOST cache yozuvlari stale sifatida ko‘rsatilmaydi", () => {
+  // Guard against over-correcting: a deal the cache knows is finished and that
+  // Bitrix no longer returns as open is simply closed, not stale.
+  const result = reconcile(
+    [liveOpen("1", "PROCESS")],
+    [cachedRecord("1", "PROCESS", "ACTIVE"), cachedRecord("2", "PAYMENT", "WON"), cachedRecord("3", "CLOSED_LOST", "LOST")],
+  );
+  assert.equal(result.staleCount, 0);
+  assert.equal(result.missingCount, 0);
+  assert.equal(result.cachedCount, 3);
+});
+
+test("boshqa funnel’dagi cache yozuvlari hisobga olinmaydi", () => {
+  const result = reconcile([liveOpen("1", "PROCESS")], [cachedRecord("1", "PROCESS", "ACTIVE"), cachedRecord("500", "X", "ACTIVE", "77")]);
+  assert.equal(result.cachedCount, 1);
+  assert.equal(result.staleCount, 0);
+});

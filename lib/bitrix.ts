@@ -99,7 +99,10 @@ function unwrapList<T>(result: unknown): T[] {
 export async function bitrixList<T>(
   method: string,
   params: Record<string, unknown>,
-  options: { maxPages?: number; startKey?: string } = {},
+  // `onTruncated` fires only when the page budget ran out while Bitrix still had
+  // more rows, so callers can report a partial list instead of silently
+  // presenting it as complete. Pagination behaviour itself is unchanged.
+  options: { maxPages?: number; startKey?: string; onTruncated?: (info: { method: string; maxPages: number; loaded: number }) => void } = {},
 ) {
   const rows: T[] = [];
   let start = 0;
@@ -109,9 +112,10 @@ export async function bitrixList<T>(
     const response = await bitrixCall<unknown>(method, { ...params, [startKey]: start });
     const items = unwrapList<T>(response.result);
     rows.push(...items);
-    if (response.next === undefined || response.next === null || items.length === 0) break;
+    if (response.next === undefined || response.next === null || items.length === 0) return rows;
     start = Number(response.next);
   }
+  options.onTruncated?.({ method, maxPages, loaded: rows.length });
   return rows;
 }
 

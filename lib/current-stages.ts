@@ -51,15 +51,49 @@ export function buildCurrentStageRecords(input: {
   }).sort((a, b) => a.stage.localeCompare(b.stage) || a.assignedManager.localeCompare(b.assignedManager) || a.createdAt.localeCompare(b.createdAt));
 }
 
-export function reconcileCurrentStages(live: CurrentStageRecord[], cached: AnalyticsRecord[], fetchedAt = new Date().toISOString()): StageReconciliation {
+/**
+ * Whether the cache still believes this deal is operationally open.
+ * Mirrors the client's `hydrateRecord` default so records written before
+ * `salesStatus` existed are treated as open rather than silently dropped.
+ */
+function cachedIsOpen(row: AnalyticsRecord) {
+  return (row.salesStatus ?? "ACTIVE") === "ACTIVE";
+}
+
+/**
+ * Reconciles the live Bitrix open-deal snapshot against the analytics cache.
+ *
+ * It answers one question only: does the cache contain this currently open
+ * Bitrix deal id, and does its cached stage still match? Sales classification
+ * must never decide cache membership — a deal that reached payment but is
+ * still `CLOSED=N` is legitimately live AND legitimately cached as WON.
+ *
+ * Two deliberately different populations are used:
+ *  - membership (missing / stage mismatch): every cached record whose *current*
+ *    category is one of the selected Sales funnels, whatever its sales status;
+ *  - staleness: only the subset the cache still considers open, because "stale"
+ *    means the cache thinks a deal is open while Bitrix no longer does.
+ *
+ * `operationalCategoryIds` scopes the cache to the selected Sales funnels, which
+ * also keeps post-sale/support and unrelated funnels out of both populations.
+ * Passing none leaves an already-scoped cache untouched.
+ */
+export function reconcileCurrentStages(
+  live: CurrentStageRecord[],
+  cached: AnalyticsRecord[],
+  fetchedAt = new Date().toISOString(),
+  options: { operationalCategoryIds?: string[] } = {},
+): StageReconciliation {
+  const operationalIds = new Set((options.operationalCategoryIds ?? []).map(String).filter(Boolean));
+  const scoped = operationalIds.size ? cached.filter((row) => operationalIds.has(String(row.categoryId))) : cached;
   const liveById = new Map(live.map((row) => [row.dealId, row]));
-  const cachedById = new Map(cached.map((row) => [row.dealId, row]));
+  const cachedById = new Map(scoped.map((row) => [row.dealId, row]));
   const missingDealIds = [...liveById.keys()].filter((id) => !cachedById.has(id));
-  const staleDealIds = [...cachedById.keys()].filter((id) => !liveById.has(id));
+  const staleDealIds = scoped.filter((row) => cachedIsOpen(row) && !liveById.has(row.dealId)).map((row) => row.dealId);
   const stageMismatchCount = [...liveById].filter(([id, row]) => cachedById.has(id) && cachedById.get(id)?.stageId !== row.stageId).length;
   return {
     liveCount: live.length,
-    cachedCount: cached.length,
+    cachedCount: scoped.length,
     missingCount: missingDealIds.length,
     staleCount: staleDealIds.length,
     stageMismatchCount,
