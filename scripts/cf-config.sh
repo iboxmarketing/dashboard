@@ -5,6 +5,18 @@
 # wrangler performs no variable interpolation inside its config file, so the
 # file is generated at deploy time and git-ignored instead.
 #
+# Workers observability is deliberately OFF. Shared pages authenticate with a
+# bearer token in the URL path (/share/<token>), and Cloudflare's invocation
+# logs record the full request URL — which would put live bearer credentials
+# into account-visible, retained Workers Logs. Redacting inside the Worker
+# cannot help: the platform captures the URL before user code runs. Disabling
+# observability is the only fix available without changing the share URL
+# format, and security outranks invocation logs for this Worker.
+#
+# Do not flip this back on while share tokens live in the URL path. If
+# observability is needed later, move the token out of the path first
+# (session exchange) — see docs/SHARED_PAGES.md.
+#
 # Required: CLOUDFLARE_D1_DATABASE_NAME, CLOUDFLARE_D1_DATABASE_ID
 # Optional: CLOUDFLARE_WORKER_NAME (default bitrix-deal-dashboard)
 #           CLOUDFLARE_COMPATIBILITY_DATE (default 2026-05-15)
@@ -35,7 +47,7 @@ cat > "$out" <<JSON
       "database_id": "${CLOUDFLARE_D1_DATABASE_ID}"
     }
   ],
-  "observability": { "enabled": true }
+  "observability": { "enabled": false }
 }
 JSON
 

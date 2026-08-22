@@ -71,6 +71,39 @@ its input side and on no path out. `tests/page-shares.test.ts` holds the hard
 regression test: a page with a PUBLIC KPI, an internal note and an internal
 project list, shared with only the KPI, must not emit any of the rest.
 
+## Logging
+
+The token travels in the URL path, so anything that records request URLs
+records a live credential.
+
+- **The application logs nothing.** No `console.*` on the share path, no token
+  in any error message, and `tests/logging-guard.test.ts` fails the build if
+  that changes.
+- **Cloudflare Workers observability is disabled** for this Worker
+  (`scripts/cf-config.sh`). Its invocation logs capture the full request URL,
+  and that capture happens before user code runs — in-Worker redaction cannot
+  undo it. Disabling observability is the only fix that does not change the
+  share URL format. The cost is no Workers Logs for this Worker at all,
+  including the authenticated routes; that trade was made deliberately.
+- `Referrer-Policy: no-referrer` keeps the URL out of third-party referrer
+  logs, and `Cache-Control: private, no-store` keeps it out of shared caches.
+
+### Accepted limitations
+
+Anything holding the URL holds the credential. That includes the recipient's
+**browser history**, their address bar, a screenshot, and any chat or mail
+thread the link is pasted into. This is inherent to bearer links and is
+accepted for this release.
+
+Closing it means moving the token out of the path — a fragment plus a
+JS-performed exchange for a short-lived cookie, or a one-time link that trades
+itself for a session. That also re-enables Workers observability. It is a
+future enhancement, not a fix applied here.
+
+`wrangler tail` is a separate live-streaming mechanism from retained Workers
+Logs; see the Sprint 21.1 report for what disabling observability does and does
+not change about it.
+
 ## Not covered yet
 
 Rate limiting. An in-memory counter on Workers is not durable and would be
