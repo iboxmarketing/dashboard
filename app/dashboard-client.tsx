@@ -573,7 +573,8 @@ function StagePicker({ title, hint, stages, selected, onToggle }: { title: strin
   return <div className="stage-semantic-group">
     <div className="stage-semantic-head"><strong>{title}</strong><small>{hint}</small></div>
     <div className="sql-stage-options">{stages.map((stage) => <CheckCard key={`${stage.categoryId}:${stage.id}`}
-      checked={selected.includes(stage.id)} onChange={(checked) => onToggle(stage.id, checked)} title={stage.name} />)}</div>
+      checked={selected.includes(stage.id)} onChange={(checked) => onToggle(stage.id, checked)}
+      title={stage.name} meta={stage.id} />)}</div>
     {!stages.length && <small>Bitrix’dan bosqichlar yuklanmoqda…</small>}
   </div>;
 }
@@ -773,7 +774,7 @@ function SettingsView({ settings, syncing, lastSyncAt, onSave, onFullSync, onDir
     </>}
 
     {tab === "dashboard" && <section className="panel"><SectionHeader title="Dashboard ko‘rsatkichlari" subtitle="Asosiy sahifada qaysi kartalar ko‘rinishini tanlang. Hisoblash o‘zgarmaydi, faqat ko‘rinish." />
-      <div className="sql-stage-options">{DASHBOARD_METRICS.map((metric) => {
+      <div className="metric-options">{DASHBOARD_METRICS.map((metric) => {
         const checked = resolveDashboardMetricIds(draft.dashboardMetricIds).includes(metric.id);
         return <CheckCard key={metric.id} checked={checked} title={metric.label} onChange={(next) => {
           const current = resolveDashboardMetricIds(draft.dashboardMetricIds);

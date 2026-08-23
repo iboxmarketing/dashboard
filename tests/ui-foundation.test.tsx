@@ -154,3 +154,111 @@ test("editor drawers use the form system rather than raw controls", () => {
     assert.ok(drawers.includes(primitive), `drawers use ${primitive}`);
   }
 });
+
+// ------------------------------------------------ settings visual layout ---
+
+/**
+ * Sprint 23.3 — visual acceptance found Settings unusable in three places.
+ *
+ * The cause was legacy chip CSS that still matched the new CheckCard markup,
+ * because CheckCard renders a <label>. One of those rules was
+ * `input { display: none }`, which silently re-hid the real checkbox and undid
+ * the Sprint 23 keyboard fix — the reason these tests assert against the
+ * *container* rules, not just the component's own.
+ */
+
+/** Extracts one CSS rule body by exact selector. */
+const rule = (selector: string) => {
+  const at = css.indexOf(`${selector} {`);
+  return at === -1 ? "" : css.slice(at, css.indexOf("}", at) + 1);
+};
+
+test("no container rule re-hides a selection checkbox", () => {
+  for (const container of [".pipeline-options", ".sql-stage-options", ".metric-options", ".share-widget-list", ".check-card"]) {
+    for (const suffix of ["input", "> label", "label"]) {
+      const body = rule(`${container} ${suffix}`);
+      assert.doesNotMatch(body, /display:\s*none/,
+        `${container} ${suffix} must not hide the checkbox — that removes it from the keyboard order`);
+    }
+  }
+  // The only hiding is the opacity technique on the real input.
+  assert.match(rule(".check-card-input"), /opacity:\s*0/);
+});
+
+test("selection cards are laid out on a grid wide enough to read", () => {
+  const widths: Record<string, number> = { ".pipeline-options": 280, ".sql-stage-options": 180, ".metric-options": 170 };
+  for (const [selector, min] of Object.entries(widths)) {
+    const body = rule(selector);
+    assert.match(body, /display:\s*grid/, `${selector} is a grid, not a shrink-to-fit flex row`);
+    const match = body.match(/minmax\(min\((\d+)px,\s*100%\)/);
+    assert.ok(match, `${selector} uses minmax(min(Npx, 100%), 1fr) so it cannot overflow a narrow viewport`);
+    assert.equal(Number(match[1]), min, `${selector} minimum track is ${min}px`);
+  }
+});
+
+test("labels are readable, not 8-9px, and are never truncated to ellipsis", () => {
+  const strong = rule(".check-card-body strong");
+  const small = rule(".check-card-body small");
+  const size = (body: string) => Number((body.match(/font-size:\s*([\d.]+)px/) ?? [])[1]);
+  assert.ok(size(strong) >= 12 && size(strong) <= 13, `primary label 12-13px, got ${size(strong)}`);
+  assert.ok(size(small) >= 10 && size(small) <= 11, `secondary text 10-11px, got ${size(small)}`);
+
+  // No rule may clip a selection label to an ellipsis.
+  for (const selector of [".check-card", ".check-card-body", ".check-card-body strong"]) {
+    assert.doesNotMatch(rule(selector), /text-overflow:\s*ellipsis|white-space:\s*nowrap/,
+      `${selector} must not truncate the label`);
+  }
+  // break-word wraps at word boundaries; break-all would wrap per character.
+  assert.match(strong, /overflow-wrap:\s*break-word/);
+  assert.doesNotMatch(strong, /word-break:\s*break-all/);
+});
+
+test("the text column can shrink, so content flows horizontally", () => {
+  const body = rule(".check-card-body");
+  assert.match(body, /min-width:\s*0/, "without min-width:0 a flex child wraps one word per line");
+  assert.match(body, /flex:\s*1 1 auto/);
+});
+
+test("stage options render the stage name with its id underneath", () => {
+  const picker = client.slice(client.indexOf("function StagePicker"), client.indexOf("const SETTINGS_TABS"));
+  assert.match(picker, /title=\{stage\.name\}/, "the full stage name, not a truncation");
+  assert.match(picker, /meta=\{stage\.id\}/, "stage id shown as secondary text");
+
+  const html = renderToStaticMarkup(<CheckCard checked onChange={() => {}} title="ОБРАБОТКА" meta="C3:UC_9SUEMM" />);
+  assert.match(html, /ОБРАБОТКА/);
+  assert.match(html, /C3:UC_9SUEMM/);
+  assert.doesNotMatch(html, /ОБ\.\.\./, "never an abbreviated label");
+});
+
+test("dashboard metrics render full labels on their own grid", () => {
+  assert.match(client, /<div className="metric-options">\{DASHBOARD_METRICS\.map/,
+    "metrics use the wider metric grid, not the stage chip container");
+  // Every canonical label must be renderable in full — no abbreviation step.
+  const dashboardTab = client.slice(client.indexOf('{tab === "dashboard"'), client.indexOf('{tab === "sla"'));
+  assert.match(dashboardTab, /title=\{metric\.label\}/, "the full metric label is passed through");
+  assert.doesNotMatch(dashboardTab, /slice\(0,|substring\(|truncate/, "no label shortening");
+});
+
+test("the project card shows name, paired funnel and ids as separate lines", () => {
+  const html = renderToStaticMarkup(
+    <CheckCard checked onChange={() => {}} title="IBOX sales"
+      meta="+ IBOX Обучение/Сопровождение" hint="Sales ID: 3 · Post-sale ID: 13" />);
+  assert.match(html, /IBOX sales/);
+  assert.match(html, /IBOX Обучение\/Сопровождение/);
+  assert.match(html, /Sales ID: 3 · Post-sale ID: 13/);
+  // Long secondary names wrap to at most two lines rather than pushing the card.
+  assert.match(rule(".pipeline-options .check-card-body small:first-of-type"), /-webkit-line-clamp:\s*2/);
+});
+
+test("every selection grid collapses safely on a 390px viewport", () => {
+  // min(Npx, 100%) means the track can never exceed the container, so a phone
+  // gets one full-width column instead of a horizontally scrolling page.
+  for (const selector of [".pipeline-options", ".sql-stage-options", ".metric-options"]) {
+    assert.match(rule(selector), /minmax\(min\(\d+px,\s*100%\),\s*1fr\)/, `${selector} is overflow-safe`);
+  }
+  // The wider Settings grids still collapse at the existing breakpoint.
+  const mobile = css.slice(css.indexOf("@media (max-width: 860px)"), css.indexOf("@media (max-width: 560px)"));
+  for (const selector of [".config-fields", ".settings-grid", ".scoped-sync-grid"]) {
+    assert.ok(mobile.includes(selector), `${selector} collapses to one column on mobile`);
+  }
+});
