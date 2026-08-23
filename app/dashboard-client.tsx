@@ -32,6 +32,20 @@ import { stageConfigConflicts } from "@/lib/stage-config";
 import { DASHBOARD_METRICS, buildDashboardMetrics, resolveDashboardMetric, resolveDashboardMetricIds, selectPeriodPopulations, type DashboardMetricId } from "@/lib/dashboard-metrics";
 import { SLA_LABELS, SLA_TONES, resolveSlaState, summarizeSla } from "@/lib/sla";
 import { stageConfigReadiness, summarizeDataQuality } from "@/lib/diagnostics";
+import {
+  canFullSync, fullSyncBlockers, fullSyncConfirmation, isSettingsDirty, settingsReadiness,
+  type SettingsReadiness,
+} from "@/lib/settings-readiness";
+import {
+  CheckCard, DateInput, FormField, NumberInput, SelectInput, TextInput, Textarea, TimeInput,
+} from "./ui/form";
+
+/** Sales analytics views. Only these carry the global cohort filter bar. */
+const SALES_VIEWS = ["dashboard", "managers", "managerDetail", "leadFlow", "quality", "stages", "deals"] as const;
+/** Management views: no sales filters, no funnel/sync controls. */
+const MANAGEMENT_VIEWS = ["projects", "projectDetail", "pages", "pageDetail", "settings", "diagnostics"] as const;
+export const isSalesView = (view: string) => (SALES_VIEWS as readonly string[]).includes(view);
+export const isManagementView = (view: string) => (MANAGEMENT_VIEWS as readonly string[]).includes(view);
 
 type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "projects" | "projectDetail" | "pages" | "pageDetail" | "diagnostics" | "settings";
 type SyncState = SyncProgressState;
@@ -558,14 +572,48 @@ const stageSemanticFields: { key: StageSemanticKey; title: string; hint: string 
 function StagePicker({ title, hint, stages, selected, onToggle }: { title: string; hint: string; stages: PipelineStageOption[]; selected: string[]; onToggle: (stageId: string, checked: boolean) => void }) {
   return <div className="stage-semantic-group">
     <div className="stage-semantic-head"><strong>{title}</strong><small>{hint}</small></div>
-    <div className="sql-stage-options">{stages.map((stage) => { const checked = selected.includes(stage.id); return <label key={`${stage.categoryId}:${stage.id}`} className={checked ? "selected" : ""}><input type="checkbox" checked={checked} onChange={(event) => onToggle(stage.id, event.target.checked)} /><span><Check size={13} /></span><strong>{stage.name}</strong></label>; })}</div>
-    {!stages.length && <small>Bitrix’dan stage’lar yuklanmoqda…</small>}
+    <div className="sql-stage-options">{stages.map((stage) => <CheckCard key={`${stage.categoryId}:${stage.id}`}
+      checked={selected.includes(stage.id)} onChange={(checked) => onToggle(stage.id, checked)} title={stage.name} />)}</div>
+    {!stages.length && <small>Bitrix’dan bosqichlar yuklanmoqda…</small>}
   </div>;
 }
 
-function SettingsView({ settings, syncing, onSave, onFullSync }: { settings: DashboardSettings; syncing: boolean; onSave: (settings: DashboardSettings) => Promise<void>; onFullSync: (settings: DashboardSettings, pipelineId: string) => Promise<void> }) {
+const SETTINGS_TABS = [
+  { id: "asosiy", label: "Asosiy" },
+  { id: "funnel", label: "Funnel qoidalari" },
+  { id: "dashboard", label: "Dashboard" },
+  { id: "sla", label: "SLA va ish vaqti" },
+  { id: "data", label: "Data va sinxronizatsiya" },
+] as const;
+type SettingsTab = (typeof SETTINGS_TABS)[number]["id"];
+
+/** Compact readiness strip shown above every Settings tab. */
+function ReadinessBar({ readiness, lastSyncAt }: { readiness: SettingsReadiness; lastSyncAt: string | null }) {
+  const items = [
+    { label: "Bosqich ma’nolari", value: `${readiness.stages.configured}/${readiness.stages.total}`, ok: readiness.stages.complete },
+    { label: "Konfliktlar", value: String(readiness.conflicts.count), ok: readiness.conflicts.count === 0 },
+    { label: "Proval sababi", value: `${readiness.failureReason.configured}/${readiness.failureReason.total}`, ok: readiness.failureReason.complete },
+    { label: "Tarix oralig‘i", value: `${readiness.historyDays} kun`, ok: true },
+    { label: "Avto sinxronizatsiya", value: readiness.autoSync.enabled ? `${readiness.autoSync.minutes} min` : "O‘chirilgan", ok: true },
+    { label: "Oxirgi sinxronizatsiya", value: fmtDate(lastSyncAt), ok: true },
+  ];
+  return <div className="readiness-bar">{items.map((item) => (
+    <div key={item.label} className={`readiness-item ${item.ok ? "ok" : "warning"}`}>
+      <span>{item.label}</span><strong>{item.value}</strong>
+    </div>
+  ))}</div>;
+}
+
+function SettingsView({ settings, syncing, lastSyncAt, onSave, onFullSync, onDirtyChange }: {
+  settings: DashboardSettings; syncing: boolean; lastSyncAt: string | null;
+  onSave: (settings: DashboardSettings) => Promise<void>;
+  onFullSync: (settings: DashboardSettings, pipelineId: string) => Promise<void>;
+  onDirtyChange?: (dirty: boolean) => void;
+}) {
   const [draft, setDraft] = useState(() => normalizeSettings(settings)); const [holiday, setHoliday] = useState("");
   const [saving, setSaving] = useState(false); const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [tab, setTab] = useState<SettingsTab>("asosiy");
   const [pipelines, setPipelines] = useState<PipelineOption[]>([]); const [pipelineError, setPipelineError] = useState<string | null>(null);
   const [fields, setFields] = useState<CrmFieldOption[]>([]); const [stages, setStages] = useState<PipelineStageOption[]>([]);
   // Every array below is guaranteed by normalizeSettings, so no view needs a guard.
@@ -598,6 +646,7 @@ function SettingsView({ settings, syncing, onSave, onFullSync }: { settings: Das
       }
     }).catch((caught) => setPipelineError(caught instanceof Error ? caught.message : "Pipeline’lar yuklanmadi"));
   }, [settings.selectedPipelineIds.length, settings.postSalePipelineIds.length]);
+
   const normalizeName = (name: string) => name.toLocaleLowerCase().replace(/[^a-zа-яё0-9]+/gi, " ").trim();
   const brandOf = (name: string) => normalizeName(name).includes("ibox") ? "ibox" : /(^| )sd( |$)/.test(normalizeName(name)) ? "sd" : null;
   const salesPipelines = pipelines.filter((pipeline) => {
@@ -618,72 +667,218 @@ function SettingsView({ settings, syncing, onSave, onFullSync }: { settings: Das
       postSalePipelineIds: paired.map((item) => item.id), postSalePipelineNames: paired.map((item) => item.name),
     });
   }
-  async function save() { setSaving(true); setSaved(false); await onSave(draft); setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 2500); }
-  async function fullSync(pipelineId: string) { setSaving(true); setSaved(false); try { await onFullSync(draft, pipelineId); } finally { setSaving(false); } }
+
+  const savedSettings = useMemo(() => normalizeSettings(settings), [settings]);
+  const dirty = isSettingsDirty(savedSettings, draft);
+  useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); }, [dirty, onDirtyChange]);
+  // A reload must not silently discard edits.
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
+  /** Saving never leaves the form stuck: busy state resets in `finally`. */
+  async function save() {
+    setSaving(true); setSaved(false); setSaveError(null);
+    try {
+      await onSave(draft);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (caught) {
+      setSaveError(caught instanceof Error ? caught.message : "Sozlamalarni saqlab bo‘lmadi");
+    } finally {
+      setSaving(false);
+    }
+  }
+  function resetDraft() { setDraft(normalizeSettings(settings)); setSaveError(null); }
+
+  async function fullSync(pipelineId: string, funnelName: string) {
+    if (!canFullSync(readiness)) return;
+    if (!window.confirm(fullSyncConfirmation(funnelName, draft.historyDays))) return;
+    setSaving(true); setSaved(false); setSaveError(null);
+    try { await onFullSync(draft, pipelineId); }
+    catch (caught) { setSaveError(caught instanceof Error ? caught.message : "Full sync bajarilmadi"); }
+    finally { setSaving(false); }
+  }
+
   const fieldOptions = fields.map((field) => <option key={field.key} value={field.key}>{field.title}{field.sampleValue ? ` · namuna: ${field.sampleValue}` : ""}</option>);
   const stageConflicts = stageConfigConflicts(draft);
   // Enumeration fields are the only sensible Причина провала candidates.
   const reasonFieldOptions = canonicalizeFieldOptions(fields.filter((field) => /enum/i.test(field.type) || (field.options ?? []).length > 0));
-  const reasonMissing = draft.selectedPipelineIds
-    .filter((id) => !draft.failureReasonFieldByPipeline?.[id])
-    .map((id) => draft.selectedPipelineNames[draft.selectedPipelineIds.indexOf(id)] ?? id);
-  const reasonReadiness = { total: draft.selectedPipelineIds.length, configured: draft.selectedPipelineIds.length - reasonMissing.length, missing: reasonMissing, complete: reasonMissing.length === 0 };
   const stageNameById = new Map(stages.map((stage) => [stage.id, stage.name]));
   const pairedProjectCount = draft.selectedPipelineIds.filter((id) => { const main = pipelines.find((item) => item.id === id); return main && draft.postSalePipelineNames.some((name) => brandOf(name) === brandOf(main.name)); }).length;
-  const validConfig = draft.selectedPipelineIds.length >= 1 && pairedProjectCount === draft.selectedPipelineIds.length;
-  return <><div className="page-title"><div><p className="eyebrow">ADMIN</p><h1>Sozlamalar</h1><p>Sales pipeline, CRM field’lari va hisoblash qoidalari.</p></div><div className="settings-actions"><button className="button primary" onClick={save} disabled={saving || !validConfig}>{saving ? <Loader2 size={17} className="spin" /> : saved ? <Check size={17} /> : <Settings size={17} />}{saved ? "Saqlandi" : "Sozlamalarni saqlash"}</button></div></div>
-    <section className="panel pipeline-settings"><SectionHeader title="Sotuv loyihasi" subtitle="Bitta loyiha — Sales + unga bog‘langan Обучение / Сопровождение. Hozir faqat IBOX’ni tanlash yetarli." />
-      {pipelineError && <div className="notice error"><XCircle size={17} />{pipelineError}</div>}
-      <div className="pipeline-options project-options">{salesPipelines.map((pipeline) => { const checked = draft.selectedPipelineIds.includes(pipeline.id); const paired = pairFor(pipeline); return <label key={pipeline.id} className={checked ? "selected" : ""}><input type="checkbox" checked={checked} disabled={!checked && draft.selectedPipelineIds.length >= 2} onChange={(event) => togglePipeline(pipeline, event.target.checked)} /><span><Check size={15} /></span><div><strong>{pipeline.name}</strong><small>{paired ? `+ ${paired.name}` : "Mos post-sale funnel topilmadi"}</small><small>Sales ID: {pipeline.id}{paired ? ` · Post-sale ID: ${paired.id}` : ""}</small></div></label>; })}{!pipelines.length && !pipelineError && <small>Bitrix’dan pipeline’lar yuklanmoqda…</small>}</div>
-      <div className={`pipeline-selection-note ${validConfig ? "ok" : "warning"}`}>{validConfig ? `Faol loyiha: ${draft.selectedPipelineNames.join(" + ")}. Deal ID bo‘yicha unique hisoblanadi.` : "Kamida bitta Sales loyiha va uning post-sale funnel’i topilishi kerak."}</div>
-    </section>
-    <section className="panel"><SectionHeader title="Loyiha bo‘yicha alohida sinxronizatsiya" subtitle="Bir tugma Sales va unga bog‘langan Обучение / Сопровождение funnel’ini birga oladi." /><div className="scoped-sync-grid">{draft.selectedPipelineIds.map((id, index) => { const name = draft.selectedPipelineNames[index] ?? `Sales funnel #${id}`; const brand = brandOf(name) ?? "sales"; const postSale = draft.postSalePipelineNames.find((item) => brandOf(item) === brand) ?? "mos post-sale funnel"; return <article key={id}><div><span>{brand.toUpperCase()}</span><div><strong>{name}</strong><small>+ {postSale}</small></div></div><p>Oxirgi {draft.historyDays} kun. Sales va post-sale kartochkalari Deal ID bo‘yicha bitta lead hisoblanadi.</p><button className="button secondary" disabled={saving || syncing || !validConfig} onClick={() => void fullSync(id)}>{saving || syncing ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}{name} full sync</button></article>; })}</div></section>
-    <section className="panel"><SectionHeader title="Bitrix custom field’lari" subtitle="Sotuvchi maydoni. Manba doim standart SOURCE_ID’dan olinadi, proval sababi esa quyida funnel bo‘yicha tanlanadi." />
-      <div className={`field-discovery ${customFieldCount ? "ok" : "warning"}`}>{customFieldCount ? `${customFieldCount} ta custom field topildi. Input ichida nom yoki kod bo‘yicha qidiring.` : "Webhook custom field nomlarini bermadi. UF_CRM_... kodini qo‘lda kiritish mumkin."}</div>
-      <datalist id="crm-field-options">{fieldOptions}</datalist><div className="config-fields">
-      <label>Sales manager field<input list="crm-field-options" value={draft.salesManagerField ?? ""} placeholder="Bo‘sh bo‘lsa avtomatik attribution" onChange={(event) => setDraft({ ...draft, salesManagerField: event.target.value.trim() || null })} /><small>Sotuvchi yozilgan employee field bo‘lsa</small></label>
-    </div></section>
-    <section className="panel"><SectionHeader title="Bosqich ma’nolari" subtitle={`${draft.selectedPipelineNames.join(" + ") || "Tanlangan Sales funnel"} stage’lari. Stage ID saqlanadi, shuning uchun Bitrix’da nom o‘zgarsa ham hisob buzilmaydi.`} />
-      {stageSemanticFields.map((field) => <StagePicker key={field.key} title={field.title} hint={field.hint} stages={stages} selected={draft[field.key]} onToggle={(stageId, checked) => setDraft({ ...draft, [field.key]: checked ? [...new Set([...draft[field.key], stageId])] : draft[field.key].filter((id) => id !== stageId) })} />)}
-      <div className={`field-discovery ${stageConflicts.length ? "warning" : "ok"}`}>{stageConflicts.length
-        ? `Bir bosqich bir nechta ma’noga biriktirilgan: ${stageConflicts.map((conflict) => `${stageNameById.get(conflict.stageId) ?? conflict.stageId} (${conflict.groups.join(", ")})`).join("; ")}. SQL chegarasi eng erta tanlangan bosqichdan boshlanadi, shuning uchun keyingi bosqichlarni SQL ro‘yxatidan olib tashlang. Konflikt bor ekan full sync qilmang.`
-        : "Bo‘sh qoldirilsa avvalgidek stage nomi bo‘yicha aniqlanadi. Faqat tanlangan Sales funnel stage’lari ko‘rsatiladi."}</div>
-    </section>
-    <section className="panel"><SectionHeader title="Proval sababi fieldi" subtitle="Har bir Sales funnel o‘z Причина провала maydonidan o‘qiladi. Sana bo‘yicha sync’dan oldin tanlang." />
-      <div className="config-fields">{draft.selectedPipelineIds.map((categoryId, index) => {
-        const funnelName = draft.selectedPipelineNames[index] ?? `Sales funnel #${categoryId}`;
-        const chosen = draft.failureReasonFieldByPipeline?.[categoryId] ?? "";
-        return <label key={categoryId}>{funnelName}
-          <select value={chosen} onChange={(event) => {
-            const next = { ...(draft.failureReasonFieldByPipeline ?? {}) };
-            if (event.target.value) next[categoryId] = event.target.value; else delete next[categoryId];
-            setDraft({ ...draft, failureReasonFieldByPipeline: next });
-          }}>
-            <option value="">Tanlanmagan</option>
-            {reasonFieldOptions.map((field) => <option key={field.key} value={field.key}>{field.title} · {field.key}</option>)}
-          </select>
-          <small>{chosen ? `Tanlandi: ${chosen}` : "Bu funnel uchun proval sababi o‘qilmaydi"}</small>
-        </label>;
-      })}</div>
-      <div className={`field-discovery ${reasonReadiness.complete ? "ok" : "warning"}`}>Proval sababi konfiguratsiyasi: {reasonReadiness.configured}/{reasonReadiness.total}{reasonReadiness.complete ? " — to‘liq" : `. Tanlanmagan: ${reasonReadiness.missing.join(", ")}`}</div>
-    </section>
-    <section className="panel"><SectionHeader title="Dashboard ko‘rsatkichlari" subtitle="Asosiy sahifada qaysi kartalar ko‘rinishini tanlang. Hisoblash o‘zgarmaydi, faqat ko‘rinish." />
+  const readiness = settingsReadiness(draft, pairedProjectCount);
+  const blockers = fullSyncBlockers(readiness);
+  const validConfig = readiness.pairing.valid;
+
+  return <><div className="page-title"><div><p className="eyebrow">ADMIN</p><h1>Sozlamalar</h1><p>Sotuv loyihasi, Bitrix maydonlari va hisoblash qoidalari.</p></div></div>
+
+    <ReadinessBar readiness={readiness} lastSyncAt={lastSyncAt} />
+
+    <div className="settings-tabs" role="tablist" aria-label="Sozlamalar bo‘limlari">
+      {SETTINGS_TABS.map((item) => <button key={item.id} type="button" role="tab" className="settings-tab"
+        aria-selected={tab === item.id} onClick={() => setTab(item.id)}>{item.label}</button>)}
+    </div>
+
+    {saveError && <div className="notice error page-notice"><XCircle size={18} /><span>{saveError}</span></div>}
+
+    {tab === "asosiy" && <>
+      <section className="panel pipeline-settings"><SectionHeader title="Sotuv loyihasi" subtitle="Bitta loyiha — Sales va unga bog‘langan Обучение / Сопровождение funnel’i." />
+        {pipelineError && <div className="notice error"><XCircle size={17} />{pipelineError}</div>}
+        <div className="pipeline-options project-options">{salesPipelines.map((pipeline) => { const checked = draft.selectedPipelineIds.includes(pipeline.id); const paired = pairFor(pipeline); return <CheckCard key={pipeline.id}
+          checked={checked} disabled={!checked && draft.selectedPipelineIds.length >= 2}
+          onChange={(next) => togglePipeline(pipeline, next)}
+          title={pipeline.name}
+          meta={paired ? `+ ${paired.name}` : "Mos post-sale funnel topilmadi"}
+          hint={`Sales ID: ${pipeline.id}${paired ? ` · Post-sale ID: ${paired.id}` : ""}`} />; })}
+          {!pipelines.length && !pipelineError && <small>Bitrix’dan pipeline’lar yuklanmoqda…</small>}</div>
+        <div className={`pipeline-selection-note ${validConfig ? "ok" : "warning"}`}>{validConfig ? `Faol loyiha: ${draft.selectedPipelineNames.join(" + ")}. Deal ID bo‘yicha unique hisoblanadi.` : "Kamida bitta Sales loyiha va uning post-sale funnel’i topilishi kerak."}</div>
+      </section>
+    </>}
+
+    {tab === "funnel" && <>
+      <section className="panel"><SectionHeader title="Bosqich ma’nolari" subtitle={`${draft.selectedPipelineNames.join(" + ") || "Tanlangan Sales funnel"} bosqichlari. Bosqich ID saqlanadi, shuning uchun Bitrix’da nom o‘zgarsa ham hisob buzilmaydi.`} />
+        {stageSemanticFields.map((field) => <StagePicker key={field.key} title={field.title} hint={field.hint} stages={stages} selected={draft[field.key]} onToggle={(stageId, checked) => setDraft({ ...draft, [field.key]: checked ? [...new Set([...draft[field.key], stageId])] : draft[field.key].filter((id) => id !== stageId) })} />)}
+        <div className={`field-discovery ${stageConflicts.length ? "warning" : "ok"}`}>{stageConflicts.length
+          ? `Bir bosqich bir nechta ma’noga biriktirilgan: ${stageConflicts.map((conflict) => `${stageNameById.get(conflict.stageId) ?? conflict.stageId} (${conflict.groups.join(", ")})`).join("; ")}. SQL chegarasi eng erta tanlangan bosqichdan boshlanadi, shuning uchun keyingi bosqichlarni SQL ro‘yxatidan olib tashlang. Konflikt bor ekan full sync qilmang.`
+          : "Bo‘sh qoldirilsa avvalgidek bosqich nomi bo‘yicha aniqlanadi. Faqat tanlangan Sales funnel bosqichlari ko‘rsatiladi."}</div>
+      </section>
+      <section className="panel"><SectionHeader title="Proval sababi maydoni" subtitle="Har bir Sales funnel o‘z Причина провала maydonidan o‘qiladi. Sinxronizatsiyadan oldin tanlang." />
+        <div className="config-fields">{draft.selectedPipelineIds.map((categoryId, index) => {
+          const funnelName = draft.selectedPipelineNames[index] ?? `Sales funnel #${categoryId}`;
+          const chosen = draft.failureReasonFieldByPipeline?.[categoryId] ?? "";
+          return <FormField key={categoryId} label={funnelName} required
+            hint={chosen ? `Tanlandi: ${chosen}` : undefined}
+            error={chosen ? null : "Bu funnel uchun proval sababi o‘qilmaydi"}>
+            <SelectInput value={chosen} error={chosen ? null : "missing"} onChange={(event) => {
+              const next = { ...(draft.failureReasonFieldByPipeline ?? {}) };
+              if (event.target.value) next[categoryId] = event.target.value; else delete next[categoryId];
+              setDraft({ ...draft, failureReasonFieldByPipeline: next });
+            }}>
+              <option value="">Tanlanmagan</option>
+              {reasonFieldOptions.map((field) => <option key={field.key} value={field.key}>{field.title} · {field.key}</option>)}
+            </SelectInput>
+          </FormField>;
+        })}</div>
+        <div className={`field-discovery ${readiness.failureReason.complete ? "ok" : "warning"}`}>Proval sababi konfiguratsiyasi: {readiness.failureReason.configured}/{readiness.failureReason.total}{readiness.failureReason.complete ? " — to‘liq" : `. Tanlanmagan: ${readiness.failureReason.missing.join(", ")}`}</div>
+      </section>
+      <section className="panel"><SectionHeader title="Yo‘naltirish sabablari" subtitle="Bu so‘zlar topilsa lead marketing sifatsizligiga qo‘shilmaydi." />
+        <FormField label="Kalit so‘zlar" hint="Vergul bilan ajrating">
+          <Textarea value={draft.routingReasonPatterns.join(", ")} rows={3}
+            onChange={(event) => setDraft({ ...draft, routingReasonPatterns: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} />
+        </FormField>
+      </section>
+    </>}
+
+    {tab === "dashboard" && <section className="panel"><SectionHeader title="Dashboard ko‘rsatkichlari" subtitle="Asosiy sahifada qaysi kartalar ko‘rinishini tanlang. Hisoblash o‘zgarmaydi, faqat ko‘rinish." />
       <div className="sql-stage-options">{DASHBOARD_METRICS.map((metric) => {
         const checked = resolveDashboardMetricIds(draft.dashboardMetricIds).includes(metric.id);
-        return <label key={metric.id} className={checked ? "selected" : ""}>
-          <input type="checkbox" checked={checked} onChange={(event) => {
-            const current = resolveDashboardMetricIds(draft.dashboardMetricIds);
-            const next = event.target.checked ? [...current, metric.id] : current.filter((id) => id !== metric.id);
-            setDraft({ ...draft, dashboardMetricIds: next.length ? next : [metric.id] });
-          }} /><span><Check size={13} /></span><strong>{metric.label}</strong></label>;
+        return <CheckCard key={metric.id} checked={checked} title={metric.label} onChange={(next) => {
+          const current = resolveDashboardMetricIds(draft.dashboardMetricIds);
+          const updated = next ? [...current, metric.id] : current.filter((id) => id !== metric.id);
+          setDraft({ ...draft, dashboardMetricIds: updated.length ? updated : [metric.id] });
+        }} />;
       })}</div>
-    </section>
-    <section className="settings-grid"><article className="panel"><SectionHeader title="Routing sabablari" subtitle="Bu so‘zlar topilsa lead marketing sifatsizligiga qo‘shilmaydi." /><label className="wide-field">Kalit so‘zlar<textarea value={draft.routingReasonPatterns.join(", ")} onChange={(event) => setDraft({ ...draft, routingReasonPatterns: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) })} rows={3} /></label></article><article className="panel"><SectionHeader title="Avtomatik yangilash" subtitle="Dashboard ochiq bo‘lganda incremental sync avtomatik boshlanadi; uzilgan sync keyingi ochilishda davom etadi." /><label className="field-label">Interval<select value={draft.autoSyncMinutes} onChange={(event) => setDraft({ ...draft, autoSyncMinutes: Number(event.target.value) })}><option value="0">O‘chirilgan</option><option value="10">10 minut</option><option value="15">15 minut</option><option value="30">30 minut</option><option value="60">60 minut</option></select></label></article></section>
-    <section className="panel"><SectionHeader title="Har bir stage uchun limit" subtitle="Faqat tanlangan Sales funnel stage’lari. Aktiv Deal limitdan oshsa Stage nazoratida qizil ko‘rinadi." /><div className="stage-limits"><label className="field-label">Default limit<input type="number" min="1" max="720" value={draft.defaultStageLimitHours} onChange={(event) => setDraft({ ...draft, defaultStageLimitHours: Number(event.target.value) })} /><span>soat</span></label>{stages.map((stage) => <label key={`${stage.categoryId}:${stage.id}`}><span>{stage.name}</span><input type="number" min="1" max="720" value={draft.stageLimits[stage.id] ?? draft.defaultStageLimitHours} onChange={(event) => setDraft({ ...draft, stageLimits: { ...draft.stageLimits, [stage.id]: Number(event.target.value) } })} /><small>soat</small></label>)}</div></section>
-    <section className="settings-grid"><article className="panel"><SectionHeader title="Ish vaqti" subtitle={`Timezone: ${draft.timezone}`} /><div className="schedule-list">{days.map(([key, label]) => { const day = draft.schedule[key]; return <div key={key} className={!day.enabled ? "disabled" : ""}><label className="check-label"><input type="checkbox" checked={day.enabled} onChange={(event) => setDraft({ ...draft, schedule: { ...draft.schedule, [key]: { ...day, enabled: event.target.checked } } })} /><span><Check size={13} /></span><strong>{label}</strong></label><input type="time" value={day.start} disabled={!day.enabled} onChange={(event) => setDraft({ ...draft, schedule: { ...draft.schedule, [key]: { ...day, start: event.target.value } } })} /><span>—</span><input type="time" value={day.end} disabled={!day.enabled} onChange={(event) => setDraft({ ...draft, schedule: { ...draft.schedule, [key]: { ...day, end: event.target.value } } })} /></div>; })}</div></article>
-      <div className="settings-stack"><article className="panel"><SectionHeader title="SLA" subtitle="Obrabotka qilinmagan Deal alohida qoladi" /><label className="field-label">SLA target<input type="number" min="1" max="240" value={draft.slaMinutes} onChange={(event) => setDraft({ ...draft, slaMinutes: Number(event.target.value) })} /><span>business minutes</span></label></article><article className="panel"><SectionHeader title="History" subtitle="Har bir funnel full sync’i uchun alohida import oralig‘i" /><label className="field-label">Import range<select value={draft.historyDays} onChange={(event) => setDraft({ ...draft, historyDays: Number(event.target.value) })}><option value="7">7 kun</option><option value="14">14 kun</option><option value="30">30 kun</option><option value="90">90 kun</option><option value="180">180 kun</option><option value="365">365 kun</option></select></label></article></div>
-    </section>
-    <section className="panel"><SectionHeader title="Dam olish / bayramlar" subtitle="Bu sanalarda business minutes hisoblanmaydi" /><div className="holiday-add"><input type="date" value={holiday} onChange={(event) => setHoliday(event.target.value)} /><button className="button small secondary" disabled={!holiday || draft.holidays.includes(holiday)} onClick={() => { setDraft({ ...draft, holidays: [...draft.holidays, holiday].sort() }); setHoliday(""); }}>Bayram qo‘shish</button></div><div className="holiday-list">{draft.holidays.map((date) => <span key={date}>{date}<button aria-label={`${date} sanani o‘chirish`} onClick={() => setDraft({ ...draft, holidays: draft.holidays.filter((value) => value !== date) })}><X size={13} /></button></span>)}{!draft.holidays.length && <small>Hozircha maxsus bayram sanalari qo‘shilmagan.</small>}</div></section>
+    </section>}
+
+    {tab === "sla" && <>
+      <section className="settings-grid">
+        <article className="panel"><SectionHeader title="Ish vaqti" subtitle={`Vaqt mintaqasi: ${draft.timezone}`} />
+          <div className="schedule-list">{days.map(([key, label]) => { const day = draft.schedule[key]; return <div key={key} className={!day.enabled ? "disabled" : ""}>
+            <CheckCard checked={day.enabled} title={label}
+              onChange={(checked) => setDraft({ ...draft, schedule: { ...draft.schedule, [key]: { ...day, enabled: checked } } })} />
+            <TimeInput value={day.start} disabled={!day.enabled} aria-label={`${label} — boshlanishi`}
+              onChange={(event) => setDraft({ ...draft, schedule: { ...draft.schedule, [key]: { ...day, start: event.target.value } } })} />
+            <span>—</span>
+            <TimeInput value={day.end} disabled={!day.enabled} aria-label={`${label} — tugashi`}
+              onChange={(event) => setDraft({ ...draft, schedule: { ...draft.schedule, [key]: { ...day, end: event.target.value } } })} />
+          </div>; })}</div>
+        </article>
+        <div className="settings-stack">
+          <article className="panel"><SectionHeader title="SLA" subtitle="Ishlov berilmagan Deal alohida qoladi" />
+            <FormField label="SLA maqsadi" hint="Ish vaqti daqiqalarida">
+              <NumberInput min={1} max={240} value={draft.slaMinutes} onChange={(event) => setDraft({ ...draft, slaMinutes: Number(event.target.value) })} />
+            </FormField>
+          </article>
+          <article className="panel"><SectionHeader title="Dam olish va bayramlar" subtitle="Bu sanalarda ish vaqti hisoblanmaydi" />
+            <div className="holiday-add">
+              <DateInput value={holiday} aria-label="Bayram sanasi" onChange={(event) => setHoliday(event.target.value)} />
+              <button className="button small secondary" disabled={!holiday || draft.holidays.includes(holiday)} onClick={() => { setDraft({ ...draft, holidays: [...draft.holidays, holiday].sort() }); setHoliday(""); }}>Bayram qo‘shish</button>
+            </div>
+            <div className="holiday-list">{draft.holidays.map((date) => <span key={date}>{date}<button aria-label={`${date} sanani o‘chirish`} onClick={() => setDraft({ ...draft, holidays: draft.holidays.filter((value) => value !== date) })}><X size={13} /></button></span>)}{!draft.holidays.length && <small>Hozircha maxsus bayram sanalari qo‘shilmagan.</small>}</div>
+          </article>
+        </div>
+      </section>
+      <section className="panel"><SectionHeader title="Har bir bosqich uchun limit" subtitle="Faqat tanlangan Sales funnel bosqichlari. Aktiv Deal limitdan oshsa Bosqich nazoratida qizil ko‘rinadi." />
+        <div className="stage-limits">
+          <FormField label="Standart limit" hint="soat">
+            <NumberInput min={1} max={720} value={draft.defaultStageLimitHours} onChange={(event) => setDraft({ ...draft, defaultStageLimitHours: Number(event.target.value) })} />
+          </FormField>
+          {stages.map((stage) => <FormField key={`${stage.categoryId}:${stage.id}`} label={stage.name} hint="soat">
+            <NumberInput min={1} max={720} value={draft.stageLimits[stage.id] ?? draft.defaultStageLimitHours}
+              onChange={(event) => setDraft({ ...draft, stageLimits: { ...draft.stageLimits, [stage.id]: Number(event.target.value) } })} />
+          </FormField>)}
+        </div>
+      </section>
+    </>}
+
+    {tab === "data" && <>
+      <section className="settings-grid">
+        <article className="panel"><SectionHeader title="Tarix oralig‘i" subtitle="Har bir funnel to‘liq sinxronizatsiyasi uchun import oralig‘i" />
+          <FormField label="Import oralig‘i">
+            <SelectInput value={draft.historyDays} onChange={(event) => setDraft({ ...draft, historyDays: Number(event.target.value) })}>
+              {[7, 14, 30, 90, 180, 365].map((value) => <option key={value} value={value}>{value} kun</option>)}
+            </SelectInput>
+          </FormField>
+        </article>
+        <article className="panel"><SectionHeader title="Avtomatik yangilash" subtitle="Dashboard ochiq bo‘lganda incremental sinxronizatsiya avtomatik boshlanadi." />
+          <FormField label="Interval">
+            <SelectInput value={draft.autoSyncMinutes} onChange={(event) => setDraft({ ...draft, autoSyncMinutes: Number(event.target.value) })}>
+              <option value="0">O‘chirilgan</option>
+              {[10, 15, 30, 60].map((value) => <option key={value} value={value}>{value} daqiqa</option>)}
+            </SelectInput>
+          </FormField>
+        </article>
+      </section>
+      <section className="panel"><SectionHeader title="To‘liq qayta yuklash" subtitle="Sales va unga bog‘langan Обучение / Сопровождение funnel’ini birga oladi." />
+        {blockers.length > 0 && <div className="field-discovery warning">To‘liq qayta yuklash bloklangan:
+          <ul className="full-sync-blockers">{blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul>
+        </div>}
+        <div className="scoped-sync-grid">{draft.selectedPipelineIds.map((id, index) => {
+          const name = draft.selectedPipelineNames[index] ?? `Sales funnel #${id}`;
+          const brand = brandOf(name) ?? "sales";
+          const postSale = draft.postSalePipelineNames.find((item) => brandOf(item) === brand) ?? "mos post-sale funnel";
+          return <article key={id}><div><span>{brand.toUpperCase()}</span><div><strong>{name}</strong><small>+ {postSale}</small></div></div>
+            <p>Oxirgi {draft.historyDays} kun. Sales va post-sale kartochkalari Deal ID bo‘yicha bitta lead hisoblanadi.</p>
+            <button className="button secondary" disabled={saving || syncing || blockers.length > 0} onClick={() => void fullSync(id, name)}>
+              {saving || syncing ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}{name} — to‘liq qayta yuklash
+            </button></article>;
+        })}</div>
+      </section>
+      <section className="panel"><SectionHeader title="Qo‘shimcha Bitrix maydonlari" subtitle="Sotuvchi maydoni. Manba doim standart SOURCE_ID’dan olinadi." />
+        <div className={`field-discovery ${customFieldCount ? "ok" : "warning"}`}>{customFieldCount ? `${customFieldCount} ta maxsus maydon topildi. Nom yoki kod bo‘yicha qidiring.` : "Webhook maxsus maydon nomlarini bermadi. UF_CRM_... kodini qo‘lda kiritish mumkin."}</div>
+        <datalist id="crm-field-options">{fieldOptions}</datalist>
+        <div className="config-fields">
+          <FormField label="Sotuvchi maydoni" hint="Sotuvchi yozilgan employee maydoni bo‘lsa. Bo‘sh bo‘lsa avtomatik attribution ishlaydi.">
+            <TextInput list="crm-field-options" value={draft.salesManagerField ?? ""} placeholder="Bo‘sh bo‘lsa avtomatik"
+              onChange={(event) => setDraft({ ...draft, salesManagerField: event.target.value.trim() || null })} />
+          </FormField>
+        </div>
+      </section>
+    </>}
+
+    {dirty && <div className="save-bar" role="status">
+      <strong>Saqlanmagan o‘zgarishlar</strong>
+      <div className="save-bar-actions">
+        <button className="button secondary" onClick={resetDraft} disabled={saving}>Bekor qilish</button>
+        <button className="button primary" onClick={() => void save()} disabled={saving || !validConfig}>
+          {saving ? <Loader2 size={17} className="spin" /> : <Check size={17} />}Saqlash
+        </button>
+      </div>
+    </div>}
+    {!dirty && saved && <div className="save-bar" role="status"><strong>Saqlandi</strong></div>}
   </>;
 }
 
@@ -715,7 +910,7 @@ class ViewErrorBoundary extends Component<{ children: ReactNode; onBack: () => v
   render() {
     if (!this.state.failed) return this.props.children;
     return <section className="panel view-error">
-      <div className="notice error page-notice"><XCircle size={18} /><span><strong>Sozlamalarni ochishda xato yuz berdi.</strong> Sahifaning qolgan qismi ishlashda davom etadi.</span></div>
+      <div className="notice error page-notice"><XCircle size={18} /><span><strong>Sahifani ko‘rsatishda xato yuz berdi.</strong> Ilovaning qolgan qismi ishlashda davom etadi.</span></div>
       <div className="setup-actions">
         <button className="button primary" onClick={() => { this.setState({ failed: false }); this.props.onBack(); }}>Dashboardga qaytish</button>
         <button className="button secondary" onClick={() => window.location.reload()}><RefreshCw size={16} />Sahifani yangilash</button>
@@ -735,7 +930,7 @@ function StatusPill({ status, overdue }: { status: string; overdue?: boolean }) 
 /** Free-typing input with suggestions from statuses already in use. */
 function StatusInput({ value, options, onChange }: { value: string; options: string[]; onChange: (value: string) => void }) {
   return <label>Status
-    <input list="project-status-options" value={value} onChange={(event) => onChange(event.target.value)} placeholder="Masalan: Jarayonda" />
+    <TextInput list="project-status-options" value={value} onChange={(event) => onChange(event.target.value)} placeholder="Masalan: Jarayonda" />
     <datalist id="project-status-options">{options.map((option) => <option key={option} value={option} />)}</datalist>
     <small>Ixtiyoriy matn — bo‘lim o‘z workflowini ishlatishi mumkin</small>
   </label>;
@@ -921,17 +1116,19 @@ function SharePanel({ page, widgets, shares, draft, setDraft, createdUrl, dismis
 
     {draft && <div className="share-draft">
       <div className="filter-grid">
-        <label>Nomi<input value={draft.label} placeholder="CEO, Board weekly, Sales Director"
-          onChange={(event) => setDraft({ ...draft, label: event.target.value })} /></label>
-        <label>Amal qilish muddati<input type="date" value={draft.expiresAt}
-          onChange={(event) => setDraft({ ...draft, expiresAt: event.target.value })} /><small>Bo‘sh — muddatsiz</small></label>
+        <FormField label="Nomi" hint="Havolani kim uchun yaratayotganingiz">
+          <TextInput value={draft.label} placeholder="CEO, Board weekly, Sales Director"
+            onChange={(event) => setDraft({ ...draft, label: event.target.value })} /></FormField>
+        <FormField label="Amal qilish muddati" hint="Bo‘sh qoldirilsa — muddatsiz">
+          <DateInput value={draft.expiresAt}
+            onChange={(event) => setDraft({ ...draft, expiresAt: event.target.value })} /></FormField>
       </div>
       <p className="share-hint">Ko‘rinadigan widgetlar ({draft.widgetIds.length}/{widgets.length}). Ichki matn va loyiha nomlari sukut bo‘yicha yopiq.</p>
-      <div className="share-widget-list">{widgets.map((widget) => <label key={widget.id} className="share-widget">
-        <input type="checkbox" checked={draft.widgetIds.includes(widget.id)} onChange={() => toggle(widget.id)} />
-        <span>{widget.title || WIDGET_REGISTRY.find((entry) => entry.type === widget.widgetType)?.label || widget.widgetType}</span>
-        <small>{WIDGET_SOURCE_LABELS[widgetSource(widget.widgetType)]}{DEFAULT_SHARED_WIDGET_TYPES.includes(widget.widgetType) ? "" : " · ichki"}</small>
-      </label>)}{!widgets.length && <div className="empty-table">Avval widget qo‘shing.</div>}</div>
+      <div className="share-widget-list">{widgets.map((widget) => <CheckCard key={widget.id}
+        checked={draft.widgetIds.includes(widget.id)} onChange={() => toggle(widget.id)}
+        title={widget.title || WIDGET_REGISTRY.find((entry) => entry.type === widget.widgetType)?.label || widget.widgetType}
+        meta={`${WIDGET_SOURCE_LABELS[widgetSource(widget.widgetType)]}${DEFAULT_SHARED_WIDGET_TYPES.includes(widget.widgetType) ? "" : " · ichki"}`} />)}
+        {!widgets.length && <div className="empty-table">Avval widget qo‘shing.</div>}</div>
       <div className="drawer-actions">
         <button className="button" disabled={busy || !draft.widgetIds.length} onClick={() => onSubmit(draft)}>Saqlash</button>
         <button className="button secondary" disabled={busy} onClick={() => setDraft(null)}>Bekor qilish</button>
@@ -989,6 +1186,7 @@ export default function DashboardClient() {
   const [pageSearch, setPageSearch] = useState("");
   const [pageDraft, setPageDraft] = useState<PageDraft | null>(null);
   const [widgetDraft, setWidgetDraft] = useState<WidgetDraft | null>(null);
+  const [settingsDirty, setSettingsDirty] = useState(false);
   const [shares, setShares] = useState<PageShare[]>([]);
   const [shareOpen, setShareOpen] = useState(false);
   const [shareDraft, setShareDraft] = useState<ShareDraft | null>(null);
@@ -1224,6 +1422,15 @@ export default function DashboardClient() {
   const title = view === "managerDetail" ? selectedManager?.name ?? "Menejer" : navItems.find((item) => item.id === view)?.label ?? "Dashboard";
   const openProject = projects.find((project) => project.id === openProjectId) ?? null;
   const projectStatusSuggestions = statusOptions(projects, projectUpdateRows);
+  /** Leaving Settings with unsaved edits asks first. */
+  function changeView(next: View) {
+    setView((current) => {
+      if (current === "settings" && next !== "settings" && settingsDirty
+        && !window.confirm("Sozlamalarda saqlanmagan o‘zgarishlar bor. Ularni tashlab ketilsinmi?")) return current;
+      return next;
+    });
+  }
+
   const openPage = pages.find((page) => page.id === openPageId) ?? null;
   const openPageWidgets = openPage ? pageWidgets(widgets, openPage.id) : [];
   const hasLegacyData = records.some((record) => record.analyticsVersion < ANALYTICS_VERSION);
@@ -1233,18 +1440,18 @@ export default function DashboardClient() {
   return <div className="app-shell">
     <aside className={menuOpen ? "open" : ""}>
       <div className="brand"><div className="brand-mark">B24</div><div><strong>Deal Processing</strong><small>Sales analytics</small></div><button className="mobile-close" onClick={() => setMenuOpen(false)}><X size={18} /></button></div>
-      <nav>{navItems.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => { if (item.id === "stages") setFilters((current) => ({ ...current, source: "", period: "", sla: "", processing: "" })); setView(item.id); setMenuOpen(false); }}><item.icon size={18} /><span>{item.label}</span>{item.id === "diagnostics" && sync.permissions.stageHistory === "error" && <i />}</button>)}</nav>
+      <nav>{navItems.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => { if (item.id === "stages") setFilters((current) => ({ ...current, source: "", period: "", sla: "", processing: "" })); changeView(item.id); setMenuOpen(false); }}><item.icon size={18} /><span>{item.label}</span>{item.id === "diagnostics" && sync.permissions.stageHistory === "error" && <i />}</button>)}</nav>
       <div className="sidebar-status"><div><span className="live-dot" /><strong>Bitrix24 ulangan</strong></div><small>Oxirgi sync</small><p>{fmtDate(sync.lastSyncAt)}</p></div>
       <div className="sidebar-foot"><ShieldCheck size={16} /><span>Webhook server secret’da himoyalangan</span></div>
     </aside>
     {menuOpen && <button className="sidebar-backdrop" aria-label="Menyuni yopish" onClick={() => setMenuOpen(false)} />}
     <main className="content">
-      <header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)}><Menu size={20} /></button><div><span>Bitrix24</span><small>/</small><strong>{title}</strong></div><div className="top-actions"><span className="sync-time">Oxirgi sync: <strong>{fmtDate(sync.lastSyncAt)}</strong></span><Select label="Sync funnel" value={activeSyncPipelineId} onChange={setSyncPipelineId}>{syncOptions.map((pipeline) => <option key={pipeline.id} value={pipeline.id}>{pipeline.name}</option>)}</Select><button className="button secondary refresh" onClick={refresh}>{sync.status === "running" ? <TimerReset size={17} /> : refreshing ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}{sync.status === "running" ? "Pauza" : "Tanlangan funnelni sync"}</button><div className="avatar">IM</div></div></header>
+      <header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)}><Menu size={20} /></button><div><span>Bitrix24</span><small>/</small><strong>{title}</strong></div><div className="top-actions">{!isManagementView(view) && <><span className="sync-time">Oxirgi sinxronizatsiya: <strong>{fmtDate(sync.lastSyncAt)}</strong></span><Select label="Sinxronizatsiya funnel" value={activeSyncPipelineId} onChange={setSyncPipelineId}>{syncOptions.map((pipeline) => <option key={pipeline.id} value={pipeline.id}>{pipeline.name}</option>)}</Select><button className="button secondary refresh" onClick={refresh}>{sync.status === "running" ? <TimerReset size={17} /> : refreshing ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}{sync.status === "running" ? "Pauza" : "Tanlangan funnelni sinxronlash"}</button></>}<div className="avatar">IM</div></div></header>
       <div className="content-inner">
         {loadError && <div className="notice error page-notice"><XCircle size={18} />{loadError}<button onClick={() => setLoadError(null)}><X size={14} /></button></div>}
         {hasLegacyData && sync.status !== "running" && <div className="notice warning page-notice"><AlertTriangle size={18} /><span>Eski sync ma’lumotlari bor. Yangi sales analytics to‘liq ishlashi uchun Sozlamalarda CRM field’larini tekshirib, <strong>“To‘liq qayta sync”</strong>ni bosing.</span><button onClick={() => setView("settings")}>Sozlamalar</button></div>}
         {["running", "paused", "error"].includes(sync.status) && <SyncProgress sync={sync} busy={refreshing} onPause={() => void pauseCurrentSync()} onResume={() => void syncLoop("resume")} />}
-        {view !== "settings" && view !== "diagnostics" && <FiltersBar filters={filters} setFilters={setFilters} records={records} currentStages={effectiveCurrentStages} mode={view === "stages" ? "current" : "cohort"} />}
+        {isSalesView(view) && <FiltersBar filters={filters} setFilters={setFilters} records={records} currentStages={effectiveCurrentStages} mode={view === "stages" ? "current" : "cohort"} />}
         <ViewErrorBoundary onBack={() => setView("dashboard")}>
         {view === "dashboard" && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{cohortFiltered.filter(isEligibleCohortDeal).length} Leadlar</strong></div></div><DashboardView records={cohortFiltered} salesRecords={wonFiltered} previousRecords={previousCohortFiltered} previousSalesRecords={previousWonFiltered} metricIds={settings.dashboardMetricIds} onManager={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /><TrendChart records={cohortFiltered} /></>}
         {view === "managers" && <><div className="page-title"><div><p className="eyebrow">TEAM PERFORMANCE</p><h1>Menejerlar</h1><p>Lead, sifatsizlik, sales loss, sotuv soni va Opportunity kesimida.</p></div></div><section className="panel"><SectionHeader title="Menejerlar reytingi" subtitle="Lead va cohort konversiya — yaratilgan sana; davr sotuv — Oplata sanasi bo‘yicha" /><ManagerTable rows={buildManagers(cohortFiltered, wonFiltered)} onSelect={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /></section></>}
@@ -1315,16 +1522,20 @@ export default function DashboardClient() {
         </>}
         {view === "deals" && <><div className="page-title"><div><p className="eyebrow">DETAIL REPORT</p><h1>Deal’lar</h1><p>Sotuv holati, sotuvchi attribution’i, stage yoshi va processing yagona jadvalda.</p></div></div><DealsTable records={detailFiltered} /></>}
         {view === "diagnostics" && <DiagnosticsView sync={sync} records={records} reconciliation={stageReconciliation} settings={settings} />}
-        {view === "settings" && <SettingsView settings={settings} syncing={refreshing || sync.status === "running"} onSave={saveSettings} onFullSync={saveAndFullSync} />}
+        {view === "settings" && <SettingsView settings={settings} syncing={refreshing || sync.status === "running"} lastSyncAt={sync.lastSyncAt} onSave={saveSettings} onFullSync={saveAndFullSync} onDirtyChange={setSettingsDirty} />}
         </ViewErrorBoundary>
         {pageDraft && <section className="panel editor-panel"><SectionHeader title={pageDraft.id ? "Sahifa sozlamasi" : "Yangi sahifa"} />
           <div className="config-fields">
-            <label>Nomi<input value={pageDraft.name} onChange={(event) => setPageDraft({ ...pageDraft, name: event.target.value })} /></label>
-            <label>Auditoriya<input value={pageDraft.audience} onChange={(event) => setPageDraft({ ...pageDraft, audience: event.target.value })} placeholder="CEO, Marketing, Sales…" /><small>Ixtiyoriy matn</small></label>
-            <label>Sana oralig‘i<select value={pageDraft.defaultRange} onChange={(event) => setPageDraft({ ...pageDraft, defaultRange: event.target.value })}>
-              {PAGE_RANGES.map((range) => <option key={range.id} value={range.id}>{range.label}</option>)}</select><small>Sales widgetlar shu oraliqni meros oladi</small></label>
+            <FormField label="Nomi" required error={pageDraft.name.trim() ? null : "Sahifa nomi kerak"}>
+              <TextInput value={pageDraft.name} error={pageDraft.name.trim() ? null : "required"} onChange={(event) => setPageDraft({ ...pageDraft, name: event.target.value })} /></FormField>
+            <FormField label="Auditoriya" hint="Ixtiyoriy matn">
+              <TextInput value={pageDraft.audience} placeholder="CEO, Marketing, Sales…" onChange={(event) => setPageDraft({ ...pageDraft, audience: event.target.value })} /></FormField>
+            <FormField label="Sana oralig‘i" hint="Sales widgetlar shu oraliqni meros oladi">
+              <SelectInput value={pageDraft.defaultRange} onChange={(event) => setPageDraft({ ...pageDraft, defaultRange: event.target.value })}>
+                {PAGE_RANGES.map((range) => <option key={range.id} value={range.id}>{range.label}</option>)}</SelectInput></FormField>
           </div>
-          <label className="wide-field">Description<textarea rows={3} value={pageDraft.description} onChange={(event) => setPageDraft({ ...pageDraft, description: event.target.value })} /></label>
+          <FormField label="Tavsif" className="wide-field">
+            <Textarea rows={3} value={pageDraft.description} onChange={(event) => setPageDraft({ ...pageDraft, description: event.target.value })} /></FormField>
           <div className="setup-actions">
             <button className="button primary" disabled={projectBusy || !pageDraft.name.trim()} onClick={async () => {
               const result = await pageAction({ action: pageDraft.id ? "updatePage" : "createPage", ...pageDraft });
@@ -1334,31 +1545,31 @@ export default function DashboardClient() {
           </div></section>}
         {widgetDraft && <section className="panel editor-panel"><SectionHeader title={`${widgetDraft.id ? "Widget sozlamasi" : "Yangi widget"} · ${WIDGET_SOURCE_LABELS[widgetSource(widgetDraft.widgetType)]}`} />
           <div className="config-fields">
-            <label>Sarlavha<input value={widgetDraft.title} onChange={(event) => setWidgetDraft({ ...widgetDraft, title: event.target.value })} /></label>
+            <FormField label="Sarlavha"><TextInput value={widgetDraft.title} onChange={(event) => setWidgetDraft({ ...widgetDraft, title: event.target.value })} /></FormField>
             {widgetDraft.widgetType === "SALES_KPI" && <>
-              <label>Ko‘rsatkich<select value={String(widgetDraft.config.metricId ?? "leads")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, metricId: event.target.value } })}>
-                {DASHBOARD_METRICS.map((metric) => <option key={metric.id} value={metric.id}>{metric.label}</option>)}</select></label>
-              <label>Sana oralig‘i<select value={String(widgetDraft.config.range ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, range: event.target.value } })}>
-                <option value="">Sahifa oralig‘i</option>{PAGE_RANGES.map((range) => <option key={range.id} value={range.id}>{range.label}</option>)}</select></label></>}
+              <FormField label="Ko‘rsatkich"><SelectInput value={String(widgetDraft.config.metricId ?? "leads")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, metricId: event.target.value } })}>
+                {DASHBOARD_METRICS.map((metric) => <option key={metric.id} value={metric.id}>{metric.label}</option>)}</SelectInput></FormField>
+              <FormField label="Sana oralig‘i"><SelectInput value={String(widgetDraft.config.range ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, range: event.target.value } })}>
+                <option value="">Sahifa oralig‘i</option>{PAGE_RANGES.map((range) => <option key={range.id} value={range.id}>{range.label}</option>)}</SelectInput></FormField></>}
             {widgetDraft.widgetType === "MANUAL_KPI" && <>
-              <label>Label<input value={String(widgetDraft.config.label ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, label: event.target.value } })} /></label>
-              <label>Qiymat<input value={String(widgetDraft.config.value ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, value: event.target.value } })} /><small>Qo‘lda kiritiladi — Bitrix’dan olinmaydi</small></label>
-              <label>Format<select value={String(widgetDraft.config.format ?? "text")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, format: event.target.value } })}>
-                {MANUAL_KPI_FORMATS.map((format) => <option key={format} value={format}>{format}</option>)}</select></label>
-              <label>Unit<input value={String(widgetDraft.config.unit ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, unit: event.target.value } })} /></label>
-              <label>Izoh<input value={String(widgetDraft.config.note ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, note: event.target.value } })} /></label></>}
-            {widgetDraft.widgetType === "SECTION_HEADER" && <label>Subtitle<input value={String(widgetDraft.config.subtitle ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, subtitle: event.target.value } })} /></label>}
+              <FormField label="Nomi"><TextInput value={String(widgetDraft.config.label ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, label: event.target.value } })} /></FormField>
+              <FormField label="Qiymat" hint="Qo‘lda kiritiladi — Bitrix’dan olinmaydi"><TextInput value={String(widgetDraft.config.value ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, value: event.target.value } })} /></FormField>
+              <FormField label="Format"><SelectInput value={String(widgetDraft.config.format ?? "text")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, format: event.target.value } })}>
+                {MANUAL_KPI_FORMATS.map((format) => <option key={format} value={format}>{format}</option>)}</SelectInput></FormField>
+              <FormField label="Birlik"><TextInput value={String(widgetDraft.config.unit ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, unit: event.target.value } })} /></FormField>
+              <FormField label="Izoh"><TextInput value={String(widgetDraft.config.note ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, note: event.target.value } })} /></FormField></>}
+            {widgetDraft.widgetType === "SECTION_HEADER" && <FormField label="Kichik sarlavha"><TextInput value={String(widgetDraft.config.subtitle ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, subtitle: event.target.value } })} /></FormField>}
             {widgetDraft.widgetType === "PROJECTS_LIST" && <>
-              <label>Status<input list="project-status-options" value={String(widgetDraft.config.status ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, status: event.target.value } })} /></label>
-              <label>Deadline<select value={String(widgetDraft.config.deadline ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, deadline: event.target.value } })}>
-                {DEADLINE_STATES.map((state) => <option key={state.id} value={state.id}>{state.label}</option>)}</select></label>
-              <label>Limit<input type="number" min="1" max="50" value={Number(widgetDraft.config.limit ?? 10)} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, limit: Number(event.target.value) } })} /></label></>}
+              <FormField label="Status"><TextInput list="project-status-options" value={String(widgetDraft.config.status ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, status: event.target.value } })} /></FormField>
+              <FormField label="Deadline"><SelectInput value={String(widgetDraft.config.deadline ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, deadline: event.target.value } })}>
+                {DEADLINE_STATES.map((state) => <option key={state.id} value={state.id}>{state.label}</option>)}</SelectInput></FormField>
+              <FormField label="Limit"><NumberInput min="1" max="50" value={Number(widgetDraft.config.limit ?? 10)} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, limit: Number(event.target.value) } })} /></FormField></>}
             {widgetDraft.widgetType === "LATEST_UPDATES" && <>
-              <label>Loyiha<select value={String(widgetDraft.config.projectId ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, projectId: event.target.value } })}>
-                <option value="">Barcha loyihalar</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
-              <label>Limit<input type="number" min="1" max="50" value={Number(widgetDraft.config.limit ?? 5)} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, limit: Number(event.target.value) } })} /></label></>}
+              <FormField label="Loyiha"><SelectInput value={String(widgetDraft.config.projectId ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, projectId: event.target.value } })}>
+                <option value="">Barcha loyihalar</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</SelectInput></FormField>
+              <FormField label="Limit"><NumberInput min="1" max="50" value={Number(widgetDraft.config.limit ?? 5)} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, limit: Number(event.target.value) } })} /></FormField></>}
           </div>
-          {widgetDraft.widgetType === "TEXT_NOTE" && <label className="wide-field">Matn<textarea rows={5} value={String(widgetDraft.config.body ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, body: event.target.value } })} /></label>}
+          {widgetDraft.widgetType === "TEXT_NOTE" && <FormField label="Matn" className="wide-field"><Textarea rows={5} value={String(widgetDraft.config.body ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, body: event.target.value } })} /></FormField>}
           <div className="setup-actions">
             <button className="button primary" disabled={projectBusy} onClick={async () => {
               const result = await pageAction(widgetDraft.id
@@ -1371,11 +1582,11 @@ export default function DashboardClient() {
         {projectError && <div className="notice error page-notice"><XCircle size={18} />{projectError}<button onClick={() => setProjectError(null)}><X size={14} /></button></div>}
         {projectDraft && <section className="panel editor-panel"><SectionHeader title={projectDraft.id ? "Loyihani tahrirlash" : "Yangi loyiha"} />
           <div className="config-fields">
-            <label>Nomi<input value={projectDraft.name} onChange={(event) => setProjectDraft({ ...projectDraft, name: event.target.value })} /></label>
+            <FormField label="Nomi"><TextInput value={projectDraft.name} onChange={(event) => setProjectDraft({ ...projectDraft, name: event.target.value })} /></FormField>
             <StatusInput value={projectDraft.status} options={projectStatusSuggestions} onChange={(value) => setProjectDraft({ ...projectDraft, status: value })} />
-            <label>Deadline<input type="date" value={projectDraft.deadline} onChange={(event) => setProjectDraft({ ...projectDraft, deadline: event.target.value })} /><small>Ixtiyoriy</small></label>
+            <FormField label="Muddat" hint="Ixtiyoriy"><DateInput value={projectDraft.deadline} onChange={(event) => setProjectDraft({ ...projectDraft, deadline: event.target.value })} /></FormField>
           </div>
-          <label className="wide-field">Description<textarea rows={4} value={projectDraft.description} onChange={(event) => setProjectDraft({ ...projectDraft, description: event.target.value })} /></label>
+          <FormField label="Tavsif" className="wide-field"><Textarea rows={4} value={projectDraft.description} onChange={(event) => setProjectDraft({ ...projectDraft, description: event.target.value })} /></FormField>
           <div className="setup-actions">
             <button className="button primary" disabled={projectBusy || !projectDraft.name.trim() || !projectDraft.status.trim()} onClick={async () => {
               const ok = await projectAction({ action: projectDraft.id ? "updateProject" : "createProject", id: projectDraft.id, name: projectDraft.name, description: projectDraft.description, status: projectDraft.status, deadline: projectDraft.deadline });
@@ -1385,11 +1596,11 @@ export default function DashboardClient() {
           </div></section>}
         {updateDraft && <section className="panel editor-panel"><SectionHeader title={updateDraft.id ? "Update tahrirlash" : "Yangi update"} />
           <div className="config-fields">
-            <label>Nomi<input value={updateDraft.title} onChange={(event) => setUpdateDraft({ ...updateDraft, title: event.target.value })} /></label>
+            <FormField label="Nomi"><TextInput value={updateDraft.title} onChange={(event) => setUpdateDraft({ ...updateDraft, title: event.target.value })} /></FormField>
             <StatusInput value={updateDraft.status} options={projectStatusSuggestions} onChange={(value) => setUpdateDraft({ ...updateDraft, status: value })} />
-            <label>Deadline<input type="date" value={updateDraft.deadline} onChange={(event) => setUpdateDraft({ ...updateDraft, deadline: event.target.value })} /><small>Ixtiyoriy</small></label>
+            <FormField label="Muddat" hint="Ixtiyoriy"><DateInput value={updateDraft.deadline} onChange={(event) => setUpdateDraft({ ...updateDraft, deadline: event.target.value })} /></FormField>
           </div>
-          <label className="wide-field">Description<textarea rows={4} value={updateDraft.description} onChange={(event) => setUpdateDraft({ ...updateDraft, description: event.target.value })} /></label>
+          <FormField label="Tavsif" className="wide-field"><Textarea rows={4} value={updateDraft.description} onChange={(event) => setUpdateDraft({ ...updateDraft, description: event.target.value })} /></FormField>
           <div className="setup-actions">
             <button className="button primary" disabled={projectBusy || !updateDraft.title.trim() || !updateDraft.status.trim()} onClick={async () => {
               const ok = await projectAction({ action: updateDraft.id ? "updateUpdate" : "createUpdate", id: updateDraft.id, projectId: updateDraft.projectId, title: updateDraft.title, description: updateDraft.description, status: updateDraft.status, deadline: updateDraft.deadline });

@@ -81,14 +81,19 @@ test("the crash is fixed: canonicalizeFieldOptions is imported where it is used"
 test("an error boundary protects the view switch", () => {
   assert.ok(CLIENT.includes("class ViewErrorBoundary"));
   assert.ok(CLIENT.includes("getDerivedStateFromError"));
-  assert.ok(CLIENT.includes("Sozlamalarni ochishda xato yuz berdi"));
+  // Sprint 23 made the message view-agnostic: the boundary wraps every view,
+  // so Settings-specific wording was wrong for the other twelve.
+  assert.ok(CLIENT.includes("Sahifani ko‘rsatishda xato yuz berdi"));
+  assert.equal(CLIENT.includes("Sozlamalarni ochishda xato"), false, "eski Sozlamalar-only matni olib tashlandi");
   assert.ok(CLIENT.includes("Dashboardga qaytish"));
   assert.ok(CLIENT.includes("Sahifani yangilash"));
   assert.ok(CLIENT.includes("<ViewErrorBoundary"), "wraps the rendered views");
 });
 
 test("Settings still contains its required panels", () => {
-  for (const panel of ["Sotuv loyihasi", "Bosqich ma’nolari", "Proval sababi fieldi", "Dashboard ko‘rsatkichlari", "History"]) {
+  // Sprint 23 renamed two panel titles to Uzbek ("fieldi" -> "maydoni",
+  // "History" -> "Tarix oralig‘i"); the panels themselves must still be there.
+  for (const panel of ["Sotuv loyihasi", "Bosqich ma’nolari", "Proval sababi maydoni", "Dashboard ko‘rsatkichlari", "Tarix oralig‘i"]) {
     assert.ok(CLIENT.includes(panel), `${panel} panel kerak`);
   }
 });

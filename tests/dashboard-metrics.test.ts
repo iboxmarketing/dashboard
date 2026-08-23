@@ -135,7 +135,8 @@ test("17.1: qo‘ng‘iroq/telephony UI umuman yo‘q", () => {
 });
 
 test("17.1: Settings faqat bitta proval sababi yo‘li va SOURCE_ID’ni ko‘rsatadi", () => {
-  assert.ok(CLIENT.includes("Proval sababi fieldi"));
+  // Sprint 23 renamed the panel to "Proval sababi maydoni" (UI copy only).
+  assert.ok(CLIENT.includes("Proval sababi maydoni"));
   assert.ok(CLIENT.includes("Dashboard ko‘rsatkichlari"));
   assert.equal(/<label>Причина провала</.test(CLIENT), false, "eski global selektor olib tashlandi");
   assert.equal(CLIENT.includes("Marketing kanal<input"), false, "legacy marketing kanal inputi olib tashlandi");
