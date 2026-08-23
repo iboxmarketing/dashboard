@@ -1146,6 +1146,24 @@ type ShareDraft = { id?: string; pageId: string; label: string; expiresAt: strin
  * keeps only a hash and cannot show it again.
  */
 /** Palette entries grouped by where their numbers come from. */
+/**
+ * Save gating for the drawers. The API validates these too — this only stops
+ * the UI offering a save it knows the server will reject.
+ */
+function pageDraftValid(draft: PageDraft) {
+  if (!draft.name.trim()) return false;
+  if (draft.defaultRange !== "custom") return true;
+  return Boolean(draft.defaultFrom && draft.defaultTo && draft.defaultFrom <= draft.defaultTo);
+}
+
+function widgetDraftValid(draft: WidgetDraft) {
+  const config = draft.config;
+  if (draft.widgetType === "MANUAL_KPI" && !String(config.label ?? "").trim()) return false;
+  if (draft.widgetType !== "SALES_KPI" || config.range !== "custom") return true;
+  const from = String(config.from ?? ""); const to = String(config.to ?? "");
+  return Boolean(from && to && from <= to);
+}
+
 /** Uzbek labels for the manual KPI formats; ids stay untouched. */
 const MANUAL_FORMAT_LABELS: Record<string, string> = {
   text: "Matn", integer: "Butun son", decimal: "O‘nlik", percentage: "Foiz", currency: "Valyuta",
@@ -1709,7 +1727,7 @@ export default function DashboardClient() {
           dirty={Boolean(pageDraft && pageDraft.name.trim())} onClose={() => setPageDraft(null)}
           footer={<>
             <button className="button secondary" onClick={() => setPageDraft(null)} disabled={projectBusy}>Bekor qilish</button>
-            <button className="button primary" disabled={projectBusy || !pageDraft?.name.trim()} onClick={async () => {
+            <button className="button primary" disabled={projectBusy || !pageDraft || !pageDraftValid(pageDraft)} onClick={async () => {
               if (!pageDraft) return;
               const result = await pageAction({ action: pageDraft.id ? "updatePage" : "createPage", ...pageDraft });
               if (result) setPageDraft(null);
@@ -1775,7 +1793,7 @@ export default function DashboardClient() {
           dirty={false} onClose={() => setWidgetDraft(null)}
           footer={<>
             <button className="button secondary" onClick={() => setWidgetDraft(null)} disabled={projectBusy}>Bekor qilish</button>
-            <button className="button primary" disabled={projectBusy} onClick={async () => {
+            <button className="button primary" disabled={projectBusy || !widgetDraft || !widgetDraftValid(widgetDraft)} onClick={async () => {
               if (!widgetDraft) return;
               const result = await pageAction(widgetDraft.id
                 ? { action: "updateWidget", id: widgetDraft.id, pageId: widgetDraft.pageId, widgetType: widgetDraft.widgetType, title: widgetDraft.title, config: widgetDraft.config }

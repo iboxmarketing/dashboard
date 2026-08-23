@@ -261,6 +261,15 @@ test("share security contract is unchanged", () => {
   assert.match(client, /Havola bekor qilinsinmi\?/, "revoke confirms");
 });
 
+test("the drawer will not offer a save the server would reject", () => {
+  // Found in the browser: Save stayed enabled with an empty custom range.
+  assert.match(client, /function pageDraftValid\(draft: PageDraft\)/);
+  assert.match(client, /draft\.defaultFrom && draft\.defaultTo && draft\.defaultFrom <= draft\.defaultTo/);
+  assert.match(client, /disabled=\{projectBusy \|\| !pageDraft \|\| !pageDraftValid\(pageDraft\)\}/);
+  assert.match(client, /function widgetDraftValid\(draft: WidgetDraft\)/);
+  assert.match(client, /disabled=\{projectBusy \|\| !widgetDraft \|\| !widgetDraftValid\(widgetDraft\)\}/);
+});
+
 test("custom range validation helper rejects what the API rejects", () => {
   assert.equal(validateCustomRange("2026-01-01", "2026-01-31").ok, true);
   assert.equal(validateCustomRange("", "2026-01-31").ok, false);
