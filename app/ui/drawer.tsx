@@ -37,15 +37,22 @@ export function Drawer({ open, title, context, dirty, onClose, footer, children 
   useEffect(() => {
     if (!open) return;
     restoreTo.current = document.activeElement as HTMLElement | null;
-    const first = panel.current?.querySelector<HTMLElement>("[data-autofocus], input, select, textarea, button");
-    first?.focus();
+    // querySelector returns the first match in document order, not the first
+    // matching selector — a plain comma list focused the header close button.
+    const target = panel.current?.querySelector<HTMLElement>("[data-autofocus]")
+      ?? panel.current?.querySelector<HTMLElement>(".drawer-body input, .drawer-body select, .drawer-body textarea");
+    target?.focus();
     return () => restoreTo.current?.focus?.();
   }, [open]);
 
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { event.stopPropagation(); requestClose(); return; }
+      // React attaches its listeners at the document root, so a nested handler's
+      // stopPropagation cannot stop this sibling listener on the same node.
+      // `defaultPrevented` is the reliable signal that something inner — the
+      // combobox dismissing its suggestions — already consumed this Escape.
+      if (event.key === "Escape") { if (!event.defaultPrevented) requestClose(); return; }
       if (event.key !== "Tab" || !panel.current) return;
       // Keep Tab inside the drawer while it is open.
       const focusable = [...panel.current.querySelectorAll<HTMLElement>(
@@ -57,8 +64,12 @@ export function Drawer({ open, title, context, dirty, onClose, footer, children 
       if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
     };
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
+    // Bubble phase, not capture: a nested control that handles Escape itself —
+    // the status combobox closing its suggestion list — calls stopPropagation,
+    // and in capture phase the drawer would have swallowed that first and shut
+    // the whole editor instead.
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
   }, [open, requestClose]);
 
   if (!open) return null;

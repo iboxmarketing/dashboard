@@ -187,9 +187,19 @@ test("editors are a right-side drawer with the expected accessibility hooks", ()
   assert.match(drawer, /aria-modal="true"/);
   assert.match(drawer, /aria-labelledby=\{headingId\}/);
   assert.match(drawer, /event\.key === "Escape"/, "Escape closes");
+  // Bubble phase, so a nested control that stops propagation (the combobox
+  // dismissing its suggestions) is not swallowed by the drawer.
+  assert.match(drawer, /addEventListener\("keydown", onKey\);/);
+  assert.doesNotMatch(drawer, /addEventListener\("keydown", onKey, true\)/,
+    "capture phase would close the drawer when the combobox handles Escape");
+  assert.match(combobox, /event\.preventDefault\(\); event\.stopPropagation\(\); setOpen\(false\)/,
+    "the combobox marks the Escape as handled");
   assert.match(drawer, /event\.key !== "Tab"/, "focus is trapped");
   assert.match(drawer, /restoreTo\.current\?\.focus\?\.\(\)/, "focus returns to the trigger");
-  assert.match(drawer, /data-autofocus/, "first useful field is focused");
+  assert.match(drawer, /querySelector<HTMLElement>\("\[data-autofocus\]"\)/,
+    "the marked field is looked up on its own — a comma list focuses the close button instead");
+  assert.match(drawer, /event\.defaultPrevented/,
+    "an Escape already consumed by a nested control must not also close the drawer");
   assert.match(drawer, /Saqlanmagan o‘zgarishlar bor/, "dirty close is confirmed");
   // Backdrop and Escape share the guarded path.
   assert.match(drawer, /onClick=\{requestClose\}/);
