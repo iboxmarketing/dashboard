@@ -11,7 +11,7 @@ import type { AnalyticsRecord } from "../lib/types";
 
 const iso = (day: string) => `2026-08-${day}T09:00:00.000Z`;
 function page(over: Partial<CustomPage> = {}): CustomPage {
-  return { id: "pg1", name: "CEO Overview", description: "", audience: "CEO", defaultRange: "30",
+  return { id: "pg1", name: "CEO Overview", description: "", audience: "CEO", defaultRange: "30", defaultFrom: null, defaultTo: null,
     createdAt: iso("01"), updatedAt: iso("20"), archivedAt: null, ...over };
 }
 function widget(id: string, position: number, over: Partial<PageWidget> = {}): PageWidget {

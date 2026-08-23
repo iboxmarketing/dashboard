@@ -56,7 +56,7 @@ const iso = (value: string) => new Date(value).toISOString();
 
 const page = (over: Partial<CustomPage> = {}): CustomPage => ({
   id: "page-1", name: "CEO Overview", description: "Haftalik ko‘rinish", audience: "CEO",
-  defaultRange: "30", createdAt: iso("2026-01-01"), updatedAt: iso("2026-06-14T09:30:00Z"),
+  defaultRange: "30", defaultFrom: null, defaultTo: null, createdAt: iso("2026-01-01"), updatedAt: iso("2026-06-14T09:30:00Z"),
   archivedAt: null, ...over,
 });
 

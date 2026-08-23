@@ -139,6 +139,9 @@ export const customPages = sqliteTable("custom_pages", {
   description: text("description"),
   audience: text("audience"),
   defaultRange: text("default_range").notNull(),
+  // Only set when default_range is "custom"; inclusive Tashkent calendar dates.
+  defaultFrom: text("default_from"),
+  defaultTo: text("default_to"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   archivedAt: text("archived_at"),

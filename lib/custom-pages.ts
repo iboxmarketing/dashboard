@@ -1,5 +1,9 @@
 import { DASHBOARD_METRICS, type DashboardMetricId } from "./dashboard-metrics";
 import { filterProjects, projectUpdates, type Project, type ProjectUpdate } from "./projects";
+import {
+  normalizeDateKey, pageRangeBounds as periodBounds, pageRangeLabel as periodLabel,
+  validateCustomRange, type CustomRange,
+} from "./period";
 
 /**
  * Custom Pages — audience-specific management dashboards (CEO, Marketing,
@@ -63,6 +67,9 @@ export type CustomPage = {
   description: string;
   audience: string;
   defaultRange: string;
+  /** Set only when defaultRange is "custom" — inclusive Tashkent dates. */
+  defaultFrom: string | null;
+  defaultTo: string | null;
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;
@@ -88,16 +95,31 @@ export type ValidationResult<T> = { ok: true; value: T } | { ok: false; error: s
 
 export function validatePageInput(payload: unknown): ValidationResult<{
   name: string; description: string; audience: string; defaultRange: string;
+  defaultFrom: string | null; defaultTo: string | null;
 }> {
   const input = (payload ?? {}) as Record<string, unknown>;
   const name = text(input.name, NAME_LIMIT);
   if (!name) return { ok: false, error: "Sahifa nomi kerak" };
   const range = input.defaultRange === undefined || input.defaultRange === "" ? "30" : input.defaultRange;
   if (!isPageRange(range)) return { ok: false, error: "Sana oralig‘i noto‘g‘ri" };
+
+  // "custom" used to be accepted and then silently behave as 30 days. It now
+  // carries real dates, and is rejected without them.
+  let defaultFrom: string | null = null;
+  let defaultTo: string | null = null;
+  if (range === "custom") {
+    const parsed = validateCustomRange(input.defaultFrom, input.defaultTo);
+    if (!parsed.ok) return { ok: false, error: parsed.error };
+    defaultFrom = parsed.from;
+    defaultTo = parsed.to;
+  }
   return {
     ok: true,
     // Audience is free text: departments name their own audiences.
-    value: { name, description: text(input.description, TEXT_LIMIT), audience: text(input.audience, SHORT_LIMIT), defaultRange: range },
+    value: {
+      name, description: text(input.description, TEXT_LIMIT), audience: text(input.audience, SHORT_LIMIT),
+      defaultRange: range, defaultFrom, defaultTo,
+    },
   };
 }
 
@@ -111,7 +133,14 @@ export function validateWidgetConfig(type: unknown, rawConfig: unknown): Validat
     if (!DASHBOARD_METRICS.some((metric) => metric.id === metricId)) return { ok: false, error: "Ko‘rsatkich noto‘g‘ri" };
     const range = config.range === undefined || config.range === "" ? "" : config.range;
     if (range !== "" && !isPageRange(range)) return { ok: false, error: "Widget sana oralig‘i noto‘g‘ri" };
-    return { ok: true, value: { metricId, range } };
+    // A widget-level custom range lives in config_json rather than new columns;
+    // it is validated to the same rule as the page-level one.
+    if (range === "custom") {
+      const parsed = validateCustomRange(config.from, config.to);
+      if (!parsed.ok) return { ok: false, error: parsed.error };
+      return { ok: true, value: { metricId, range, from: parsed.from, to: parsed.to } };
+    }
+    return { ok: true, value: { metricId, range, from: null, to: null } };
   }
 
   if (type === "MANUAL_KPI") {
@@ -224,15 +253,13 @@ export function formatManualValue(config: Record<string, unknown>) {
 }
 
 /**
- * Resolves a range id to absolute bounds. Shared by the authenticated builder
- * and the public share renderer so a shared KPI covers exactly the same window
- * as the same widget inside the app.
+ * Absolute bounds for a page range. Delegates to the canonical Tashkent
+ * calendar helper the Sales dashboard uses, so a KPI on a page covers exactly
+ * the same window as the same metric on the dashboard — and the authenticated
+ * builder and the public share renderer agree by construction.
  */
-export function pageRangeBounds(range: string, now: Date = new Date()) {
-  const start = range === "7" ? new Date(now.getTime() - 6 * 86_400_000)
-    : range === "month" ? new Date(now.getFullYear(), now.getMonth(), 1)
-      : new Date(now.getTime() - 29 * 86_400_000);
-  return { from: start.getTime(), to: now.getTime() };
+export function pageRangeBounds(range: string, now: Date = new Date(), custom: CustomRange = {}) {
+  return periodBounds(range, now, custom);
 }
 
 /** A widget range of "" means "inherit the page range". */
@@ -240,8 +267,19 @@ export function resolveWidgetRange(config: Record<string, unknown>, pageRange: s
   return String(config.range || "") || pageRange;
 }
 
-export function pageRangeLabel(range: string) {
-  return PAGE_RANGES.find((item) => item.id === range)?.label ?? range;
+/**
+ * The custom dates in force for a widget: its own when it overrides the page
+ * range, otherwise the page's.
+ */
+export function resolveWidgetCustomRange(config: Record<string, unknown>, page: Pick<CustomPage, "defaultRange" | "defaultFrom" | "defaultTo">): CustomRange {
+  const widgetRange = String(config.range || "");
+  if (widgetRange === "custom") return { from: normalizeDateKey(config.from), to: normalizeDateKey(config.to) };
+  if (widgetRange) return {};
+  return { from: page.defaultFrom, to: page.defaultTo };
+}
+
+export function pageRangeLabel(range: string, custom: CustomRange = {}) {
+  return periodLabel(range, custom);
 }
 
 /** Row selection for PROJECTS_LIST — one implementation, two renderers. */

@@ -664,3 +664,53 @@ button:focus-visible, a:focus-visible, summary:focus-visible,
 .empty-state strong { font-size: 15px; }
 .empty-state p { margin: 0; max-width: 46ch; font-size: 13px; color: var(--text-muted, #5b6880); }
 .empty-state .button { margin-top: 4px; }
+
+/* ============================================================
+   Custom Pages builder (Sprint 25)
+   ============================================================ */
+.builder-shell { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 16px; align-items: start; }
+.builder-palette { position: sticky; top: 16px; display: grid; gap: 14px; padding: 14px; border: 1px solid var(--line, #dfe4ee); border-radius: 12px; background: var(--surface, #fff); }
+.builder-palette h3 { margin: 0; font-size: 14px; }
+.builder-palette h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted, #5b6880); }
+.builder-palette section { display: grid; gap: 6px; }
+.palette-item { display: grid; gap: 3px; width: 100%; text-align: left; padding: 9px 11px; border: 1px solid var(--line, #dfe4ee); border-radius: 10px; background: var(--surface, #fff); cursor: pointer; }
+.palette-item:hover:not(:disabled) { border-color: var(--accent, #246bfd); background: rgba(36, 107, 253, .05); }
+.palette-item:disabled { opacity: .55; cursor: not-allowed; }
+.palette-item-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.palette-item-head strong { font-size: 12.5px; }
+.palette-item small { font-size: 11px; color: var(--text-muted, #5b6880); line-height: 1.4; }
+
+.source-badge { padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 600; border: 1px solid var(--line, #dfe4ee); color: var(--text-muted, #5b6880); background: var(--surface-muted, #f4f6fa); }
+.source-badge.bitrix { color: #174dbb; border-color: #c3d5fb; background: #eef4ff; }
+.source-badge.projects { color: #1f7a52; border-color: #bfe3d1; background: #eefaf3; }
+
+.canvas-widget { display: grid; gap: 8px; }
+.canvas-widget.editing { padding: 10px; border: 1px solid var(--line, #dfe4ee); border-radius: 12px; background: var(--surface-muted, #fafbfd); }
+.canvas-widget.editing:focus-within { border-color: var(--accent, #246bfd); box-shadow: 0 0 0 3px rgba(36, 107, 253, .12); }
+.widget-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.widget-toolbar-id { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.widget-toolbar-id strong { font-size: 12.5px; overflow-wrap: break-word; }
+.widget-toolbar-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.button.danger { color: #b42318; border-color: #f0c8c4; }
+.button.danger:hover:not(:disabled) { background: #fdf1f0; }
+
+.template-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr)); gap: 10px; margin-top: 12px; }
+.template-card { display: grid; gap: 3px; text-align: left; padding: 12px 14px; border: 1px dashed var(--line-strong, #c3ccdb); border-radius: 11px; background: var(--surface-muted, #fafbfd); cursor: pointer; }
+.template-card:hover:not(:disabled) { border-style: solid; border-color: var(--accent, #246bfd); }
+.template-card strong { font-size: 13px; }
+.template-card small { font-size: 11px; color: var(--text-muted, #5b6880); }
+.template-widget-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 5px; max-height: 260px; overflow-y: auto; }
+.template-widget-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 9px; border: 1px solid var(--line, #dfe4ee); border-radius: 8px; font-size: 12.5px; }
+
+.range-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: 12px; }
+.widget-empty { padding: 14px; border: 1px dashed var(--line, #dfe4ee); border-radius: 10px; text-align: center; font-size: 12.5px; color: var(--text-muted, #5b6880); }
+.builder-empty { border: 1px dashed var(--line-strong, #c3ccdb); border-radius: 12px; }
+.quick-adds { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 6px; }
+.share-panel { display: grid; gap: 14px; }
+
+@media (max-width: 900px) {
+  /* Palette becomes a horizontally scrolling top strip; the canvas gets the width. */
+  .builder-shell { grid-template-columns: minmax(0, 1fr); }
+  .builder-palette { position: static; grid-auto-flow: column; grid-auto-columns: minmax(190px, 1fr); overflow-x: auto; }
+  .builder-palette h3 { display: none; }
+}

@@ -1,5 +1,5 @@
 import {
-  formatManualValue, orderWidgets, pageRangeBounds, pageRangeLabel, resolveWidgetRange,
+  formatManualValue, orderWidgets, pageRangeBounds, pageRangeLabel, resolveWidgetCustomRange, resolveWidgetRange,
   selectLatestUpdates, selectProjectsListRows, widgetSource,
   type CustomPage, type PageWidget, type WidgetSource,
 } from "./custom-pages";
@@ -94,11 +94,12 @@ function renderWidget(widget: PageWidget, input: ShareModelInput, now: Date): Sh
     // The canonical path, identical to the authenticated dashboard: no shared
     // page may compute a Sales number any other way.
     const range = resolveWidgetRange(config, input.page.defaultRange);
-    const bounds = pageRangeBounds(range, now);
+    const custom = resolveWidgetCustomRange(config, input.page);
+    const bounds = pageRangeBounds(range, now, custom);
     const populations = selectPeriodPopulations(input.records, bounds.from, bounds.to);
     const metrics = buildDashboardMetrics(populations.cohort, populations.periodSales);
     const resolved = resolveDashboardMetric(metrics, String(config.metricId) as DashboardMetricId);
-    return { kind: "KPI", title: widget.title || resolved.label, value: resolved.value, detail: pageRangeLabel(range), source };
+    return { kind: "KPI", title: widget.title || resolved.label, value: resolved.value, detail: pageRangeLabel(range, custom), source };
   }
 
   if (widget.widgetType === "MANUAL_KPI") {

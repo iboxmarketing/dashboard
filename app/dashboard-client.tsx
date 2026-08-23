@@ -18,9 +18,9 @@ import {
 } from "@/lib/projects";
 import {
   MANUAL_KPI_FORMATS, PAGE_RANGES, PAGE_TEMPLATES, WIDGET_REGISTRY, WIDGET_SOURCE_LABELS,
-  filterPages, formatManualValue, pageRangeBounds, pageRangeLabel, pageWidgets,
-  resolveWidgetRange, selectLatestUpdates, selectProjectsListRows, widgetSource,
-  type CustomPage, type PageWidget, type WidgetType,
+  filterPages, formatManualValue, pageRangeBounds, pageRangeLabel, pageWidgets, templateById,
+  resolveWidgetCustomRange, resolveWidgetRange, selectLatestUpdates, selectProjectsListRows, widgetSource,
+  type CustomPage, type PageWidget, type WidgetSource, type WidgetType,
 } from "@/lib/custom-pages";
 import {
   DEFAULT_SHARED_WIDGET_TYPES, SHARE_STATUS_LABELS, defaultVisibleWidgetIds, shareStatus,
@@ -1058,14 +1058,15 @@ function ProjectDetailView({ project, updates, onBack, onEditProject, onArchive,
     </section></>;
 }
 
-type PageDraft = { id?: string; name: string; description: string; audience: string; defaultRange: string };
+type PageDraft = { id?: string; name: string; description: string; audience: string; defaultRange: string; defaultFrom: string; defaultTo: string };
 type WidgetDraft = { id?: string; pageId: string; widgetType: WidgetType; title: string; config: Record<string, unknown> };
 
 /** Renders one widget. Sales numbers come from the canonical metric helper. */
-function WidgetBlock({ widget, records, projects, updates, pageRange, editing }: {
+function WidgetBlock({ widget, records, projects, updates, page, editing }: {
   widget: PageWidget; records: AnalyticsRecord[]; projects: Project[]; updates: ProjectUpdate[];
-  pageRange: string; editing: boolean;
+  page: Pick<CustomPage, "defaultRange" | "defaultFrom" | "defaultTo">; editing: boolean;
 }) {
+  const pageRange = page.defaultRange;
   const source = widgetSource(widget.widgetType);
   const badge = editing ? <small className="widget-source">{WIDGET_SOURCE_LABELS[source]}</small> : null;
 
@@ -1076,12 +1077,13 @@ function WidgetBlock({ widget, records, projects, updates, pageRange, editing }:
 
   if (widget.widgetType === "SALES_KPI") {
     const range = resolveWidgetRange(widget.config, pageRange);
-    const bounds = pageRangeBounds(range);
+    const custom = resolveWidgetCustomRange(widget.config, page);
+    const bounds = pageRangeBounds(range, new Date(), custom);
     const populations = selectPeriodPopulations(records, bounds.from, bounds.to);
     const metrics = buildDashboardMetrics(populations.cohort, populations.periodSales);
     const resolved = resolveDashboardMetric(metrics, String(widget.config.metricId) as DashboardMetricId);
     return <KpiCard label={widget.title || resolved.label} value={resolved.value}
-      detail={<>{pageRangeLabel(range)}{badge}</>} icon={BarChart3} tone="blue" />;
+      detail={<>{pageRangeLabel(range, custom)}{badge}</>} icon={BarChart3} tone="blue" />;
   }
 
   if (widget.widgetType === "MANUAL_KPI") {
@@ -1108,7 +1110,7 @@ function WidgetBlock({ widget, records, projects, updates, pageRange, editing }:
     const total = breakdown.reduce((sum, row) => sum + row.count, 0);
     return <article className="panel"><SectionHeader title={widget.title || "Statuslar"} />
       <BarList rows={breakdown.map((row) => ({ label: row.status, value: row.count, total, color: "#246bfd" }))} />
-      {!breakdown.length && <div className="empty-table">Loyiha yo‘q.</div>}{badge}</article>;
+      {!breakdown.length && <div className="widget-empty">Status ma’lumoti yo‘q</div>}{badge}</article>;
   }
 
   if (widget.widgetType === "PROJECTS_LIST") {
@@ -1118,7 +1120,7 @@ function WidgetBlock({ widget, records, projects, updates, pageRange, editing }:
         <tbody>{rows.map((project) => <tr key={project.id}><td><strong>{project.name}</strong></td>
           <td><StatusPill status={project.status} overdue={isOverdue(project)} /></td>
           <td>{project.deadline ?? "—"}</td><td>{latestUpdate(updates, project.id)?.title ?? "—"}</td></tr>)}</tbody></table>
-        {!rows.length && <div className="empty-table">Loyiha topilmadi.</div>}</div>{badge}</article>;
+        {!rows.length && <div className="widget-empty">Loyiha topilmadi</div>}</div>{badge}</article>;
   }
 
   if (widget.widgetType === "LATEST_UPDATES") {
@@ -1127,7 +1129,7 @@ function WidgetBlock({ widget, records, projects, updates, pageRange, editing }:
       <div className="update-timeline">{source2.map((update) => <div key={update.id} className="update-item">
         <div className="update-head"><strong>{update.title}</strong><StatusPill status={update.status} /></div>
         <small>{projects.find((project) => project.id === update.projectId)?.name ?? "—"} · {fmtDate(update.createdAt)}</small>
-      </div>)}{!source2.length && <div className="empty-table">Update yo‘q.</div>}</div>{badge}</article>;
+      </div>)}{!source2.length && <div className="widget-empty">Update topilmadi</div>}</div>{badge}</article>;
   }
 
   return null;
@@ -1143,6 +1145,124 @@ type ShareDraft = { id?: string; pageId: string; label: string; expiresAt: strin
  * Defaults are conservative, and the raw URL is displayed once — the server
  * keeps only a hash and cannot show it again.
  */
+/** Palette entries grouped by where their numbers come from. */
+/** Uzbek labels for the manual KPI formats; ids stay untouched. */
+const MANUAL_FORMAT_LABELS: Record<string, string> = {
+  text: "Matn", integer: "Butun son", decimal: "O‘nlik", percentage: "Foiz", currency: "Valyuta",
+};
+
+const PALETTE_GROUPS: { source: WidgetSource; title: string }[] = [
+  { source: "BITRIX", title: "Bitrix’dan avtomatik" },
+  { source: "PROJECTS", title: "Loyihalar" },
+  { source: "MANUAL", title: "Qo‘lda kiritiladigan" },
+];
+
+/** Starting config for a freshly added widget. */
+function defaultWidgetConfig(type: WidgetType): Record<string, unknown> {
+  if (type === "SALES_KPI") return { metricId: "leads", range: "", from: null, to: null };
+  if (type === "MANUAL_KPI") return { label: "KPI", value: "", unit: "", note: "", format: "text" };
+  if (type === "PROJECTS_LIST") return { status: "", deadline: "", includeArchived: false, limit: 10 };
+  if (type === "LATEST_UPDATES") return { projectId: "", status: "", limit: 5 };
+  if (type === "TEXT_NOTE") return { body: "" };
+  return { subtitle: "" };
+}
+/** Types that are meaningless until configured, so adding one opens settings. */
+const NEEDS_CONFIG: WidgetType[] = ["SALES_KPI", "MANUAL_KPI", "TEXT_NOTE", "SECTION_HEADER"];
+
+function SourceBadge({ source }: { source: WidgetSource }) {
+  return <span className={`source-badge ${source.toLowerCase()}`}>{WIDGET_SOURCE_LABELS[source]}</span>;
+}
+
+function WidgetPalette({ onAdd, busy }: { onAdd: (type: WidgetType) => void; busy: boolean }) {
+  return <aside className="builder-palette" aria-label="Widget palitrasi">
+    <h3>Bloklar</h3>
+    {PALETTE_GROUPS.map((group) => {
+      const entries = WIDGET_REGISTRY.filter((entry) => entry.source === group.source);
+      return <section key={group.source}>
+        <h4>{group.title}</h4>
+        {entries.map((entry) => <button key={entry.type} type="button" className="palette-item" disabled={busy}
+          onClick={() => onAdd(entry.type)}>
+          <span className="palette-item-head"><strong>{entry.label}</strong><SourceBadge source={entry.source} /></span>
+          <small>{entry.hint}</small>
+        </button>)}
+      </section>;
+    })}
+  </aside>;
+}
+
+/** Consistent shell around every widget on the canvas. */
+function WidgetShell({ widget, editing, first, last, busy, onMove, onEdit, onDelete, children }: {
+  widget: PageWidget; editing: boolean; first: boolean; last: boolean; busy: boolean;
+  onMove: (direction: "up" | "down") => void; onEdit: () => void; onDelete: () => void; children: React.ReactNode;
+}) {
+  const label = widget.title || WIDGET_REGISTRY.find((entry) => entry.type === widget.widgetType)?.label || "Widget";
+  if (!editing) return <div className="canvas-widget">{children}</div>;
+  return <div className="canvas-widget editing">
+    <div className="widget-toolbar">
+      <span className="widget-toolbar-id"><strong>{label}</strong><SourceBadge source={widgetSource(widget.widgetType)} /></span>
+      <span className="widget-toolbar-actions">
+        <button className="button small secondary" aria-label={`${label} — yuqoriga`} title="Yuqoriga" disabled={busy || first} onClick={() => onMove("up")}>↑</button>
+        <button className="button small secondary" aria-label={`${label} — pastga`} title="Pastga" disabled={busy || last} onClick={() => onMove("down")}>↓</button>
+        <button className="button small secondary" disabled={busy} onClick={onEdit}>Sozlash</button>
+        <button className="button small secondary danger" disabled={busy} onClick={onDelete}>O‘chirish</button>
+      </span>
+    </div>
+    {children}
+  </div>;
+}
+
+function PagesListView({ pages, widgets, search, setSearch, includeArchived, setIncludeArchived, onOpen, onNew, onTemplate, busy }: {
+  pages: CustomPage[]; widgets: PageWidget[]; search: string; setSearch: (value: string) => void;
+  includeArchived: boolean; setIncludeArchived: (value: boolean) => void;
+  onOpen: (page: CustomPage) => void; onNew: () => void; onTemplate: (templateId: string) => void; busy: boolean;
+}) {
+  const visible = filterPages(pages, { search, includeArchived });
+  const filtersActive = Boolean(search || includeArchived);
+  return <>
+    <div className="page-title"><div><p className="eyebrow">BOSHQARUV</p><h1>Pages</h1>
+      <p>CEO, Marketing, Sales yoki boshqa auditoriya uchun o‘z dashboardingizni yig‘ing.</p></div>
+      <button className="button primary" disabled={busy} onClick={onNew}><Layers3 size={17} />Yangi sahifa</button></div>
+
+    <section className="panel template-panel"><SectionHeader title="Tez boshlash" subtitle="Tayyor tuzilma yaratadi — har bir widget keyin tahrirlanadi" />
+      <div className="template-grid">{PAGE_TEMPLATES.map((template) => <button key={template.id} type="button" className="template-card" disabled={busy}
+        onClick={() => onTemplate(template.id)}>
+        <strong>{template.name}</strong>
+        <small>{template.audience}</small>
+        <small>{template.widgets.length} ta widget</small>
+      </button>)}</div>
+    </section>
+
+    <div className="filters-shell"><div className="filters-main">
+      <div className="search-box"><Search size={16} />
+        <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Sahifa nomi yoki auditoriya…" /></div>
+      <CheckCard checked={includeArchived} title="Arxiv bilan" onChange={setIncludeArchived} />
+      {filtersActive && <button className="button small secondary" onClick={() => { setSearch(""); setIncludeArchived(false); }}>Filtrni tozalash</button>}
+    </div></div>
+
+    <section className="panel"><SectionHeader title="Sahifalar" subtitle={`${visible.length} ta ko‘rsatilmoqda`} />
+      <div className="project-list">{visible.map((page) => <button key={page.id} type="button" className={`project-card${page.archivedAt ? " archived" : ""}`}
+        onClick={() => onOpen(page)}>
+        <span className="project-card-head"><strong>{page.name}</strong>
+          <span className="project-card-tags">{page.archivedAt && <span className="archive-tag">Arxivlangan</span>}
+            {page.audience && <span className="pill neutral">{page.audience}</span>}</span></span>
+        <span className="project-card-desc">{page.description || "Tavsif kiritilmagan"}</span>
+        <span className="project-card-foot">
+          <span>Oraliq: <strong>{pageRangeLabel(page.defaultRange, { from: page.defaultFrom, to: page.defaultTo })}</strong></span>
+          <span>Widget: <strong>{pageWidgets(widgets, page.id).length}</strong></span>
+          <span>Yangilangan: <strong>{fmtDate(page.updatedAt, false)}</strong></span>
+        </span>
+      </button>)}
+      {!visible.length && (pages.length === 0
+        ? <div className="empty-state"><strong>Sahifalar hali yo‘q</strong>
+            <p>CEO, Marketing, Sales yoki boshqa auditoriya uchun dashboard yarating.</p>
+            <button className="button primary" onClick={onNew} disabled={busy}><Layers3 size={16} />Yangi sahifa</button></div>
+        : <div className="empty-state"><strong>Filtrga mos sahifa topilmadi</strong>
+            <p>Qidiruvni o‘zgartiring yoki arxivdagilarni ham ko‘rsating.</p>
+            <button className="button secondary" onClick={() => { setSearch(""); setIncludeArchived(false); }}>Filtrni tozalash</button></div>)}
+      </div>
+    </section></>;
+}
+
 function SharePanel({ page, widgets, shares, draft, setDraft, createdUrl, dismissUrl, onSubmit, onRevoke, busy }: {
   page: CustomPage; widgets: PageWidget[]; shares: PageShare[];
   draft: ShareDraft | null; setDraft: (draft: ShareDraft | null) => void;
@@ -1159,9 +1279,9 @@ function SharePanel({ page, widgets, shares, draft, setDraft, createdUrl, dismis
     setDraft({ ...draft, widgetIds: next });
   };
 
-  return <section className="panel share-panel">
-    <SectionHeader title="Ulashish" subtitle="Faqat o‘qish uchun havola — qabul qiluvchi tanlangan widgetlardan boshqa hech narsani ko‘rmaydi"
-      action={<button className="button secondary" disabled={busy} onClick={() => setDraft(newDraft())}>Yangi link yaratish</button>} />
+  return <div className="share-panel">
+    <p className="form-hint">Faqat o‘qish uchun havola — qabul qiluvchi tanlangan widgetlardan boshqa hech narsani ko‘rmaydi.</p>
+    <button className="button primary" disabled={busy} onClick={() => setDraft(newDraft())}>Yangi link yaratish</button>
 
     {createdUrl && <div className="share-created">
       <strong>Havola faqat shu safar ko‘rsatiladi</strong>
@@ -1170,7 +1290,7 @@ function SharePanel({ page, widgets, shares, draft, setDraft, createdUrl, dismis
         <button className="button small" onClick={() => { void navigator.clipboard?.writeText(createdUrl); }}>Nusxalash</button>
         <button className="button small secondary" onClick={dismissUrl}>Yopish</button>
       </div>
-      <small>Yo‘qotsangiz qayta ko‘rsatib bo‘lmaydi — yangi link yarating.</small>
+      <small>Bu havola qayta ko‘rsatilmaydi. Hozir nusxalang.</small>
     </div>}
 
     {draft && <div className="share-draft">
@@ -1210,8 +1330,8 @@ function SharePanel({ page, widgets, shares, draft, setDraft, createdUrl, dismis
             onClick={() => { if (window.confirm("Havola bekor qilinsinmi? Bu amalni qaytarib bo‘lmaydi.")) onRevoke(share); }}>Bekor qilish</button>}</td>
         </tr>;
       })}</tbody></table>
-      {!rows.length && <div className="empty-table">Hali ulashish havolasi yo‘q.</div>}</div>
-  </section>;
+      {!rows.length && <div className="widget-empty">Hali ulashish havolasi yo‘q</div>}</div>
+  </div>;
 }
 
 export default function DashboardClient() {
@@ -1250,6 +1370,8 @@ export default function DashboardClient() {
   const [shareOpen, setShareOpen] = useState(false);
   const [shareDraft, setShareDraft] = useState<ShareDraft | null>(null);
   const [shareUrlOnce, setShareUrlOnce] = useState<string | null>(null);
+  const [pageIncludeArchived, setPageIncludeArchived] = useState(false);
+  const [templateDraft, setTemplateDraft] = useState<string | null>(null);
   const [projectError, setProjectError] = useState<string | null>(null);
   const syncLoopRef = useRef(false);
   const autoSyncIndexRef = useRef(0);
@@ -1528,32 +1650,95 @@ export default function DashboardClient() {
           onNewUpdate={() => setUpdateDraft({ projectId: openProject.id, title: "", description: "", status: openProject.status, deadline: "" })}
           onEditUpdate={(update) => setUpdateDraft({ id: update.id, projectId: update.projectId, title: update.title, description: update.description, status: update.status, deadline: update.deadline ?? "" })}
           onDeleteUpdate={(update) => { if (window.confirm(`"${update.title}" update o‘chirilsinmi?`)) void projectAction({ action: "deleteUpdate", id: update.id }); }} />}
-        {view === "pages" && <>
-          <div className="page-title"><div><p className="eyebrow">BOSHQARUV</p><h1>Pages</h1><p>CEO, Marketing, Sales yoki boshqa auditoriya uchun alohida sahifalar.</p></div>
-            <button className="button primary" disabled={projectBusy} onClick={() => setPageDraft({ name: "", description: "", audience: "", defaultRange: "30" })}><LayoutDashboard size={17} />Yangi sahifa</button></div>
-          <section className="panel"><SectionHeader title="Shablonlar" subtitle="Tayyor tuzilma yaratadi — keyin to‘liq tahrirlash mumkin" />
-            <div className="setup-actions">{PAGE_TEMPLATES.map((template) => <button key={template.id} className="button secondary" disabled={projectBusy}
-              onClick={async () => { const id = await pageAction({ action: "createFromTemplate", templateId: template.id }); if (typeof id === "string") { setOpenPageId(id); setPageEditing(true); setView("pageDetail"); } }}>{template.label}</button>)}</div></section>
-          <div className="filters-shell"><div className="filters-main"><div className="search-box"><Search size={16} />
-            <input value={pageSearch} onChange={(event) => setPageSearch(event.target.value)} placeholder="Sahifa nomi yoki auditoriya…" /></div></div></div>
-          <section className="panel"><SectionHeader title="Sahifalar" />
-            <div className="project-list">{filterPages(pages, { search: pageSearch }).map((page) => <button key={page.id} className="project-card"
-              onClick={() => { setOpenPageId(page.id); setPageEditing(false); setView("pageDetail"); }}>
-              <div className="project-card-head"><strong>{page.name}</strong><span className="pill neutral">{page.audience || "Auditoriya yo‘q"}</span></div>
-              <span className="project-card-foot">{pageWidgets(widgets, page.id).length} ta widget · Yangilangan: {fmtDate(page.updatedAt)}{page.archivedAt ? " · arxivlangan" : ""}</span>
-            </button>)}{!filterPages(pages, { search: pageSearch }).length && <div className="empty-table">Sahifa topilmadi.</div>}</div></section>
-        </>}
+        {view === "pages" && <PagesListView pages={pages} widgets={widgets} search={pageSearch} setSearch={setPageSearch}
+          includeArchived={pageIncludeArchived} setIncludeArchived={setPageIncludeArchived} busy={projectBusy}
+          onOpen={(page) => { setOpenPageId(page.id); setPageEditing(false); setView("pageDetail"); }}
+          onNew={() => setPageDraft({ name: "", description: "", audience: "", defaultRange: "30", defaultFrom: "", defaultTo: "" })}
+          onTemplate={(templateId) => setTemplateDraft(templateId)} />}
+
         {view === "pageDetail" && openPage && <>
-          <div className="page-title"><div><button className="back-button" onClick={() => { setOpenPageId(null); setView("pages"); }}><ArrowLeft size={16} />Sahifalarga qaytish</button>
-            <p className="eyebrow">{openPage.audience || "SAHIFA"}</p><h1>{openPage.name}</h1><p>{openPage.description || ""}</p></div>
+          <div className="page-title"><div>
+            <button className="back-button" onClick={() => { setOpenPageId(null); setView("pages"); }}><ArrowLeft size={16} />Sahifalarga qaytish</button>
+            <p className="eyebrow">{openPage.audience || "SAHIFA"}</p><h1>{openPage.name}</h1>
+            <div className="project-meta">
+              <span className="pill neutral">{pageRangeLabel(openPage.defaultRange, { from: openPage.defaultFrom, to: openPage.defaultTo })}</span>
+              {openPage.archivedAt && <span className="archive-tag">Arxivlangan</span>}</div></div>
             <div className="settings-actions">
               <button className="button secondary" onClick={() => setPageEditing(!pageEditing)}>{pageEditing ? "Ko‘rish rejimi" : "Tahrirlash"}</button>
-              <button className="button secondary" onClick={() => { setShareOpen(!shareOpen); setShareDraft(null); setShareUrlOnce(null); }}><ExternalLink size={16} />Ulashish</button>
-              {pageEditing && <><button className="button secondary" onClick={() => setPageDraft({ id: openPage.id, name: openPage.name, description: openPage.description, audience: openPage.audience, defaultRange: openPage.defaultRange })}><Settings size={16} />Sahifa sozlamasi</button>
-              <button className="button secondary" disabled={projectBusy} onClick={() => void pageAction({ action: openPage.archivedAt ? "restorePage" : "archivePage", id: openPage.id })}>{openPage.archivedAt ? "Arxivdan chiqarish" : "Arxivlash"}</button>
-              <button className="button secondary" disabled={projectBusy} onClick={() => { if (window.confirm(`"${openPage.name}" sahifasi butunlay o‘chirilsinmi?`)) void pageAction({ action: "deletePage", id: openPage.id, confirm: true }).then(() => { setOpenPageId(null); setView("pages"); }); }}>O‘chirish</button></>}
+              <button className="button secondary" onClick={() => { setShareOpen(true); setShareDraft(null); setShareUrlOnce(null); }}><ExternalLink size={16} />Ulashish</button>
+              {pageEditing && <>
+                <button className="button secondary" onClick={() => setPageDraft({ id: openPage.id, name: openPage.name, description: openPage.description, audience: openPage.audience, defaultRange: openPage.defaultRange, defaultFrom: openPage.defaultFrom ?? "", defaultTo: openPage.defaultTo ?? "" })}><Settings size={16} />Sahifa sozlamasi</button>
+                <button className="button secondary" disabled={projectBusy} onClick={() => void pageAction({ action: openPage.archivedAt ? "restorePage" : "archivePage", id: openPage.id })}>{openPage.archivedAt ? "Arxivdan chiqarish" : "Arxivlash"}</button>
+                <button className="button secondary danger" disabled={projectBusy} onClick={() => { if (window.confirm(`"${openPage.name}" sahifasi butunlay o‘chirilsinmi? Bu amalni qaytarib bo‘lmaydi.`)) void pageAction({ action: "deletePage", id: openPage.id, confirm: true }).then(() => { setOpenPageId(null); setView("pages"); }); }}>O‘chirish</button>
+              </>}
             </div></div>
-          {shareOpen && <SharePanel page={openPage} widgets={openPageWidgets} shares={shares}
+
+          <div className={pageEditing ? "builder-shell" : ""}>
+            {pageEditing && <WidgetPalette busy={projectBusy} onAdd={(type) => {
+              const config = defaultWidgetConfig(type);
+              if (NEEDS_CONFIG.includes(type)) {
+                setWidgetDraft({ pageId: openPage.id, widgetType: type, title: WIDGET_REGISTRY.find((entry) => entry.type === type)?.label ?? "", config });
+              } else {
+                void pageAction({ action: "addWidget", pageId: openPage.id, widgetType: type, title: WIDGET_REGISTRY.find((entry) => entry.type === type)?.label ?? "", position: 0, config });
+              }
+            }} />}
+            <div className="page-canvas">{openPageWidgets.map((widget, index) => <WidgetShell key={widget.id} widget={widget} editing={pageEditing}
+              first={index === 0} last={index === openPageWidgets.length - 1} busy={projectBusy}
+              onMove={(direction) => void pageAction({ action: "moveWidget", id: widget.id, pageId: openPage.id, direction })}
+              onEdit={() => setWidgetDraft({ id: widget.id, pageId: openPage.id, widgetType: widget.widgetType, title: widget.title, config: widget.config })}
+              onDelete={() => { if (window.confirm(`"${widget.title || widget.widgetType}" widgeti o‘chirilsinmi?`)) void pageAction({ action: "deleteWidget", id: widget.id, pageId: openPage.id }); }}>
+              <WidgetBlock widget={widget} records={records} projects={projects} updates={projectUpdateRows} page={openPage} editing={pageEditing} />
+            </WidgetShell>)}
+            {!openPageWidgets.length && <div className="empty-state builder-empty"><strong>Sahifada hali widget yo‘q</strong>
+              <p>{pageEditing ? "Chap tomondagi bloklardan birini qo‘shing." : "Tahrirlash rejimiga o‘ting va blok qo‘shing."}</p>
+              {pageEditing && <div className="quick-adds">{(["SALES_KPI", "PROJECT_SUMMARY", "MANUAL_KPI", "TEXT_NOTE"] as WidgetType[]).map((type) => {
+                const entry = WIDGET_REGISTRY.find((item) => item.type === type)!;
+                return <button key={type} className="button secondary" disabled={projectBusy}
+                  onClick={() => setWidgetDraft({ pageId: openPage.id, widgetType: type, title: entry.label, config: defaultWidgetConfig(type) })}>{entry.label}</button>;
+              })}</div>}</div>}
+            </div>
+          </div>
+        </>}
+
+        {view === "deals" && <><div className="page-title"><div><p className="eyebrow">DETAIL REPORT</p><h1>Deal’lar</h1><p>Sotuv holati, sotuvchi attribution’i, stage yoshi va processing yagona jadvalda.</p></div></div><DealsTable records={detailFiltered} /></>}
+        {view === "diagnostics" && <DiagnosticsView sync={sync} records={records} reconciliation={stageReconciliation} settings={settings} />}
+        {view === "settings" && <SettingsView settings={settings} syncing={refreshing || sync.status === "running"} lastSyncAt={sync.lastSyncAt} onSave={saveSettings} onFullSync={saveAndFullSync} onDirtyChange={setSettingsDirty} />}
+        </ViewErrorBoundary>
+        <Drawer open={Boolean(pageDraft)} title={pageDraft?.id ? "Sahifa sozlamasi" : "Yangi sahifa"}
+          context={pageDraft?.id ? pageDraft.name : "Auditoriya uchun dashboard"}
+          dirty={Boolean(pageDraft && pageDraft.name.trim())} onClose={() => setPageDraft(null)}
+          footer={<>
+            <button className="button secondary" onClick={() => setPageDraft(null)} disabled={projectBusy}>Bekor qilish</button>
+            <button className="button primary" disabled={projectBusy || !pageDraft?.name.trim()} onClick={async () => {
+              if (!pageDraft) return;
+              const result = await pageAction({ action: pageDraft.id ? "updatePage" : "createPage", ...pageDraft });
+              if (result) setPageDraft(null);
+            }}>Saqlash</button></>}>
+          {pageDraft && <div className="drawer-form">
+            <FormField label="Nomi" required error={pageDraft.name.trim() ? null : "Sahifa nomi kerak"}>
+              <TextInput data-autofocus value={pageDraft.name} error={pageDraft.name.trim() ? null : "required"}
+                onChange={(event) => setPageDraft({ ...pageDraft, name: event.target.value })} /></FormField>
+            <FormField label="Auditoriya" hint="Ixtiyoriy matn — CEO, Marketing, Sales…">
+              <TextInput value={pageDraft.audience} onChange={(event) => setPageDraft({ ...pageDraft, audience: event.target.value })} /></FormField>
+            <FormField label="Sana oralig‘i" hint="Sales widgetlar shu oraliqni meros oladi">
+              <SelectInput value={pageDraft.defaultRange} onChange={(event) => setPageDraft({ ...pageDraft, defaultRange: event.target.value })}>
+                {PAGE_RANGES.map((range) => <option key={range.id} value={range.id}>{range.label}</option>)}</SelectInput></FormField>
+            {pageDraft.defaultRange === "custom" && <div className="range-pair">
+              <FormField label="Boshlanish" required error={pageDraft.defaultFrom ? null : "Sana kerak"}>
+                <DateInput value={pageDraft.defaultFrom} onChange={(event) => setPageDraft({ ...pageDraft, defaultFrom: event.target.value })} /></FormField>
+              <FormField label="Tugash" required
+                error={!pageDraft.defaultTo ? "Sana kerak" : pageDraft.defaultFrom && pageDraft.defaultFrom > pageDraft.defaultTo ? "Boshlanishdan keyin bo‘lishi kerak" : null}>
+                <DateInput value={pageDraft.defaultTo} onChange={(event) => setPageDraft({ ...pageDraft, defaultTo: event.target.value })} /></FormField>
+            </div>}
+            <FormField label="Tavsif"><Textarea rows={5} value={pageDraft.description}
+              onChange={(event) => setPageDraft({ ...pageDraft, description: event.target.value })} /></FormField>
+          </div>}
+        </Drawer>
+
+        <Drawer open={shareOpen && Boolean(openPage)} title="Ulashish" context={openPage?.name}
+          onClose={() => { setShareOpen(false); setShareDraft(null); setShareUrlOnce(null); }}
+          footer={<button className="button secondary" onClick={() => { setShareOpen(false); setShareDraft(null); setShareUrlOnce(null); }}>Yopish</button>}>
+          {openPage && <SharePanel page={openPage} widgets={openPageWidgets} shares={shares}
             draft={shareDraft} setDraft={setShareDraft} createdUrl={shareUrlOnce} dismissUrl={() => setShareUrlOnce(null)}
             busy={projectBusy}
             onRevoke={(share) => void shareAction({ action: "revokeShare", id: share.id })}
@@ -1561,83 +1746,117 @@ export default function DashboardClient() {
               ? { action: "updateShare", id: draft.id, label: draft.label, expiresAt: draft.expiresAt, widgetIds: draft.widgetIds }
               : { action: "createShare", pageId: draft.pageId, label: draft.label, expiresAt: draft.expiresAt, widgetIds: draft.widgetIds })
               .then((url) => { setShareDraft(null); if (url) setShareUrlOnce(url); })} />}
-          {pageEditing && <section className="panel"><SectionHeader title="Widget qo‘shish" subtitle={`Sahifa oralig‘i: ${PAGE_RANGES.find((r) => r.id === openPage.defaultRange)?.label ?? openPage.defaultRange}`} />
-            <div className="setup-actions">{WIDGET_REGISTRY.map((entry) => <button key={entry.type} className="button secondary" disabled={projectBusy}
-              onClick={() => setWidgetDraft({ pageId: openPage.id, widgetType: entry.type, title: entry.label,
-                config: entry.type === "SALES_KPI" ? { metricId: "leads", range: "" }
-                  : entry.type === "MANUAL_KPI" ? { label: "KPI", value: "", unit: "", note: "", format: "text" }
-                    : entry.type === "PROJECTS_LIST" ? { status: "", deadline: "", includeArchived: false, limit: 10 }
-                      : entry.type === "LATEST_UPDATES" ? { projectId: "", status: "", limit: 5 }
-                        : entry.type === "TEXT_NOTE" ? { body: "" } : { subtitle: "" } })}>{entry.label}</button>)}</div></section>}
-          <div className="page-canvas">{openPageWidgets.map((widget, index) => <div key={widget.id} className="page-widget">
-            <WidgetBlock widget={widget} records={records} projects={projects} updates={projectUpdateRows} pageRange={openPage.defaultRange} editing={pageEditing} />
-            {pageEditing && <div className="widget-controls">
-              <button className="button small secondary" disabled={projectBusy || index === 0} onClick={() => void pageAction({ action: "moveWidget", id: widget.id, pageId: openPage.id, direction: "up" })}>↑</button>
-              <button className="button small secondary" disabled={projectBusy || index === openPageWidgets.length - 1} onClick={() => void pageAction({ action: "moveWidget", id: widget.id, pageId: openPage.id, direction: "down" })}>↓</button>
-              <button className="button small secondary" disabled={projectBusy} onClick={() => setWidgetDraft({ id: widget.id, pageId: widget.pageId, widgetType: widget.widgetType, title: widget.title, config: widget.config })}>Sozlash</button>
-              <button className="button small secondary" disabled={projectBusy} onClick={() => { if (window.confirm("Widget o‘chirilsinmi?")) void pageAction({ action: "deleteWidget", id: widget.id, pageId: openPage.id }); }}>O‘chirish</button>
-            </div>}</div>)}
-            {!openPageWidgets.length && <div className="empty-table">Widget qo‘shilmagan.</div>}</div>
-        </>}
-        {view === "deals" && <><div className="page-title"><div><p className="eyebrow">DETAIL REPORT</p><h1>Deal’lar</h1><p>Sotuv holati, sotuvchi attribution’i, stage yoshi va processing yagona jadvalda.</p></div></div><DealsTable records={detailFiltered} /></>}
-        {view === "diagnostics" && <DiagnosticsView sync={sync} records={records} reconciliation={stageReconciliation} settings={settings} />}
-        {view === "settings" && <SettingsView settings={settings} syncing={refreshing || sync.status === "running"} lastSyncAt={sync.lastSyncAt} onSave={saveSettings} onFullSync={saveAndFullSync} onDirtyChange={setSettingsDirty} />}
-        </ViewErrorBoundary>
-        {pageDraft && <section className="panel editor-panel"><SectionHeader title={pageDraft.id ? "Sahifa sozlamasi" : "Yangi sahifa"} />
-          <div className="config-fields">
-            <FormField label="Nomi" required error={pageDraft.name.trim() ? null : "Sahifa nomi kerak"}>
-              <TextInput value={pageDraft.name} error={pageDraft.name.trim() ? null : "required"} onChange={(event) => setPageDraft({ ...pageDraft, name: event.target.value })} /></FormField>
-            <FormField label="Auditoriya" hint="Ixtiyoriy matn">
-              <TextInput value={pageDraft.audience} placeholder="CEO, Marketing, Sales…" onChange={(event) => setPageDraft({ ...pageDraft, audience: event.target.value })} /></FormField>
-            <FormField label="Sana oralig‘i" hint="Sales widgetlar shu oraliqni meros oladi">
-              <SelectInput value={pageDraft.defaultRange} onChange={(event) => setPageDraft({ ...pageDraft, defaultRange: event.target.value })}>
-                {PAGE_RANGES.map((range) => <option key={range.id} value={range.id}>{range.label}</option>)}</SelectInput></FormField>
-          </div>
-          <FormField label="Tavsif" className="wide-field">
-            <Textarea rows={3} value={pageDraft.description} onChange={(event) => setPageDraft({ ...pageDraft, description: event.target.value })} /></FormField>
-          <div className="setup-actions">
-            <button className="button primary" disabled={projectBusy || !pageDraft.name.trim()} onClick={async () => {
-              const result = await pageAction({ action: pageDraft.id ? "updatePage" : "createPage", ...pageDraft });
-              if (result) setPageDraft(null);
-            }}>Saqlash</button>
-            <button className="button secondary" onClick={() => setPageDraft(null)}>Bekor qilish</button>
-          </div></section>}
-        {widgetDraft && <section className="panel editor-panel"><SectionHeader title={`${widgetDraft.id ? "Widget sozlamasi" : "Yangi widget"} · ${WIDGET_SOURCE_LABELS[widgetSource(widgetDraft.widgetType)]}`} />
-          <div className="config-fields">
-            <FormField label="Sarlavha"><TextInput value={widgetDraft.title} onChange={(event) => setWidgetDraft({ ...widgetDraft, title: event.target.value })} /></FormField>
-            {widgetDraft.widgetType === "SALES_KPI" && <>
-              <FormField label="Ko‘rsatkich"><SelectInput value={String(widgetDraft.config.metricId ?? "leads")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, metricId: event.target.value } })}>
-                {DASHBOARD_METRICS.map((metric) => <option key={metric.id} value={metric.id}>{metric.label}</option>)}</SelectInput></FormField>
-              <FormField label="Sana oralig‘i"><SelectInput value={String(widgetDraft.config.range ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, range: event.target.value } })}>
-                <option value="">Sahifa oralig‘i</option>{PAGE_RANGES.map((range) => <option key={range.id} value={range.id}>{range.label}</option>)}</SelectInput></FormField></>}
-            {widgetDraft.widgetType === "MANUAL_KPI" && <>
-              <FormField label="Nomi"><TextInput value={String(widgetDraft.config.label ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, label: event.target.value } })} /></FormField>
-              <FormField label="Qiymat" hint="Qo‘lda kiritiladi — Bitrix’dan olinmaydi"><TextInput value={String(widgetDraft.config.value ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, value: event.target.value } })} /></FormField>
-              <FormField label="Format"><SelectInput value={String(widgetDraft.config.format ?? "text")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, format: event.target.value } })}>
-                {MANUAL_KPI_FORMATS.map((format) => <option key={format} value={format}>{format}</option>)}</SelectInput></FormField>
-              <FormField label="Birlik"><TextInput value={String(widgetDraft.config.unit ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, unit: event.target.value } })} /></FormField>
-              <FormField label="Izoh"><TextInput value={String(widgetDraft.config.note ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, note: event.target.value } })} /></FormField></>}
-            {widgetDraft.widgetType === "SECTION_HEADER" && <FormField label="Kichik sarlavha"><TextInput value={String(widgetDraft.config.subtitle ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, subtitle: event.target.value } })} /></FormField>}
-            {widgetDraft.widgetType === "PROJECTS_LIST" && <>
-              <FormField label="Status"><TextInput list="project-status-options" value={String(widgetDraft.config.status ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, status: event.target.value } })} /></FormField>
-              <FormField label="Deadline"><SelectInput value={String(widgetDraft.config.deadline ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, deadline: event.target.value } })}>
-                {DEADLINE_STATES.map((state) => <option key={state.id} value={state.id}>{state.label}</option>)}</SelectInput></FormField>
-              <FormField label="Limit"><NumberInput min="1" max="50" value={Number(widgetDraft.config.limit ?? 10)} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, limit: Number(event.target.value) } })} /></FormField></>}
-            {widgetDraft.widgetType === "LATEST_UPDATES" && <>
-              <FormField label="Loyiha"><SelectInput value={String(widgetDraft.config.projectId ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, projectId: event.target.value } })}>
-                <option value="">Barcha loyihalar</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</SelectInput></FormField>
-              <FormField label="Limit"><NumberInput min="1" max="50" value={Number(widgetDraft.config.limit ?? 5)} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, limit: Number(event.target.value) } })} /></FormField></>}
-          </div>
-          {widgetDraft.widgetType === "TEXT_NOTE" && <FormField label="Matn" className="wide-field"><Textarea rows={5} value={String(widgetDraft.config.body ?? "")} onChange={(event) => setWidgetDraft({ ...widgetDraft, config: { ...widgetDraft.config, body: event.target.value } })} /></FormField>}
-          <div className="setup-actions">
+        </Drawer>
+
+        <Drawer open={Boolean(templateDraft)} title="Shablondan yaratish" context={templateById(templateDraft ?? "")?.name}
+          onClose={() => setTemplateDraft(null)}
+          footer={<>
+            <button className="button secondary" onClick={() => setTemplateDraft(null)} disabled={projectBusy}>Bekor qilish</button>
             <button className="button primary" disabled={projectBusy} onClick={async () => {
+              const id = await pageAction({ action: "createFromTemplate", templateId: templateDraft });
+              if (typeof id === "string") { setTemplateDraft(null); setOpenPageId(id); setPageEditing(true); setView("pageDetail"); }
+            }}>Shablondan yaratish</button></>}>
+          {templateDraft && (() => { const template = templateById(templateDraft); if (!template) return null; return <div className="drawer-form">
+            <div className="quality-grid">
+              <div><span>Shablon</span><strong>{template.name}</strong></div>
+              <div><span>Auditoriya</span><strong>{template.audience}</strong></div>
+              <div><span>Sana oralig‘i</span><strong>Oxirgi 30 kun</strong></div>
+            </div>
+            <FormField label={`Yaratiladigan widgetlar (${template.widgets.length})`}>
+              <ul className="template-widget-list">{template.widgets.map((widget, index) => <li key={`${widget.widgetType}-${index}`}>
+                <span>{widget.title || WIDGET_REGISTRY.find((entry) => entry.type === widget.widgetType)?.label}</span>
+                <SourceBadge source={widgetSource(widget.widgetType)} /></li>)}</ul></FormField>
+            <p className="form-hint">Shablon faqat boshlang‘ich tuzilma — har bir widget keyin tahrirlanadi.</p>
+          </div>; })()}
+        </Drawer>
+
+        <Drawer open={Boolean(widgetDraft)} title={widgetDraft?.id ? "Widget sozlamasi" : "Yangi widget"}
+          context={widgetDraft ? WIDGET_REGISTRY.find((entry) => entry.type === widgetDraft.widgetType)?.label : undefined}
+          dirty={false} onClose={() => setWidgetDraft(null)}
+          footer={<>
+            <button className="button secondary" onClick={() => setWidgetDraft(null)} disabled={projectBusy}>Bekor qilish</button>
+            <button className="button primary" disabled={projectBusy} onClick={async () => {
+              if (!widgetDraft) return;
               const result = await pageAction(widgetDraft.id
                 ? { action: "updateWidget", id: widgetDraft.id, pageId: widgetDraft.pageId, widgetType: widgetDraft.widgetType, title: widgetDraft.title, config: widgetDraft.config }
                 : { action: "addWidget", pageId: widgetDraft.pageId, widgetType: widgetDraft.widgetType, title: widgetDraft.title, position: 0, config: widgetDraft.config });
               if (result) setWidgetDraft(null);
-            }}>Saqlash</button>
-            <button className="button secondary" onClick={() => setWidgetDraft(null)}>Bekor qilish</button>
-          </div></section>}
+            }}>Saqlash</button></>}>
+          {widgetDraft && (() => {
+            const config = widgetDraft.config;
+            const setConfig = (patch: Record<string, unknown>) => setWidgetDraft({ ...widgetDraft, config: { ...config, ...patch } });
+            const type = widgetDraft.widgetType;
+            return <div className="drawer-form">
+              <FormField label="Sarlavha"><TextInput data-autofocus value={widgetDraft.title}
+                onChange={(event) => setWidgetDraft({ ...widgetDraft, title: event.target.value })} /></FormField>
+
+              {type === "SECTION_HEADER" && <FormField label="Kichik sarlavha" hint="Ixtiyoriy">
+                <TextInput value={String(config.subtitle ?? "")} onChange={(event) => setConfig({ subtitle: event.target.value })} /></FormField>}
+
+              {type === "SALES_KPI" && <>
+                <FormField label="Ko‘rsatkich" required hint="Bitrix’dagi kanonik ko‘rsatkichdan o‘qiladi">
+                  <SelectInput value={String(config.metricId ?? "leads")} onChange={(event) => setConfig({ metricId: event.target.value })}>
+                    {DASHBOARD_METRICS.map((metric) => <option key={metric.id} value={metric.id}>{metric.label}</option>)}</SelectInput></FormField>
+                <FormField label="Sana oralig‘i">
+                  <SelectInput value={String(config.range ?? "")} onChange={(event) => setConfig({ range: event.target.value })}>
+                    <option value="">Sahifa oralig‘idan foydalanish</option>
+                    {PAGE_RANGES.map((range) => <option key={range.id} value={range.id}>{range.label}</option>)}</SelectInput></FormField>
+                {config.range === "custom" && <div className="range-pair">
+                  <FormField label="Boshlanish" required error={config.from ? null : "Sana kerak"}>
+                    <DateInput value={String(config.from ?? "")} onChange={(event) => setConfig({ from: event.target.value })} /></FormField>
+                  <FormField label="Tugash" required error={config.to ? null : "Sana kerak"}>
+                    <DateInput value={String(config.to ?? "")} onChange={(event) => setConfig({ to: event.target.value })} /></FormField>
+                </div>}
+              </>}
+
+              {(type === "PROJECT_SUMMARY" || type === "PROJECT_STATUS_BREAKDOWN") &&
+                <p className="form-hint">Bu blokda sozlanadigan parametr yo‘q — u Loyihalar bo‘limidagi joriy ma’lumotni ko‘rsatadi. Faqat sarlavhani o‘zgartirishingiz mumkin.</p>}
+
+              {type === "PROJECTS_LIST" && <>
+                <FormField label="Status" hint="Bo‘sh — barcha statuslar">
+                  <StatusCombobox value={String(config.status ?? "")} options={projectStatusSuggestions}
+                    onChange={(value) => setConfig({ status: value })} /></FormField>
+                <FormField label="Muddat holati">
+                  <SelectInput value={String(config.deadline ?? "")} onChange={(event) => setConfig({ deadline: event.target.value })}>
+                    {DEADLINE_STATES.map((state) => <option key={state.id} value={state.id}>{state.label}</option>)}</SelectInput></FormField>
+                <CheckCard checked={config.includeArchived === true} title="Arxivlanganlarni ham ko‘rsatish"
+                  onChange={(checked) => setConfig({ includeArchived: checked })} />
+                <FormField label="Limit"><NumberInput min={1} max={50} value={Number(config.limit ?? 10)}
+                  onChange={(event) => setConfig({ limit: Number(event.target.value) })} /></FormField>
+              </>}
+
+              {type === "LATEST_UPDATES" && <>
+                <FormField label="Loyiha" hint="Bo‘sh — barcha loyihalar">
+                  <SelectInput value={String(config.projectId ?? "")} onChange={(event) => setConfig({ projectId: event.target.value })}>
+                    <option value="">Barcha loyihalar</option>
+                    {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</SelectInput></FormField>
+                <FormField label="Status" hint="Bo‘sh — barcha statuslar">
+                  <StatusCombobox value={String(config.status ?? "")} options={projectStatusSuggestions}
+                    onChange={(value) => setConfig({ status: value })} /></FormField>
+                <FormField label="Limit"><NumberInput min={1} max={50} value={Number(config.limit ?? 5)}
+                  onChange={(event) => setConfig({ limit: Number(event.target.value) })} /></FormField>
+              </>}
+
+              {type === "MANUAL_KPI" && <>
+                <FormField label="Nomi" required><TextInput value={String(config.label ?? "")}
+                  onChange={(event) => setConfig({ label: event.target.value })} /></FormField>
+                <FormField label="Qiymat" hint="Qo‘lda kiritiladi — Bitrix’dan olinmaydi">
+                  <TextInput value={String(config.value ?? "")} onChange={(event) => setConfig({ value: event.target.value })} /></FormField>
+                <FormField label="Format">
+                  <SelectInput value={String(config.format ?? "text")} onChange={(event) => setConfig({ format: event.target.value })}>
+                    {MANUAL_KPI_FORMATS.map((format) => <option key={format} value={format}>{MANUAL_FORMAT_LABELS[format]}</option>)}</SelectInput></FormField>
+                <FormField label="Birlik" hint="Masalan: UZS, %, ta"><TextInput value={String(config.unit ?? "")}
+                  onChange={(event) => setConfig({ unit: event.target.value })} /></FormField>
+                <FormField label="Izoh"><TextInput value={String(config.note ?? "")}
+                  onChange={(event) => setConfig({ note: event.target.value })} /></FormField>
+              </>}
+
+              {type === "TEXT_NOTE" && <FormField label="Matn / izoh">
+                <Textarea rows={10} value={String(config.body ?? "")} onChange={(event) => setConfig({ body: event.target.value })} /></FormField>}
+            </div>;
+          })()}
+        </Drawer>
+
         {projectError && <div className="notice error page-notice"><XCircle size={18} />{projectError}<button onClick={() => setProjectError(null)}><X size={14} /></button></div>}
         <Drawer open={Boolean(projectDraft)} title={projectDraft?.id ? "Loyihani tahrirlash" : "Yangi loyiha"}
           context={projectDraft?.id ? projectDraft.name : "Marketing, Product yoki boshqa yo‘nalishdagi ish"}

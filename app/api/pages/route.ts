@@ -81,7 +81,7 @@ export async function POST(request: Request) {
     if (action === "createFromTemplate") {
       const template = templateById(String(payload.templateId ?? ""));
       if (!template) return Response.json({ error: "Shablon topilmadi" }, { status: 400 });
-      const newPageId = await createPage({ name: template.name, description: "", audience: template.audience, defaultRange: "30" });
+      const newPageId = await createPage({ name: template.name, description: "", audience: template.audience, defaultRange: "30", defaultFrom: null, defaultTo: null });
       for (const widget of template.widgets) {
         const parsed = validateWidgetConfig(widget.widgetType, widget.config);
         if (!parsed.ok) continue;

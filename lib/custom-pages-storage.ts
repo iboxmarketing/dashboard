@@ -9,7 +9,7 @@ import { orderWidgets, type CustomPage, type PageWidget, type WidgetType } from 
 export async function ensurePageSchema() {
   const db = getD1();
   await db.batch([
-    db.prepare("CREATE TABLE IF NOT EXISTS custom_pages (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT, audience TEXT, default_range TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, archived_at TEXT)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS custom_pages (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT, audience TEXT, default_range TEXT NOT NULL, default_from TEXT, default_to TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, archived_at TEXT)"),
     db.prepare("CREATE TABLE IF NOT EXISTS custom_page_widgets (id TEXT PRIMARY KEY, page_id TEXT NOT NULL, widget_type TEXT NOT NULL, title TEXT, position INTEGER NOT NULL, config_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"),
     db.prepare("CREATE INDEX IF NOT EXISTS custom_pages_updated_idx ON custom_pages(updated_at)"),
     db.prepare("CREATE INDEX IF NOT EXISTS custom_page_widgets_page_idx ON custom_page_widgets(page_id)"),
@@ -20,6 +20,8 @@ export async function ensurePageSchema() {
 const pageRow = (row: Record<string, string | null>): CustomPage => ({
   id: String(row.id), name: String(row.name), description: String(row.description ?? ""),
   audience: String(row.audience ?? ""), defaultRange: String(row.default_range ?? "30"),
+  defaultFrom: row.default_from ? String(row.default_from) : null,
+  defaultTo: row.default_to ? String(row.default_to) : null,
   createdAt: String(row.created_at), updatedAt: String(row.updated_at),
   archivedAt: row.archived_at ? String(row.archived_at) : null,
 });
@@ -46,19 +48,21 @@ export async function listPageWidgets(): Promise<PageWidget[]> {
   return orderWidgets((result.results ?? []).map(widgetRow));
 }
 
-export async function createPage(input: { name: string; description: string; audience: string; defaultRange: string }) {
+export type PageInput = { name: string; description: string; audience: string; defaultRange: string; defaultFrom: string | null; defaultTo: string | null };
+
+export async function createPage(input: PageInput) {
   await ensurePageSchema();
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
-  await getD1().prepare("INSERT INTO custom_pages(id, name, description, audience, default_range, created_at, updated_at, archived_at) VALUES(?, ?, ?, ?, ?, ?, ?, NULL)")
-    .bind(id, input.name, input.description, input.audience, input.defaultRange, now, now).run();
+  await getD1().prepare("INSERT INTO custom_pages(id, name, description, audience, default_range, default_from, default_to, created_at, updated_at, archived_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)")
+    .bind(id, input.name, input.description, input.audience, input.defaultRange, input.defaultFrom, input.defaultTo, now, now).run();
   return id;
 }
 
-export async function updatePage(id: string, input: { name: string; description: string; audience: string; defaultRange: string }) {
+export async function updatePage(id: string, input: PageInput) {
   await ensurePageSchema();
-  await getD1().prepare("UPDATE custom_pages SET name = ?, description = ?, audience = ?, default_range = ?, updated_at = ? WHERE id = ?")
-    .bind(input.name, input.description, input.audience, input.defaultRange, new Date().toISOString(), id).run();
+  await getD1().prepare("UPDATE custom_pages SET name = ?, description = ?, audience = ?, default_range = ?, default_from = ?, default_to = ?, updated_at = ? WHERE id = ?")
+    .bind(input.name, input.description, input.audience, input.defaultRange, input.defaultFrom, input.defaultTo, new Date().toISOString(), id).run();
 }
 
 export async function setPageArchived(id: string, archived: boolean) {

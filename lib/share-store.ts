@@ -148,6 +148,8 @@ export async function resolveShareByToken(db: ShareDb, rawToken: string, now: Da
     page: {
       id: String(page.id), name: String(page.name), description: String(page.description ?? ""),
       audience: String(page.audience ?? ""), defaultRange: String(page.default_range ?? "30"),
+      defaultFrom: page.default_from ? String(page.default_from) : null,
+      defaultTo: page.default_to ? String(page.default_to) : null,
       createdAt: String(page.created_at), updatedAt: String(page.updated_at), archivedAt: null,
     },
     widgets: orderWidgets((widgets.results ?? []).map((widget) => {
