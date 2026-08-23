@@ -146,7 +146,9 @@ test("the error boundary message is generic, not Settings-specific", () => {
 });
 
 test("editor drawers use the form system rather than raw controls", () => {
-  const drawers = client.slice(client.indexOf("{pageDraft && <section"), client.lastIndexOf("</section>}"));
+  // Sprint 24 moved the project/update editors into <Drawer>, which renders
+  // after the last page/widget </section>}, so the slice runs to the footer.
+  const drawers = client.slice(client.indexOf("{pageDraft && <section"), client.indexOf("<footer><span>Bitrix24"));
   assert.doesNotMatch(drawers, /<label>[^<]*<input/, "no bare label+input pairs remain");
   assert.doesNotMatch(drawers, /<label>[^<]*<select/, "no bare label+select pairs remain");
   assert.doesNotMatch(drawers, /<label className="wide-field">[^<]*<textarea/, "no bare textarea pairs remain");

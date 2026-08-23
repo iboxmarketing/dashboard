@@ -85,13 +85,38 @@ export async function createProjectUpdate(input: { projectId: string; title: str
   return id;
 }
 
+/**
+ * Editing an update is project activity, so the parent's `updated_at` moves
+ * too — otherwise a project edited daily through its updates would sink down a
+ * list ordered by "last activity" and read as stale.
+ *
+ * The parent id is resolved from the row rather than trusted from the caller,
+ * and both statements go in one batch so ordering and activity cannot diverge.
+ */
 export async function updateProjectUpdate(id: string, input: { title: string; description: string; status: string; deadline: string | null }) {
   await ensureProjectSchema();
-  await getD1().prepare("UPDATE project_updates SET title = ?, description = ?, status = ?, deadline = ?, updated_at = ? WHERE id = ?")
-    .bind(input.title, input.description, input.status, input.deadline, new Date().toISOString(), id).run();
+  const db = getD1();
+  const now = new Date().toISOString();
+  const parent = await db.prepare("SELECT project_id FROM project_updates WHERE id = ?").bind(id).first<{ project_id: string }>();
+  const statements = [
+    db.prepare("UPDATE project_updates SET title = ?, description = ?, status = ?, deadline = ?, updated_at = ? WHERE id = ?")
+      .bind(input.title, input.description, input.status, input.deadline, now, id),
+  ];
+  if (parent?.project_id) {
+    statements.push(db.prepare("UPDATE projects SET updated_at = ? WHERE id = ?").bind(now, parent.project_id));
+  }
+  await db.batch(statements);
 }
 
+/** Deleting an update is activity too — the parent moves with it. */
 export async function deleteProjectUpdate(id: string) {
   await ensureProjectSchema();
-  await getD1().prepare("DELETE FROM project_updates WHERE id = ?").bind(id).run();
+  const db = getD1();
+  const now = new Date().toISOString();
+  const parent = await db.prepare("SELECT project_id FROM project_updates WHERE id = ?").bind(id).first<{ project_id: string }>();
+  const statements = [db.prepare("DELETE FROM project_updates WHERE id = ?").bind(id)];
+  if (parent?.project_id) {
+    statements.push(db.prepare("UPDATE projects SET updated_at = ? WHERE id = ?").bind(now, parent.project_id));
+  }
+  await db.batch(statements);
 }

@@ -95,9 +95,38 @@ export function fullSyncConfirmation(funnelName: string, historyDays: number): s
     + "Davom etilsinmi?";
 }
 
+/**
+ * Selection arrays whose order carries no meaning. Toggling a checkbox off and
+ * on again re-appends the id, so a positional comparison reported a change
+ * where the selection was semantically identical and left the unsaved-changes
+ * bar stuck on screen.
+ *
+ * `holidays` and the pipeline *name* arrays are excluded deliberately: names
+ * are positionally paired with their id arrays, and reordering them would
+ * mismatch a funnel with its post-sale partner.
+ */
+const UNORDERED_SELECTION_KEYS = new Set<keyof DashboardSettings>([
+  "selectedPipelineIds", "postSalePipelineIds",
+  "qualifiedStageIds", "lowQualityStageIds", "paymentStageIds", "closedLostStageIds",
+  "dashboardMetricIds", "routingReasonPatterns",
+]);
+
 /** True when the user has edits that are not yet saved. */
 export function isSettingsDirty(saved: DashboardSettings, draft: DashboardSettings): boolean {
-  return JSON.stringify(sortDeep(saved)) !== JSON.stringify(sortDeep(draft));
+  return JSON.stringify(canonical(saved)) !== JSON.stringify(canonical(draft));
+}
+
+/** Key order never counts as a change; nor does order inside an unordered set. */
+function canonical(settings: DashboardSettings): unknown {
+  const entries = Object.entries(settings as Record<string, unknown>)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => {
+      if (UNORDERED_SELECTION_KEYS.has(key as keyof DashboardSettings) && Array.isArray(value)) {
+        return [key, [...(value as unknown[])].map(String).sort()];
+      }
+      return [key, sortDeep(value)];
+    });
+  return Object.fromEntries(entries);
 }
 
 /** Key order must not register as a change. */

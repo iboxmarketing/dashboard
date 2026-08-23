@@ -62,7 +62,23 @@ export const DEADLINE_STATES = [
 export type DeadlineState = "OVERDUE" | "SOON" | "FUTURE" | "NONE";
 
 const SOON_DAYS = 7;
-const dayKey = (date: Date) => date.toISOString().slice(0, 10);
+
+/**
+ * Calendar date in the timezone the business actually works in.
+ *
+ * `toISOString().slice(0,10)` is UTC, so between 19:00 and 24:00 UTC — which is
+ * 00:00-05:00 the *next* day in Tashkent — a deadline was judged against
+ * yesterday's date and flipped overdue a day late. Sales business-time keeps
+ * its own timezone handling; this is the projects module only.
+ */
+export const PROJECT_TIMEZONE = "Asia/Tashkent";
+
+const dayFormatter = new Intl.DateTimeFormat("en-CA", {
+  timeZone: PROJECT_TIMEZONE, year: "numeric", month: "2-digit", day: "2-digit",
+});
+
+/** YYYY-MM-DD as seen in Tashkent, not in UTC. */
+export const dayKey = (date: Date) => dayFormatter.format(date);
 
 /**
  * Deadline state relative to today. Completion is never inferred from status
@@ -128,9 +144,23 @@ export function filterProjects(projects: Project[], filters: ProjectFilters = {}
   });
 }
 
-/** Newest first, by creation time, with the id as a deterministic tie-break. */
+/**
+ * Latest activity on an update: when it was last edited, else when it was
+ * created. Management wants "what moved recently", so an edited update
+ * resurfaces rather than staying pinned to its creation date.
+ */
+export function activityAt(update: Pick<ProjectUpdate, "createdAt" | "updatedAt">) {
+  return update.updatedAt && update.updatedAt > update.createdAt ? update.updatedAt : update.createdAt;
+}
+
+/** True once an update has been edited after creation. */
+export function wasEdited(update: Pick<ProjectUpdate, "createdAt" | "updatedAt">) {
+  return Boolean(update.updatedAt) && update.updatedAt > update.createdAt;
+}
+
+/** Newest activity first, with the id as a deterministic tie-break. */
 export function sortUpdates(updates: ProjectUpdate[]) {
-  return [...updates].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+  return [...updates].sort((a, b) => activityAt(b).localeCompare(activityAt(a)) || b.id.localeCompare(a.id));
 }
 
 export function projectUpdates(updates: ProjectUpdate[], projectId: string) {
@@ -144,19 +174,23 @@ export function latestUpdate(updates: ProjectUpdate[], projectId: string): Proje
 /**
  * Status-independent summary: with free-text statuses, counting "Jarayonda" or
  * "Blocked" would break the moment a team invents its own vocabulary.
+ *
+ * The two 7-day figures are rolling windows from `now`, not calendar weeks —
+ * the field names and the UI labels say so, because "this week" would be a
+ * different number on a Monday than on a Friday.
  */
 export function summarizeProjects(projects: Project[], now: Date = new Date()) {
   const active = projects.filter((project) => !project.archivedAt);
-  const weekAgo = new Date(now.getTime() - 7 * 86_400_000).toISOString();
-  const weekAhead = dayKey(new Date(now.getTime() + 7 * 86_400_000));
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 86_400_000).toISOString();
+  const sevenDaysAhead = dayKey(new Date(now.getTime() + 7 * 86_400_000));
   const today = dayKey(now);
   return {
     total: active.length,
     overdue: active.filter((project) => isOverdue(project, now)).length,
-    updatedThisWeek: active.filter((project) => project.updatedAt >= weekAgo).length,
-    deadlineThisWeek: active.filter((project) => {
+    updatedLast7Days: active.filter((project) => project.updatedAt >= sevenDaysAgo).length,
+    deadlineNext7Days: active.filter((project) => {
       const deadline = normalizeDeadline(project.deadline);
-      return Boolean(deadline && deadline >= today && deadline <= weekAhead);
+      return Boolean(deadline && deadline >= today && deadline <= sevenDaysAhead);
     }).length,
     archived: projects.length - active.length,
   };

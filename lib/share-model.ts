@@ -119,8 +119,8 @@ function renderWidget(widget: PageWidget, input: ShareModelInput, now: Date): Sh
       items: [
         { label: "Jami loyihalar", value: String(summary.total) },
         { label: "Deadline o‘tgan", value: String(summary.overdue) },
-        { label: "Shu hafta yangilangan", value: String(summary.updatedThisWeek) },
-        { label: "Shu hafta deadline", value: String(summary.deadlineThisWeek) },
+        { label: "Oxirgi 7 kunda yangilangan", value: String(summary.updatedLast7Days) },
+        { label: "Keyingi 7 kun deadline", value: String(summary.deadlineNext7Days) },
       ],
     };
   }

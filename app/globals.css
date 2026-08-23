@@ -592,3 +592,75 @@ button:focus-visible, a:focus-visible, summary:focus-visible,
 .save-bar .save-bar-actions { display: flex; gap: 8px; }
 .full-sync-blockers { margin: 8px 0 0; padding-left: 18px; font-size: 12px; color: var(--text-muted, #5b6880); }
 .full-sync-blockers li { margin: 2px 0; }
+
+/* ============================================================
+   Projects management UX (Sprint 24)
+   ============================================================ */
+
+/* Right-side drawer. Editors used to render below the page, pushing the list
+   out of view; the drawer keeps context visible while editing. */
+.drawer-root { position: fixed; inset: 0; z-index: 60; display: flex; justify-content: flex-end; }
+.drawer-backdrop { position: absolute; inset: 0; background: rgba(15, 23, 41, .42); }
+.drawer-panel {
+  position: relative; display: flex; flex-direction: column;
+  width: min(460px, 100%); max-width: 100%; height: 100%;
+  background: var(--surface, #fff); border-left: 1px solid var(--line, #dfe4ee);
+  box-shadow: -12px 0 34px rgba(15, 23, 41, .18);
+  animation: drawer-in .16s ease-out;
+}
+@keyframes drawer-in { from { transform: translateX(14px); opacity: .6; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .drawer-panel { animation: none; } }
+.drawer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 20px 14px; border-bottom: 1px solid var(--line, #dfe4ee); }
+.drawer-head h2 { margin: 0; font-size: 17px; letter-spacing: -.01em; }
+.drawer-head p { margin: 3px 0 0; font-size: 12.5px; color: var(--text-muted, #5b6880); }
+.drawer-close { width: 32px; height: 32px; border: 1px solid var(--line, #dfe4ee); border-radius: 9px; background: var(--surface, #fff); font-size: 19px; line-height: 1; color: var(--text-muted, #5b6880); cursor: pointer; }
+.drawer-close:hover { border-color: var(--line-strong, #c3ccdb); }
+.drawer-body { flex: 1 1 auto; overflow-y: auto; padding: 18px 20px; }
+.drawer-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--line, #dfe4ee); background: var(--surface, #fff); }
+.drawer-form { display: grid; gap: 16px; }
+@media (max-width: 560px) {
+  .drawer-panel { width: 100%; border-left: 0; }
+  .drawer-foot { position: sticky; bottom: 0; }
+}
+
+/* Free-text status combobox. Suggestions only — never a validation rule. */
+.combobox { position: relative; }
+.combobox-list {
+  position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; right: 0;
+  max-height: 220px; overflow-y: auto; margin: 0; padding: 4px; list-style: none;
+  border: 1px solid var(--line, #dfe4ee); border-radius: 10px; background: var(--surface, #fff);
+  box-shadow: 0 10px 26px rgba(15, 23, 41, .14);
+}
+.combobox-list li { padding: 8px 10px; border-radius: 7px; font-size: 13px; cursor: pointer; }
+.combobox-list li.active, .combobox-list li:hover { background: rgba(36, 107, 253, .1); color: #174dbb; }
+
+/* Project cards */
+.project-card {
+  display: grid; gap: 7px; width: 100%; text-align: left;
+  padding: 14px 16px; border: 1px solid var(--line, #dfe4ee); border-radius: 12px;
+  background: var(--surface, #fff); cursor: pointer;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.project-card:hover { border-color: var(--line-strong, #c3ccdb); box-shadow: 0 4px 14px rgba(15, 23, 41, .07); }
+.project-card.archived { background: var(--surface-muted, #f6f7fa); }
+.project-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.project-card-head strong { font-size: 14.5px; min-width: 0; overflow-wrap: break-word; }
+.project-card-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: 0 0 auto; }
+.project-card-desc {
+  font-size: 12.5px; color: var(--text-muted, #5b6880); line-height: 1.5;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.project-card-foot { display: flex; flex-wrap: wrap; gap: 14px; font-size: 11.5px; color: var(--text-muted, #5b6880); }
+.project-card-foot strong { font-weight: 600; color: var(--text, #0f1729); }
+
+.deadline-badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid transparent; }
+.deadline-badge.danger { background: #fdecec; color: #b42318; border-color: #f6c6c2; }
+.deadline-badge.warn { background: #fff5e6; color: #a1560c; border-color: #f5d9ac; }
+/* Archived is a state, not a failure — neutral, never red. */
+.archive-tag { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--surface-muted, #eef1f6); color: var(--text-muted, #5b6880); border: 1px solid var(--line, #dfe4ee); }
+
+/* Empty states: "nothing yet" and "nothing matched" are different messages. */
+.empty-state { display: grid; justify-items: center; gap: 8px; padding: 34px 20px; text-align: center; }
+.empty-state strong { font-size: 15px; }
+.empty-state p { margin: 0; max-width: 46ch; font-size: 13px; color: var(--text-muted, #5b6880); }
+.empty-state .button { margin-top: 4px; }

@@ -13,8 +13,8 @@ import { ANALYTICS_VERSION } from "@/lib/analytics";
 import { canonicalizeFieldOptions, normalizeCrmFields } from "@/lib/crm-fields";
 import { normalizeSettings } from "@/lib/settings-safety";
 import {
-  DEADLINE_STATES, filterProjects, isOverdue, latestUpdate, projectUpdates,
-  statusBreakdown, statusOptions, summarizeProjects, type Project, type ProjectUpdate,
+  DEADLINE_STATES, deadlineState, filterProjects, isOverdue, latestUpdate, projectUpdates,
+  statusBreakdown, statusOptions, summarizeProjects, wasEdited, type Project, type ProjectUpdate,
 } from "@/lib/projects";
 import {
   MANUAL_KPI_FORMATS, PAGE_RANGES, PAGE_TEMPLATES, WIDGET_REGISTRY, WIDGET_SOURCE_LABELS,
@@ -39,6 +39,8 @@ import {
 import {
   CheckCard, DateInput, FormField, NumberInput, SelectInput, TextInput, Textarea, TimeInput,
 } from "./ui/form";
+import { Drawer } from "./ui/drawer";
+import { StatusCombobox } from "./ui/combobox";
 
 /** Sales analytics views. Only these carry the global cohort filter bar. */
 const SALES_VIEWS = ["dashboard", "managers", "managerDetail", "leadFlow", "quality", "stages", "deals"] as const;
@@ -929,12 +931,32 @@ function StatusPill({ status, overdue }: { status: string; overdue?: boolean }) 
 }
 
 /** Free-typing input with suggestions from statuses already in use. */
-function StatusInput({ value, options, onChange }: { value: string; options: string[]; onChange: (value: string) => void }) {
-  return <label>Status
-    <TextInput list="project-status-options" value={value} onChange={(event) => onChange(event.target.value)} placeholder="Masalan: Jarayonda" />
-    <datalist id="project-status-options">{options.map((option) => <option key={option} value={option} />)}</datalist>
-    <small>Ixtiyoriy matn — bo‘lim o‘z workflowini ishlatishi mumkin</small>
-  </label>;
+/** Relative activity time, e.g. "2 soat oldin". */
+function relativeTime(iso: string | null) {
+  if (!iso) return "—";
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return "—";
+  const minutes = Math.round((Date.now() - then) / 60_000);
+  if (minutes < 1) return "hozir";
+  if (minutes < 60) return `${minutes} daqiqa oldin`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} soat oldin`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days} kun oldin`;
+  return fmtDate(iso, false);
+}
+
+const DEADLINE_BADGE: Record<string, { label: string; tone: string } | null> = {
+  OVERDUE: { label: "Muddati o‘tgan", tone: "danger" },
+  SOON: { label: "Yaqinlashmoqda", tone: "warn" },
+  FUTURE: null,
+  NONE: null,
+};
+
+function DeadlineBadge({ deadline, archived }: { deadline: string | null; archived?: boolean }) {
+  if (archived) return null;
+  const badge = DEADLINE_BADGE[deadlineState(deadline)];
+  return badge ? <span className={`deadline-badge ${badge.tone}`}>{badge.label}</span> : null;
 }
 
 function ProjectsView({ projects, updates, filters, setFilters, onOpen, onNew, busy }: {
@@ -947,32 +969,50 @@ function ProjectsView({ projects, updates, filters, setFilters, onOpen, onNew, b
   const visible = filterProjects(projects, filters);
   const statuses = statusOptions(projects, updates);
   const breakdown = statusBreakdown(projects);
+  // An empty list means two different things; the copy has to tell them apart.
+  const filtersActive = Boolean(filters.search || filters.status || filters.deadline || filters.includeArchived);
+  const noProjectsAtAll = projects.length === 0;
+
   return <><div className="page-title"><div><p className="eyebrow">BOSHQARUV</p><h1>Projects</h1><p>Marketing, Sales, Product va Analytics bo‘yicha ishlar va ularning oxirgi holati.</p></div>
     <button className="button primary" onClick={onNew} disabled={busy}><ClipboardList size={17} />Yangi loyiha</button></div>
     <section className="kpi-grid">
       <KpiCard label="Jami loyihalar" value={String(summary.total)} detail="Arxivlanmagan" icon={ClipboardList} />
-      <KpiCard label="Deadline o‘tgan" value={String(summary.overdue)} detail="Muddati o‘tib ketgan" icon={AlertTriangle} tone="red" />
-      <KpiCard label="Shu hafta yangilangan" value={String(summary.updatedThisWeek)} detail="Oxirgi 7 kun" icon={RefreshCw} tone="green" />
-      <KpiCard label="Shu hafta deadline" value={String(summary.deadlineThisWeek)} detail="Keyingi 7 kun ichida" icon={CalendarDays} tone="cyan" />
+      <KpiCard label="Muddati o‘tgan" value={String(summary.overdue)} detail="Muddati o‘tib ketgan" icon={AlertTriangle} tone="red" />
+      <KpiCard label="Oxirgi 7 kunda yangilangan" value={String(summary.updatedLast7Days)} detail="Bugundan orqaga 7 kun" icon={RefreshCw} tone="green" />
+      <KpiCard label="Keyingi 7 kun deadline" value={String(summary.deadlineNext7Days)} detail="Bugundan oldinga 7 kun" icon={CalendarDays} tone="cyan" />
     </section>
     <div className="filters-shell"><div className="filters-main">
       <div className="search-box"><Search size={16} /><input value={filters.search} onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} placeholder="Loyiha nomi yoki status…" /></div>
       <Select label="Status" value={filters.status} onChange={(value) => setFilters((current) => ({ ...current, status: value }))}>
-        <option value="">Barcha statuslar</option>{statuses.map((status) => <option key={status}>{status}</option>)}
+        <option value="">{statuses.length ? "Barcha statuslar" : "Status yo‘q"}</option>{statuses.map((status) => <option key={status}>{status}</option>)}
       </Select>
-      <Select label="Deadline" value={filters.deadline} onChange={(value) => setFilters((current) => ({ ...current, deadline: value }))}>
+      <Select label="Muddat" value={filters.deadline} onChange={(value) => setFilters((current) => ({ ...current, deadline: value }))}>
         {DEADLINE_STATES.map((state) => <option key={state.id} value={state.id}>{state.label}</option>)}
       </Select>
-      <label className="check-label"><input type="checkbox" checked={filters.includeArchived} onChange={(event) => setFilters((current) => ({ ...current, includeArchived: event.target.checked }))} /><span><Check size={13} /></span><strong>Arxiv bilan</strong></label>
+      <CheckCard checked={filters.includeArchived} title="Arxiv bilan"
+        onChange={(checked) => setFilters((current) => ({ ...current, includeArchived: checked }))} />
+      {filtersActive && <button className="button small secondary" onClick={() => setFilters({ status: "", deadline: "", search: "", includeArchived: false })}>Filtrni tozalash</button>}
     </div></div>
     {breakdown.length > 0 && <section className="panel"><SectionHeader title="Statuslar" subtitle="Ma’lumotdagi haqiqiy statuslar bo‘yicha" />
       <BarList rows={breakdown.map((row) => ({ label: row.status, value: row.count, total: summary.total, color: "#246bfd" }))} /></section>}
     <section className="panel"><SectionHeader title="Loyihalar" subtitle={`${visible.length} ta ko‘rsatilmoqda`} />
-      <div className="project-list">{visible.map((project) => { const last = latestUpdate(updates, project.id); return <button key={project.id} className="project-card" onClick={() => onOpen(project)}>
-        <div className="project-card-head"><strong>{project.name}</strong><StatusPill status={project.status} overdue={isOverdue(project)} /></div>
-        <p>{last ? last.title : "Hali update yo‘q"}</p>
-        <span className="project-card-foot">{project.deadline ? `Deadline: ${project.deadline}` : "Deadline yo‘q"} · Yangilangan: {fmtDate(project.updatedAt)}{project.archivedAt ? " · arxivlangan" : ""}</span>
-      </button>; })}{!visible.length && <div className="empty-table">Loyiha topilmadi.</div>}</div>
+      <div className="project-list">{visible.map((project) => { const last = latestUpdate(updates, project.id); return <button key={project.id} type="button" className={`project-card${project.archivedAt ? " archived" : ""}`} onClick={() => onOpen(project)}>
+        <span className="project-card-head"><strong>{project.name}</strong>
+          <span className="project-card-tags">{project.archivedAt && <span className="archive-tag">Arxivlangan</span>}<DeadlineBadge deadline={project.deadline} archived={Boolean(project.archivedAt)} /><StatusPill status={project.status} /></span></span>
+        <span className="project-card-desc">{project.description || (last ? last.title : "Tavsif kiritilmagan")}</span>
+        <span className="project-card-foot">
+          <span>Muddat: <strong>{project.deadline ?? "yo‘q"}</strong></span>
+          <span>Oxirgi faollik: <strong>{relativeTime(project.updatedAt)}</strong></span>
+        </span>
+      </button>; })}
+      {!visible.length && (noProjectsAtAll
+        ? <div className="empty-state"><strong>Loyihalar hali yo‘q</strong>
+            <p>Marketing, Product yoki boshqa yo‘nalishdagi ishni yaratishingiz mumkin.</p>
+            <button className="button primary" onClick={onNew} disabled={busy}><ClipboardList size={16} />Yangi loyiha</button></div>
+        : <div className="empty-state"><strong>Filtrga mos loyiha topilmadi</strong>
+            <p>Qidiruv yoki filtrlarni o‘zgartirib ko‘ring.</p>
+            <button className="button secondary" onClick={() => setFilters({ status: "", deadline: "", search: "", includeArchived: false })}>Filtrni tozalash</button></div>)}
+      </div>
     </section></>;
 }
 
@@ -983,20 +1023,38 @@ function ProjectDetailView({ project, updates, onBack, onEditProject, onArchive,
 }) {
   const timeline = projectUpdates(updates, project.id);
   return <><div className="page-title"><div><button className="back-button" onClick={onBack}><ArrowLeft size={16} />Loyihalarga qaytish</button>
-    <p className="eyebrow">LOYIHA</p><h1>{project.name}</h1><p>{project.description || "Tavsif kiritilmagan"}</p>
-    <div className="project-meta"><StatusPill status={project.status} overdue={isOverdue(project)} />
-      <small>{project.deadline ? `Deadline: ${project.deadline}` : "Deadline yo‘q"}</small>{project.archivedAt && <small>· arxivlangan</small>}</div></div>
-    <div className="settings-actions"><button className="button secondary" onClick={onEditProject} disabled={busy}><Settings size={16} />Tahrirlash</button>
-      <button className="button secondary" onClick={onArchive} disabled={busy}>{project.archivedAt ? "Arxivdan chiqarish" : "Arxivlash"}</button>
-      <button className="button primary" onClick={onNewUpdate} disabled={busy}><ClipboardList size={16} />Yangi update</button></div></div>
-    <section className="panel"><SectionHeader title="Update tarixi" subtitle="Eng yangisi yuqorida" />
+    <p className="eyebrow">LOYIHA</p><h1>{project.name}</h1>
+    <div className="project-meta"><StatusPill status={project.status} />
+      <DeadlineBadge deadline={project.deadline} archived={Boolean(project.archivedAt)} />
+      {project.archivedAt && <span className="archive-tag">Arxivlangan</span>}</div></div>
+    <div className="settings-actions">
+      <button className="button primary" onClick={onNewUpdate} disabled={busy}><ClipboardList size={16} />Update qo‘shish</button>
+      <button className="button secondary" onClick={onEditProject} disabled={busy}><Settings size={16} />Tahrirlash</button>
+      <button className="button secondary" onClick={onArchive} disabled={busy}>{project.archivedAt ? "Arxivdan chiqarish" : "Arxivlash"}</button></div></div>
+
+    <section className="panel"><SectionHeader title="Loyiha haqida" />
+      <p className="note-body">{project.description || "Tavsif kiritilmagan"}</p>
+      <div className="quality-grid">
+        <div><span>Status</span><strong>{project.status}</strong></div>
+        <div><span>Muddat</span><strong>{project.deadline ?? "yo‘q"}</strong></div>
+        <div><span>Yaratilgan</span><strong>{fmtDate(project.createdAt, false)}</strong></div>
+        <div><span>Oxirgi faollik</span><strong>{relativeTime(project.updatedAt)}</strong></div>
+      </div>
+    </section>
+
+    <section className="panel"><SectionHeader title="Update tarixi" subtitle="Eng oxirgi faollik yuqorida" />
       <div className="update-timeline">{timeline.map((update) => <article key={update.id} className="update-item">
-        <div className="update-head"><strong>{update.title}</strong><StatusPill status={update.status} overdue={isOverdue({ deadline: update.deadline })} /></div>
+        <div className="update-head"><strong>{update.title}</strong>
+          <span className="project-card-tags"><DeadlineBadge deadline={update.deadline} /><StatusPill status={update.status} /></span></div>
         {update.description && <p>{update.description}</p>}
-        <div className="update-foot"><small>{fmtDate(update.createdAt)}{update.deadline ? ` · deadline ${update.deadline}` : ""}</small>
+        <div className="update-foot">
+          <small>{wasEdited(update) ? `Yangilangan: ${fmtDate(update.updatedAt)}` : `Yaratilgan: ${fmtDate(update.createdAt)}`}{update.deadline ? ` · muddat ${update.deadline}` : ""}</small>
           <span><button className="button small secondary" onClick={() => onEditUpdate(update)} disabled={busy}>Tahrirlash</button>
           <button className="button small secondary" onClick={() => onDeleteUpdate(update)} disabled={busy}>O‘chirish</button></span></div>
-      </article>)}{!timeline.length && <div className="empty-table">Bu loyihada hali update yo‘q.</div>}</div>
+      </article>)}
+      {!timeline.length && <div className="empty-state"><strong>Hali update yo‘q</strong>
+        <p>Loyiha bo‘yicha birinchi holatni yozib qo‘ying.</p>
+        <button className="button primary" onClick={onNewUpdate} disabled={busy}><ClipboardList size={16} />Update qo‘shish</button></div>}</div>
     </section></>;
 }
 
@@ -1041,8 +1099,8 @@ function WidgetBlock({ widget, records, projects, updates, pageRange, editing }:
     return <article className="panel"><SectionHeader title={widget.title || "Loyihalar xulosasi"} />
       <div className="quality-grid"><div><span>Jami loyihalar</span><strong>{summary.total}</strong></div>
         <div><span>Deadline o‘tgan</span><strong>{summary.overdue}</strong></div>
-        <div><span>Shu hafta yangilangan</span><strong>{summary.updatedThisWeek}</strong></div>
-        <div><span>Shu hafta deadline</span><strong>{summary.deadlineThisWeek}</strong></div></div>{badge}</article>;
+        <div><span>Oxirgi 7 kunda yangilangan</span><strong>{summary.updatedLast7Days}</strong></div>
+        <div><span>Keyingi 7 kun deadline</span><strong>{summary.deadlineNext7Days}</strong></div></div>{badge}</article>;
   }
 
   if (widget.widgetType === "PROJECT_STATUS_BREAKDOWN") {
@@ -1581,34 +1639,59 @@ export default function DashboardClient() {
             <button className="button secondary" onClick={() => setWidgetDraft(null)}>Bekor qilish</button>
           </div></section>}
         {projectError && <div className="notice error page-notice"><XCircle size={18} />{projectError}<button onClick={() => setProjectError(null)}><X size={14} /></button></div>}
-        {projectDraft && <section className="panel editor-panel"><SectionHeader title={projectDraft.id ? "Loyihani tahrirlash" : "Yangi loyiha"} />
-          <div className="config-fields">
-            <FormField label="Nomi"><TextInput value={projectDraft.name} onChange={(event) => setProjectDraft({ ...projectDraft, name: event.target.value })} /></FormField>
-            <StatusInput value={projectDraft.status} options={projectStatusSuggestions} onChange={(value) => setProjectDraft({ ...projectDraft, status: value })} />
-            <FormField label="Muddat" hint="Ixtiyoriy"><DateInput value={projectDraft.deadline} onChange={(event) => setProjectDraft({ ...projectDraft, deadline: event.target.value })} /></FormField>
-          </div>
-          <FormField label="Tavsif" className="wide-field"><Textarea rows={4} value={projectDraft.description} onChange={(event) => setProjectDraft({ ...projectDraft, description: event.target.value })} /></FormField>
-          <div className="setup-actions">
-            <button className="button primary" disabled={projectBusy || !projectDraft.name.trim() || !projectDraft.status.trim()} onClick={async () => {
+        <Drawer open={Boolean(projectDraft)} title={projectDraft?.id ? "Loyihani tahrirlash" : "Yangi loyiha"}
+          context={projectDraft?.id ? projectDraft.name : "Marketing, Product yoki boshqa yo‘nalishdagi ish"}
+          dirty={Boolean(projectDraft && (projectDraft.name.trim() || projectDraft.description.trim()))}
+          onClose={() => setProjectDraft(null)}
+          footer={<>
+            <button className="button secondary" onClick={() => setProjectDraft(null)} disabled={projectBusy}>Bekor qilish</button>
+            <button className="button primary" disabled={projectBusy || !projectDraft?.name.trim() || !projectDraft?.status.trim()} onClick={async () => {
+              if (!projectDraft) return;
               const ok = await projectAction({ action: projectDraft.id ? "updateProject" : "createProject", id: projectDraft.id, name: projectDraft.name, description: projectDraft.description, status: projectDraft.status, deadline: projectDraft.deadline });
               if (ok) setProjectDraft(null);
             }}>Saqlash</button>
-            <button className="button secondary" onClick={() => setProjectDraft(null)}>Bekor qilish</button>
-          </div></section>}
-        {updateDraft && <section className="panel editor-panel"><SectionHeader title={updateDraft.id ? "Update tahrirlash" : "Yangi update"} />
-          <div className="config-fields">
-            <FormField label="Nomi"><TextInput value={updateDraft.title} onChange={(event) => setUpdateDraft({ ...updateDraft, title: event.target.value })} /></FormField>
-            <StatusInput value={updateDraft.status} options={projectStatusSuggestions} onChange={(value) => setUpdateDraft({ ...updateDraft, status: value })} />
-            <FormField label="Muddat" hint="Ixtiyoriy"><DateInput value={updateDraft.deadline} onChange={(event) => setUpdateDraft({ ...updateDraft, deadline: event.target.value })} /></FormField>
-          </div>
-          <FormField label="Tavsif" className="wide-field"><Textarea rows={4} value={updateDraft.description} onChange={(event) => setUpdateDraft({ ...updateDraft, description: event.target.value })} /></FormField>
-          <div className="setup-actions">
-            <button className="button primary" disabled={projectBusy || !updateDraft.title.trim() || !updateDraft.status.trim()} onClick={async () => {
+          </>}>
+          {projectDraft && <div className="drawer-form">
+            <FormField label="Nomi" required error={projectDraft.name.trim() ? null : "Loyiha nomi kerak"}>
+              <TextInput data-autofocus value={projectDraft.name} error={projectDraft.name.trim() ? null : "required"}
+                placeholder="Masalan: CAPI ulash" onChange={(event) => setProjectDraft({ ...projectDraft, name: event.target.value })} /></FormField>
+            <FormField label="Status" required hint="Ixtiyoriy matn — bo‘lim o‘z workflowini ishlatishi mumkin"
+              error={projectDraft.status.trim() ? null : "Status kerak"}>
+              <StatusCombobox value={projectDraft.status} options={projectStatusSuggestions} placeholder="Masalan: Jarayonda"
+                onChange={(value) => setProjectDraft({ ...projectDraft, status: value })} /></FormField>
+            <FormField label="Muddat" hint="Ixtiyoriy · Asia/Tashkent kalendar sanasi">
+              <DateInput value={projectDraft.deadline} onChange={(event) => setProjectDraft({ ...projectDraft, deadline: event.target.value })} /></FormField>
+            <FormField label="Tavsif" hint="Loyiha nima haqida ekanini qisqacha yozing">
+              <Textarea rows={6} value={projectDraft.description} onChange={(event) => setProjectDraft({ ...projectDraft, description: event.target.value })} /></FormField>
+          </div>}
+        </Drawer>
+
+        <Drawer open={Boolean(updateDraft)} title={updateDraft?.id ? "Update tahrirlash" : "Yangi update"}
+          context={openProject?.name}
+          dirty={Boolean(updateDraft && (updateDraft.title.trim() || updateDraft.description.trim()))}
+          onClose={() => setUpdateDraft(null)}
+          footer={<>
+            <button className="button secondary" onClick={() => setUpdateDraft(null)} disabled={projectBusy}>Bekor qilish</button>
+            <button className="button primary" disabled={projectBusy || !updateDraft?.title.trim() || !updateDraft?.status.trim()} onClick={async () => {
+              if (!updateDraft) return;
               const ok = await projectAction({ action: updateDraft.id ? "updateUpdate" : "createUpdate", id: updateDraft.id, projectId: updateDraft.projectId, title: updateDraft.title, description: updateDraft.description, status: updateDraft.status, deadline: updateDraft.deadline });
               if (ok) setUpdateDraft(null);
             }}>Saqlash</button>
-            <button className="button secondary" onClick={() => setUpdateDraft(null)}>Bekor qilish</button>
-          </div></section>}
+          </>}>
+          {updateDraft && <div className="drawer-form">
+            <FormField label="Nomi" required error={updateDraft.title.trim() ? null : "Update nomi kerak"}>
+              <TextInput data-autofocus value={updateDraft.title} error={updateDraft.title.trim() ? null : "required"}
+                onChange={(event) => setUpdateDraft({ ...updateDraft, title: event.target.value })} /></FormField>
+            <FormField label="Status" required hint="Ixtiyoriy matn" error={updateDraft.status.trim() ? null : "Status kerak"}>
+              <StatusCombobox value={updateDraft.status} options={projectStatusSuggestions}
+                onChange={(value) => setUpdateDraft({ ...updateDraft, status: value })} /></FormField>
+            <FormField label="Muddat" hint="Ixtiyoriy">
+              <DateInput value={updateDraft.deadline} onChange={(event) => setUpdateDraft({ ...updateDraft, deadline: event.target.value })} /></FormField>
+            <FormField label="Tavsif" hint="Nima o‘zgardi, nima to‘sqinlik qilmoqda">
+              <Textarea rows={6} value={updateDraft.description} onChange={(event) => setUpdateDraft({ ...updateDraft, description: event.target.value })} /></FormField>
+          </div>}
+        </Drawer>
+
         <footer><span>Bitrix24 Deal Processing Dashboard</span><span>Timezone: Asia/Tashkent · Business minutes only</span></footer>
       </div>
     </main>

@@ -128,6 +128,6 @@ test("status-independent summary", () => {
   const summary = summarizeProjects(rows, NOW);
   assert.equal(summary.total, 3, "archived excluded");
   assert.equal(summary.overdue, 1);
-  assert.equal(summary.deadlineThisWeek, 1);
-  assert.equal(summary.updatedThisWeek, 2);
+  assert.equal(summary.deadlineNext7Days, 1);
+  assert.equal(summary.updatedLast7Days, 2);
 });
