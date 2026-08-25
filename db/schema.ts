@@ -58,6 +58,11 @@ export const syncJobs = sqliteTable("sync_jobs", {
   updatedAt: text("updated_at").notNull(),
 });
 
+// NOTE: `synced_at` holds the sync **run id** (a UUID), not a timestamp — it is
+// how a run identifies the rows it wrote. The name is historical. Renaming it
+// would rewrite every row of the largest table for a cosmetic gain, so the
+// column keeps its name and this comment carries the meaning. Use
+// sync_state.last_sync_at for "when".
 export const rawDeals = sqliteTable("raw_deals", {
   dealId: text("deal_id").primaryKey(),
   categoryId: text("category_id").notNull(),
