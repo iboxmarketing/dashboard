@@ -16,7 +16,8 @@ export type StaleResolution =
   | "CLOSED_IN_SCOPE"       // closed inside the sales funnel — canonical rules classify it
   | "MOVED_TO_POST_SALE"    // now in the configured paired post-sale funnel
   | "MOVED_OUT_OF_SCOPE"    // some other category: neither selected sales nor paired post-sale
-  | "UNAVAILABLE";          // deleted, or not readable by this webhook
+  | "UNAVAILABLE"           // Bitrix answered definitively: deleted or unreadable
+  | "LOOKUP_ERROR";         // no answer — decide nothing, retry on a later sync
 
 /**
  * Current operational location, stored additively on the analytics record.
@@ -33,7 +34,9 @@ export type ScopeConfig = {
 };
 
 export function resolveStaleDeal(lookup: DealLookup, config: ScopeConfig): StaleResolution {
-  if (!lookup.found) return "UNAVAILABLE";
+  // Only a definitive answer may conclude "gone"; an unanswered lookup leaves
+  // the record exactly as it was.
+  if (!lookup.found) return lookup.reason === "NOT_FOUND" ? "UNAVAILABLE" : "LOOKUP_ERROR";
   const category = String(lookup.deal.categoryId);
   const selected = new Set((config.selectedPipelineIds ?? []).map(String));
   const postSale = new Set((config.postSalePipelineIds ?? []).map(String));
@@ -43,7 +46,9 @@ export function resolveStaleDeal(lookup: DealLookup, config: ScopeConfig): Stale
   return "MOVED_OUT_OF_SCOPE";
 }
 
-export function currentScopeFor(resolution: StaleResolution): CurrentScope {
+/** `null` means "make no change" — the only safe answer to an unanswered lookup. */
+export function currentScopeFor(resolution: StaleResolution): CurrentScope | null {
+  if (resolution === "LOOKUP_ERROR") return null;
   if (resolution === "UNAVAILABLE") return "UNAVAILABLE";
   if (resolution === "MOVED_OUT_OF_SCOPE") return "OUT_OF_SCOPE";
   return "IN_SCOPE";

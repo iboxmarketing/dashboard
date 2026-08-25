@@ -11,6 +11,7 @@ export { normalizePipelineName, resolvePipelineSelection } from "./pipelines";
 import { normalizePipelineName, pairPostSalePipeline, resolvePipelineSelection, resolvePostSalePipelines } from "./pipelines";
 import { resolveSyncWindow } from "./sync-window";
 import { canonicalDealFieldKey, canonicalizeFieldOptions } from "./crm-fields";
+import { runPostSyncReconciliation } from "./post-sync-reconciliation";
 
 const stageDealBatchSize = 25;
 const analyticsDealBatchSize = 80;
@@ -370,6 +371,11 @@ async function analyticsStep(job: StoredSyncJob) {
     // modified while it was still working.
     await saveDictionary(`syncScope:${job.scopePipelineId}`, { lastSyncAt: job.toIso, pipelineName: job.selectedPipelines[0]?.name ?? "" });
     await saveSyncState({ status: "success", lastSyncAt: completedAt, lastFrom: job.fromIso, counts: job.counts, permissions: job.permissions, safeError: null });
+    // The single completion point for every sync path — the UI's step loop and
+    // the scheduled handler both land here — so reconciliation applies
+    // identically to manual and cron runs. It never throws and never downgrades
+    // this successful result; its own state records any problem.
+    await runPostSyncReconciliation(await getSettings());
     return finished;
   }
   const ids = rawDeals.map((row) => row.deal_id);

@@ -51,7 +51,7 @@ export async function GET(request: Request) {
       checked: batch.length,
       pending: Math.max(0, staleIds.length - batch.length),
       results: batch.map((id) => {
-        const lookup = lookups.get(id) ?? { found: false as const, reason: "NOT_FOUND" as const };
+        const lookup = lookups.get(id) ?? { found: false as const, reason: "LOOKUP_ERROR" as const, code: "NO_RESULT" };
         const resolution = resolveStaleDeal(lookup, {
           selectedPipelineIds: settings.selectedPipelineIds ?? [],
           postSalePipelineIds: settings.postSalePipelineIds ?? [],

@@ -1,4 +1,5 @@
 import { countDuplicates } from "./duplicates";
+import { countsAsOperational } from "./stale-resolution";
 import { isEligibleCohortDeal, isSalesLost } from "./sales-logic";
 import { summarizeSla } from "./sla";
 import type { AnalyticsRecord } from "./types";
@@ -93,7 +94,12 @@ export function buildDashboardMetrics(cohortRecords: AnalyticsRecord[], periodSa
       cohort_sales: cohortSales.length,
       period_sales: periodSales.length,
       duplicates: countDuplicates(cohortRecords),
-      active_cohort: eligible.filter((row) => row.salesStatus === "ACTIVE").length,
+      // Aktiv leadlar is a *current operational* figure, so it excludes deals
+      // that have left the sync scope or vanished from Bitrix. Every other
+      // metric here is historical-cohort based and deliberately ignores
+      // currentScope — a lead still belongs to its creation month's population
+      // regardless of where the card sits today.
+      active_cohort: eligible.filter((row) => row.salesStatus === "ACTIVE" && countsAsOperational(row.currentScope)).length,
     },
     rates: {
       lead_to_sql: percent(sql.length, eligible.length),

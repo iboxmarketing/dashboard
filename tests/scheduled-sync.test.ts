@@ -119,7 +119,7 @@ test("a deal moved to an unrelated category leaves sync scope and is NOT routing
 });
 
 test("a deleted or unreadable deal is recorded, never silently dropped", () => {
-  const gone = { found: false as const, reason: "NOT_FOUND" as const };
+  const gone = { found: false as const, reason: "NOT_FOUND" as const, code: "NOT_FOUND" };
   assert.equal(resolveStaleDeal(gone, scope), "UNAVAILABLE");
   assert.equal(currentScopeFor("UNAVAILABLE"), "UNAVAILABLE");
   assert.equal(countsAsOperational("UNAVAILABLE"), false);
@@ -154,9 +154,19 @@ test("marking a deal out of scope does not remove it from historical cohorts", (
   assert.equal(after.counts.cohort_sales, before.counts.cohort_sales);
   assert.equal(after.money.revenue, before.money.revenue, "Sotuv summasi unchanged");
 
-  // The metric helpers must not consult the operational field at all.
+  // Sprint 27.1 gave Aktiv leadlar an approved operational filter, so the file
+  // does reference currentScope — but only there. Every cohort figure must
+  // still ignore where the deal sits today.
   const metrics = readFileSync(new URL("../lib/dashboard-metrics.ts", import.meta.url), "utf8");
-  assert.doesNotMatch(metrics, /currentScope/, "cohort metrics never read current location");
+  const counts = metrics.slice(metrics.indexOf("counts: {"), metrics.indexOf("rates: {"));
+  const cohortLines = counts.split("\n")
+    .filter((line) => !line.trim().startsWith("//"))          // comments explain the rule, they are not the rule
+    .filter((line) => !line.includes("active_cohort"));
+  assert.equal(cohortLines.some((line) => line.includes("currentScope")), false,
+    "no cohort count reads current location");
+  const rates = metrics.slice(metrics.indexOf("rates: {"), metrics.indexOf("money: {"));
+  assert.doesNotMatch(rates, /currentScope/, "no rate reads current location");
+  assert.doesNotMatch(metrics.slice(metrics.indexOf("money: {")), /currentScope/, "money and timing unaffected");
   const salesLogic = readFileSync(new URL("../lib/sales-logic.ts", import.meta.url), "utf8");
   assert.doesNotMatch(salesLogic, /currentScope/);
 });

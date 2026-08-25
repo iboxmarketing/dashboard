@@ -141,3 +141,19 @@ Live `crm.deal.list` with `CLOSED=N` on the selected Sales funnels, no
 `DATE_CREATE` filter. Reconciliation compares that live set against cached
 records scoped by funnel only — sales classification never decides cache
 membership — while staleness uses the subset the cache still believes is open.
+
+## Aktiv leadlar (`active_cohort`) — Sprint 27.1
+
+Historical eligible cohort records that are still `ACTIVE` **and** operationally
+`IN_SCOPE`.
+
+A deal that has left the synced funnels — moved to an unrelated pipeline, or
+deleted from Bitrix — can never be refreshed again, so counting it as an active
+lead overstates the working pipeline. `currentScope` records that fact, and this
+metric alone consults it.
+
+Every other metric is unaffected and remains historical-cohort based: Leadlar,
+SQL, Not Relevant, Sotilmadi, Kelgan leadlardan sotuv, Shu davrdagi sotuvlar,
+Sotuv summasi, Lead → SQL, Lead → Sotuv, SQL → Sotuv and SLA all ignore
+`currentScope` entirely. A record with no `currentScope` counts as `IN_SCOPE`,
+so nothing changes for data written before this sprint.

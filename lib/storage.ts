@@ -71,6 +71,27 @@ export async function saveSettings(settings: DashboardSettings) {
     .run();
 }
 
+/**
+ * Marks where a deal currently sits, without disturbing anything else.
+ *
+ * Reads the stored payload, sets one field, writes it back — so historical
+ * identity is preserved byte-for-byte and repeating the call is a no-op. The
+ * next canonical rebuild overwrites the payload wholesale and naturally clears
+ * the mark, which is how a deal that returns to the funnel recovers.
+ */
+export async function setAnalyticsCurrentScope(dealId: string, scope: "IN_SCOPE" | "OUT_OF_SCOPE" | "UNAVAILABLE") {
+  await ensureSchema();
+  const row = await getD1().prepare("SELECT payload FROM analytics_records WHERE deal_id = ?").bind(dealId).first<{ payload: string }>();
+  if (!row) return false;
+  let record: Record<string, unknown>;
+  try { record = JSON.parse(row.payload) as Record<string, unknown>; } catch { return false; }
+  if (record.currentScope === scope) return true;
+  record.currentScope = scope;
+  await getD1().prepare("UPDATE analytics_records SET payload = ? WHERE deal_id = ?")
+    .bind(JSON.stringify(record), dealId).run();
+  return true;
+}
+
 export async function getProviderRules() {
   await ensureSchema();
   const result = await getD1().prepare("SELECT provider_key, mode FROM provider_rules").all<{ provider_key: string; mode: string }>();
