@@ -60,6 +60,9 @@ export async function GET(request: Request) {
         return {
           dealId: id,
           resolution,
+          // The Bitrix error *code* only — never the description, which can
+          // echo request context.
+          lookupCode: lookup.found ? null : lookup.code,
           currentScope: currentScopeFor(resolution),
           bitrix: lookup.found ? lookup.deal : null,
           cached: record

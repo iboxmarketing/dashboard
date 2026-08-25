@@ -55,6 +55,11 @@ export const DEFINITIVE_MISSING_CODES = new Set([
   "ERROR_CORE",
   "ACCESS_DENIED",
   "INVALID_ARG_VALUE",
+  // Verified on the portal: crm.deal.get for a deal that no longer exists
+  // answers HTTP 400 with an empty error code. An id that never existed
+  // (99999999) produces the identical signature, which is what makes it
+  // definitive rather than incidental.
+  "HTTP_400",
 ]);
 
 /** Transient by construction: never write a scope decision from these. */

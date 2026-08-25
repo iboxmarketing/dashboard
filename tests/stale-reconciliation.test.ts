@@ -40,6 +40,29 @@ test("a transient failure never marks a record", () => {
   }
 });
 
+test("HTTP_400 is the verified missing signature; 5xx stays transient", () => {
+  // Verified on the portal: crm.deal.get for a deleted deal answers HTTP 400
+  // with an empty error code, and an id that never existed (99999999) gives the
+  // identical signature. That reproducibility is what makes it definitive.
+  const four = classifyLookupFailure("HTTP_400");
+  assert.equal(four.found, false);
+  if (!four.found) assert.equal(four.reason, "NOT_FOUND");
+  assert.equal(resolveStaleDeal(four, scope), "UNAVAILABLE");
+
+  for (const code of ["HTTP_500", "HTTP_502", "HTTP_503", "HTTP_504"]) {
+    const l = classifyLookupFailure(code);
+    if (l.found) throw new Error("unreachable");
+    assert.equal(l.reason, "LOOKUP_ERROR", `${code} is a server fault, not a verdict on the deal`);
+  }
+});
+
+test("an empty Bitrix error code falls through to the HTTP status", () => {
+  // `??` preserved "" and erased the signal; `||` falls through.
+  const bitrix = readFileSync(new URL("../lib/bitrix.ts", import.meta.url), "utf8");
+  assert.match(bitrix, /const safeCode = payload\.error \|\| `HTTP_\$\{response\.status\}`;/);
+  assert.doesNotMatch(bitrix, /payload\.error \?\? `HTTP_/);
+});
+
 test("an unrecognised code is treated as transient, not as gone", () => {
   // A wrong "retry later" costs one sync cycle; a wrong "gone" corrupts a record.
   const reasonOf = (code: string) => { const l = classifyLookupFailure(code); return l.found ? "FOUND" : l.reason; };

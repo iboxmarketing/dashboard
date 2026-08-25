@@ -65,7 +65,11 @@ export async function bitrixCall<T>(method: string, params: Record<string, unkno
   }
 
   if (!response.ok || payload.error) {
-    const safeCode = payload.error ?? `HTTP_${response.status}`;
+    // `??` kept an empty-string error code, erasing the only signal that
+    // distinguishes "Bitrix says this record is not retrievable" (an empty
+    // error with a 4xx) from a transport failure. `||` falls through to the
+    // status, so the code always carries meaning.
+    const safeCode = payload.error || `HTTP_${response.status}`;
     const raw = payload.error_description ?? "Bitrix24 API so‘rovi bajarilmadi";
     const safeMessage = raw.replace(/https?:\/\/\S+/gi, "[yashirilgan]").slice(0, 240);
     throw new SafeBitrixError(safeCode, safeMessage);
