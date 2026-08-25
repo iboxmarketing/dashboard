@@ -47,6 +47,9 @@ cat > "$out" <<JSON
       "database_id": "${CLOUDFLARE_D1_DATABASE_ID}"
     }
   ],
+  // Server-side background refresh. The cadence is fixed here; the runtime
+  // on/off switch is app_settings.autoSyncMinutes, which scheduled() reads.
+  "triggers": { "crons": ["*/15 * * * *"] },
   "observability": { "enabled": false }
 }
 JSON

@@ -253,7 +253,10 @@ async function dealStep(job: StoredSyncJob) {
   // Source comes from SOURCE_ID; the legacy marketing-channel field is no longer read.
   const customFields = [...new Set([settings.failureReasonField, ...Object.values(settings.failureReasonFieldByPipeline ?? {}), settings.salesManagerField])]
     .filter((field): field is string => Boolean(field)).map(canonicalDealFieldKey);
-  const select = ["ID", "TITLE", "DATE_CREATE", "DATE_MODIFY", "CLOSEDATE", "MOVED_TIME", "MOVED_BY_ID", "ASSIGNED_BY_ID", "CATEGORY_ID", "STAGE_ID", "SOURCE_ID", "CONTACT_ID", "CONTACT_IDS", "COMPANY_ID", "OPPORTUNITY", "CURRENCY_ID", ...customFields];
+  // CLOSED is current-state evidence for reconciliation only. Won/lost
+  // classification stays with the canonical stage and stage-history rules;
+  // nothing derives salesStatus from this flag.
+  const select = ["ID", "TITLE", "DATE_CREATE", "DATE_MODIFY", "CLOSED", "CLOSEDATE", "MOVED_TIME", "MOVED_BY_ID", "ASSIGNED_BY_ID", "CATEGORY_ID", "STAGE_ID", "SOURCE_ID", "CONTACT_ID", "CONTACT_IDS", "COMPANY_ID", "OPPORTUNITY", "CURRENCY_ID", ...customFields];
 
   if (job.dealScope === "postSale") {
     // TYPE_ID=5 is the exact Bitrix event for a funnel change. Querying these

@@ -1,3 +1,4 @@
+import { countsAsOperational } from "./stale-resolution";
 import type { AnalyticsRecord, CurrentStageRecord, DashboardSettings, StageReconciliation } from "./types";
 
 export type RawCurrentStageDeal = Record<string, unknown>;
@@ -56,8 +57,16 @@ export function buildCurrentStageRecords(input: {
  * Mirrors the client's `hydrateRecord` default so records written before
  * `salesStatus` existed are treated as open rather than silently dropped.
  */
+/**
+ * Open *and still somewhere the sync can see*.
+ *
+ * A deal that moved to a category outside the selected sales and paired
+ * post-sale funnels can never be returned by the incremental query again, so
+ * reporting it as "stale" every run is noise, not a finding — it is a resolved
+ * fact recorded on the record itself.
+ */
 function cachedIsOpen(row: AnalyticsRecord) {
-  return (row.salesStatus ?? "ACTIVE") === "ACTIVE";
+  return (row.salesStatus ?? "ACTIVE") === "ACTIVE" && countsAsOperational(row.currentScope);
 }
 
 /**

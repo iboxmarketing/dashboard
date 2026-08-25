@@ -138,6 +138,12 @@ export type AnalyticsRecord = {
   originCategoryId: string;
   originPipeline: string;
   operationalPipeline: boolean;
+  /**
+   * Where the deal sits *now*, as opposed to which cohort it belongs to.
+   * Additive and optional: absent means IN_SCOPE, so every existing record
+   * keeps its current meaning and no historical metric shifts.
+   */
+  currentScope?: "IN_SCOPE" | "OUT_OF_SCOPE" | "UNAVAILABLE";
   stageId: string;
   stage: string;
   stageEnteredAt: string;
