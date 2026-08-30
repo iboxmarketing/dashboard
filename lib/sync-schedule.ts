@@ -8,11 +8,14 @@
 /** A running job whose heartbeat is older than this is treated as abandoned. */
 export const ABANDONED_JOB_MINUTES = 10;
 
+/** Cloudflare fires a cron up to about a minute late; do not skip for that. */
+export const CRON_JITTER_MINUTES = 2;
+
 /** Each invocation drives at most this many step batches. */
 export const MAX_STEP_BATCHES = 40;
 const STEPS_PER_BATCH = 6;
 
-export type ScheduledSkipReason = "DISABLED" | "JOB_RUNNING" | "PREVIOUS_ERROR" | "PAUSED" | "NOT_CONFIGURED";
+export type ScheduledSkipReason = "DISABLED" | "JOB_RUNNING" | "PREVIOUS_ERROR" | "PAUSED" | "NOT_CONFIGURED" | "TOO_SOON";
 export type ScheduledAction = "START" | "RESUME";
 
 export type ScheduledDecision =
@@ -23,6 +26,8 @@ export type SchedulerInput = {
   autoSyncMinutes: number;
   selectedPipelineIds: string[];
   job: { status: string; heartbeatAt?: string | null; updatedAt?: string | null } | null;
+  /** Last successful sync, used to honour the configured interval. */
+  lastSyncAt?: string | null;
   now: Date;
 };
 
@@ -34,8 +39,20 @@ export type SchedulerInput = {
  * is the on/off switch.
  */
 export function scheduledDecision(input: SchedulerInput): ScheduledDecision {
-  if (!Number(input.autoSyncMinutes)) return { run: false, reason: "DISABLED" };
+  const interval = Number(input.autoSyncMinutes);
+  if (!interval) return { run: false, reason: "DISABLED" };
   if (!input.selectedPipelineIds.length) return { run: false, reason: "NOT_CONFIGURED" };
+
+  // The Cloudflare cron cadence is fixed at 15 minutes, so the setting has to
+  // gate the run itself. Previously any non-zero value merely meant "enabled",
+  // and 60 synced four times an hour instead of once.
+  const last = Date.parse(input.lastSyncAt ?? "");
+  if (Number.isFinite(last)) {
+    const elapsed = (input.now.getTime() - last) / 60_000;
+    // A small tolerance: cron fires with up to ~1 minute of jitter, so a run due
+    // "at 60 minutes" must not be skipped for arriving at 59m 50s.
+    if (elapsed < interval - CRON_JITTER_MINUTES) return { run: false, reason: "TOO_SOON" };
+  }
 
   const job = input.job;
   if (!job) return { run: true, action: "START" };
