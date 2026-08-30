@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyLossReasonGroup, classifySalesStatus, countSalesLost, dealOutcomeLabel, fieldDisplayValue, isSalesLost, salesLostRate, salesManagerKey } from "../lib/sales-logic";
+import { classifyLossReasonGroup, classifySalesStatus, countSalesLost, dealOutcomeLabel, fieldDisplayValue, isSalesLost, salesLostRate, salesManagerKey, isPreSqlClosed } from "../lib/sales-logic";
 import { buildAnalyticsRecords, type RawStageHistory } from "../lib/analytics";
 import type { AnalyticsRecord } from "../lib/types";
 import { defaultSettings } from "../lib/business-time";
@@ -121,10 +121,12 @@ test("joriy Oplata stage WON bo‘lgani uchun stage limitidan oshgan deb belgila
   assert.equal(row.stageOverdue, false);
 });
 
-type LossRow = { dealId: string; lossReasonGroup: AnalyticsRecord["lossReasonGroup"]; salesStatus: AnalyticsRecord["salesStatus"]; salesManagerId: string | null };
+type LossRow = { dealId: string; lossReasonGroup: AnalyticsRecord["lossReasonGroup"]; salesStatus: AnalyticsRecord["salesStatus"]; salesManagerId: string | null; qualified: boolean };
 
-function lossRow(dealId: string, lossReasonGroup: LossRow["lossReasonGroup"], salesStatus: LossRow["salesStatus"], salesManagerId: string | null = "7"): LossRow {
-  return { dealId, lossReasonGroup, salesStatus, salesManagerId };
+function lossRow(dealId: string, lossReasonGroup: LossRow["lossReasonGroup"], salesStatus: LossRow["salesStatus"], salesManagerId: string | null = "7", qualified = true): LossRow {
+  // Canonical Sales Lost is a post-SQL outcome, so these fixtures are
+  // quality-accepted by default; `qualified: false` models a pre-SQL closure.
+  return { dealId, lossReasonGroup, salesStatus, salesManagerId, qualified };
 }
 /** Mirrors buildManagers: partition by seller bucket, count Sales Lost per bucket. */
 function managerLostRows(rows: LossRow[]) {
@@ -191,12 +193,18 @@ test("Sales Lost 5: menejerlar yig‘indisi headline bilan mos, Unknown ham yo�
   assert.deepEqual(perManager.find((row) => row.id === "unknown"), { id: "unknown", lost: 1 });
 });
 
-test("Sales Lost 6: isSalesLost faqat SALES guruhini tan oladi", () => {
-  assert.equal(isSalesLost({ lossReasonGroup: "SALES" }), true);
-  assert.equal(isSalesLost({ lossReasonGroup: "ROUTING" }), false);
-  assert.equal(isSalesLost({ lossReasonGroup: "MARKETING" }), false);
-  assert.equal(isSalesLost({ lossReasonGroup: "NONE" }), false);
+test("Sales Lost 6: isSalesLost SALES guruhi VA sifat qabulini talab qiladi", () => {
+  assert.equal(isSalesLost({ lossReasonGroup: "SALES", qualified: true }), true);
+  assert.equal(isSalesLost({ lossReasonGroup: "ROUTING", qualified: true }), false);
+  assert.equal(isSalesLost({ lossReasonGroup: "MARKETING", qualified: true }), false);
+  assert.equal(isSalesLost({ lossReasonGroup: "NONE", qualified: true }), false);
   assert.equal(isSalesLost({}), false);
+  // The correction: a Sales-funnel closure that never reached SQL is not a
+  // sales loss, it is a lead that was never worked.
+  assert.equal(isSalesLost({ lossReasonGroup: "SALES", qualified: false }), false);
+  assert.equal(isPreSqlClosed({ salesStatus: "LOST", lossReasonGroup: "SALES", qualified: false }), true);
+  assert.equal(isPreSqlClosed({ salesStatus: "LOST", lossReasonGroup: "SALES", qualified: true }), false);
+  assert.equal(isPreSqlClosed({ salesStatus: "LOST", lossReasonGroup: "ROUTING", qualified: false }), false);
   assert.equal(salesManagerKey({ salesManagerId: null }), "unknown");
   assert.equal(salesManagerKey({ salesManagerId: "7" }), "7");
 });
@@ -251,7 +259,9 @@ test("Rate 3: ROUTING sotilmagan raqamga ham, foizga ham kirmaydi", () => {
 });
 
 test("Rate 4: kanonik Sotilmadi yozuvi “Sotilmadi” deb belgilanadi", () => {
-  assert.deepEqual(dealOutcomeLabel({ salesStatus: "LOST", lossReasonGroup: "SALES" }), { label: "Sotilmadi", tone: "danger" });
+  assert.deepEqual(dealOutcomeLabel({ salesStatus: "LOST", lossReasonGroup: "SALES", qualified: true }), { label: "Sotilmadi", tone: "danger" });
+  // A pre-SQL closure must not read "Sotilmadi" while every Sotilmadi count excludes it.
+  assert.deepEqual(dealOutcomeLabel({ salesStatus: "LOST", lossReasonGroup: "SALES", qualified: false }), { label: "SQLgacha yopilgan", tone: "warning" });
 });
 
 test("Rate 5: Not Relevant Sotilmadi’dan ajratilgan bo‘lib qoladi", () => {

@@ -1,6 +1,6 @@
 import { calculateBusinessMinutes, getSlaStart, isInsideWorkingTime } from "./business-time";
 import { resolveSlaState } from "./sla";
-import { classifyLossReasonGroup, classifySalesStatus, fieldDisplayValue, isLowQualityStage, isPaymentStage, isSqlOrDownstreamStage } from "./sales-logic";
+import { canInferQualificationFromOutcome, classifyLossReasonGroup, classifySalesStatus, fieldDisplayValue, isLowQualityStage, isPaymentStage, isSqlOrDownstreamStage } from "./sales-logic";
 import { sqlThresholdsByCategory, type StageMeta, type StageSemantics } from "./stage-config";
 import { canonicalDealFieldKey } from "./crm-fields";
 import type { SalesSnapshot } from "./storage";
@@ -137,14 +137,26 @@ export function buildAnalyticsRecords(input: {
       isSqlOrDownstreamStage({ stageId, stage: name, categoryId, semantic, thresholds: stageThresholds, stageMeta: input.stageMeta, config: stageSemantics });
     const qualifiedEvent = stageTimeline.find((entry) => mainIds.has(entry.categoryId) && acceptsAsQualified(entry.stageId, entry.stage, entry.categoryId));
     const salesStatus = baseSalesStatus;
-    // Not Relevant is always a marketing-quality rejection. A previous SQL-stage visit must
-    // not silently reclassify it as a salesperson loss. Won and genuine closed-loss deals
-    // are quality accepted even if incomplete history prevented us from seeing Обработка.
+    // Quality acceptance is evidence-based. Not Relevant is always a marketing
+    // rejection, so a previous SQL visit must not reclassify it as a salesperson
+    // loss. A sale proves acceptance on its own. A terminal LOST outcome does
+    // NOT: it may only stand in for evidence when the qualification history
+    // could not be observed at all. Read history showing the deal never reached
+    // SQL is positive evidence against qualification, and upgrading it was
+    // counting never-worked leads as SQL.
+    const outcomeMayImplyQualification = canInferQualificationFromOutcome({
+      stageHistoryAvailable: input.stageHistoryAvailable,
+      historyRowCount: histories.length,
+    });
     const qualified = salesStatus === "LOW_QUALITY"
       ? false
-      : Boolean(qualifiedEvent || salesStatus === "LOST" || salesStatus === "WON");
-    const qualifiedFallback = qualified ? stageTimeline.filter((entry) => mainIds.has(entry.categoryId))[1] ?? stageTimeline.find((entry) => mainIds.has(entry.categoryId)) : null;
-    const effectiveQualifiedEvent = qualified ? (qualifiedEvent ?? qualifiedFallback) : null;
+      : Boolean(qualifiedEvent)
+        || salesStatus === "WON"
+        || (salesStatus === "LOST" && outcomeMayImplyQualification);
+    // Timing comes only from real qualification evidence. The old positional
+    // fallback picked whatever stage happened to sit second in the timeline,
+    // which dated qualification to Нет ответа or Сделка провалена.
+    const effectiveQualifiedEvent = qualified ? qualifiedEvent ?? null : null;
     const qualifiedAt = effectiveQualifiedEvent?.enteredAt ?? null;
 
     const assignedManagerId = string(deal.ASSIGNED_BY_ID);

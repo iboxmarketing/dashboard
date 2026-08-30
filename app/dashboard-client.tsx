@@ -26,7 +26,7 @@ import {
   DEFAULT_SHARED_WIDGET_TYPES, SHARE_STATUS_LABELS, defaultVisibleWidgetIds, shareStatus,
   type PageShare,
 } from "@/lib/share-tokens";
-import { countClassificationConflicts, countSalesLost, dealOutcomeLabel, isClassifiedLead, isEligibleCohortDeal, isSalesLost, isUnclassifiedLead, salesLostRate, salesManagerKey } from "@/lib/sales-logic";
+import { countClassificationConflicts, countSalesLost, dealOutcomeLabel, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isSalesLost, isUnclassifiedLead, salesLostRate, salesManagerKey } from "@/lib/sales-logic";
 import { countDuplicates, markDuplicates } from "@/lib/duplicates";
 import { stageConfigConflicts } from "@/lib/stage-config";
 import { DASHBOARD_METRICS, buildDashboardMetrics, resolveDashboardMetric, resolveDashboardMetricIds, selectPeriodPopulations, type DashboardMetricId, type DashboardMetrics } from "@/lib/dashboard-metrics";
@@ -381,13 +381,14 @@ function DashboardView({ records, salesRecords, previousRecords, previousSalesRe
     duplicates: { value: String(metrics.counts.duplicates), detail: "Contact ID, keyin Company ID", tone: "amber", icon: Database },
     active_cohort: { value: String(metrics.counts.active_cohort), detail: "Tanlangan davrda kelib, hali yopilmagan", tone: "violet", icon: Layers3 },
     classified_leads: { value: String(metrics.counts.classified_leads), detail: "Sifati aniqlangan: SQL yoki Not Relevant", tone: "green", icon: ClipboardList },
-    unclassified_leads: { value: String(metrics.counts.unclassified_leads), detail: "Sifati hali aniqlanmagan — sifatsiz emas", tone: "slate", icon: Clock3 },
+    unclassified_leads: { value: String(metrics.counts.unclassified_leads), detail: `Sifat natijasi aniqlanmagan · ${metrics.counts.pre_sql_closed} tasi SQLgacha yopilgan`, tone: "slate", icon: Clock3 },
     classification_coverage: { value: `${metrics.rates.classification_coverage}%`, detail: "Saralash qamrovi = Saralangan / Leadlar", tone: "blue", icon: Gauge },
     quality_accepted_rate: { value: `${metrics.rates.quality_accepted_rate}%`, detail: "Sifatli lead % = SQL / Saralangan leadlar", tone: "green", icon: Check },
     low_quality_rate: { value: `${metrics.rates.low_quality_rate}%`, detail: "Sifatsiz lead % = Not Relevant / Saralangan leadlar", tone: "amber", icon: AlertTriangle },
     not_relevant_of_leads: { value: `${metrics.rates.not_relevant_of_leads}%`, detail: "Not Relevant / barcha Leadlar — sifat foizi emas", tone: "slate", icon: AlertTriangle },
     duplicates_eligible: { value: String(metrics.counts.duplicates_eligible), detail: "Routingsiz cohort ichidagi takrorlar", tone: "amber", icon: Database },
     unique_ish_leads: { value: String(metrics.counts.unique_ish_leads), detail: "Diagnostik taxmin — kanonik Leadlar emas", tone: "slate", icon: Database },
+    pre_sql_closed: { value: String(metrics.counts.pre_sql_closed), detail: "SQL dalilisiz yopilgan · Sotilmadi'ga kirmaydi", tone: "amber", icon: ClipboardList },
   };
   return <>
     <section className="kpi-grid sales-kpis">
@@ -414,7 +415,7 @@ function QualityVsFunnel({ metrics }: { metrics: DashboardMetrics }) {
       <SectionHeader title="Lead sifati" subtitle="Maxraj — sifati aniqlangan leadlar" />
       {cell("Leadlar", String(metrics.counts.leads), "Routingsiz kelgan barcha leadlar")}
       {cell("Saralangan", String(metrics.counts.classified_leads), "SQL yoki Not Relevant")}
-      {cell("Saralanmagan", String(metrics.counts.unclassified_leads), "Sifati aniqlanmagan — sifatsiz emas")}
+      {cell("Saralanmagan", String(metrics.counts.unclassified_leads), "Canonical sifat natijasi aniqlanmagan leadlar. Bunga hali ishlanayotgan pre-SQL leadlar va SQLgacha yopilgan deal’lar kirishi mumkin.")}
       {cell("Saralash qamrovi", `${metrics.rates.classification_coverage}%`, "Saralangan / Leadlar")}
       {cell("Sifatli lead %", `${metrics.rates.quality_accepted_rate}%`, "SQL / Saralangan")}
       {cell("Sifatsiz lead %", `${metrics.rates.low_quality_rate}%`, "Not Relevant / Saralangan")}
@@ -618,13 +619,15 @@ function ClassificationDiagnostics({ records }: { records: AnalyticsRecord[] }) 
   const unclassified = eligible.filter(isUnclassifiedLead);
   const sql = eligible.filter((row) => row.qualified);
   const notRelevant = eligible.filter((row) => row.lossReasonGroup === "MARKETING");
+  const preSql = eligible.filter(isPreSqlClosed);
   const conflicts = countClassificationConflicts(eligible);
   const stageRows = groupedCount(unclassified, (row) => row.stage || "Stage ko‘rsatilmagan");
   const rows: { label: string; value: string; hint: string }[] = [
     { label: "Xom cohort", value: String(records.length), hint: `${eligible.length} eligible + ${routing.length} routing` },
     { label: "Leadlar", value: String(eligible.length), hint: "Routing chiqarilgan" },
     { label: "Saralangan", value: String(classified.length), hint: `${sql.length} SQL + ${notRelevant.length} Not Relevant` },
-    { label: "Saralanmagan", value: String(unclassified.length), hint: "Sifati aniqlanmagan" },
+    { label: "Saralanmagan", value: String(unclassified.length), hint: "Aktiv pre-SQL + SQLgacha yopilgan" },
+    { label: "SQLgacha yopilgan", value: String(preSql.length), hint: "Sales’da yopilgan, SQL dalili yo‘q" },
     { label: "Saralash qamrovi", value: `${pct(classified.length, eligible.length)}%`, hint: "Saralangan / Leadlar" },
     { label: "Takroriy (xom cohort)", value: String(countDuplicates(records)), hint: "Routing ham kiradi — tarixiy ta’rif" },
     { label: "Takroriy (Leadlar ichida)", value: String(countDuplicates(eligible)), hint: "Leadlar bilan solishtirish uchun" },
@@ -634,6 +637,7 @@ function ClassificationDiagnostics({ records }: { records: AnalyticsRecord[] }) 
     {records.length !== eligible.length + routing.length && <div className="notice warning page-notice"><AlertTriangle size={17} /><span>Xom cohort Leadlar + Routing yig‘indisiga teng emas.</span></div>}
     {conflicts > 0 && <div className="notice warning page-notice"><AlertTriangle size={17} /><span>{conflicts} ta yozuv bir vaqtda ham Sifatli, ham Sifatsiz deb belgilangan. Saralangan = Sifatli + Sifatsiz tenglamasi shu yozuvlarda buziladi.</span></div>}
     {Boolean(unclassified.length) && <div className="table-wrap"><table className="data-table"><thead><tr><th>Saralanmagan stage</th><th>Soni</th><th>Saralanmaganlarning %</th></tr></thead><tbody>{stageRows.map((row) => <tr key={row.label}><td><strong>{row.label}</strong></td><td>{row.value}</td><td>{pct(row.value, unclassified.length)}%</td></tr>)}</tbody></table></div>}
+    {Boolean(preSql.length) && <><SectionHeader title="SQLgacha yopilgan sabablar" subtitle="Sales’da yopilgan, lekin SQL bosqichiga yetmagan — workflow signali, KPI emas" /><div className="table-wrap"><table className="data-table"><thead><tr><th>Sabab</th><th>Soni</th><th>%</th></tr></thead><tbody>{groupedCount(preSql, (row) => row.lossReason || "Sabab ko‘rsatilmagan").slice(0, 12).map((row) => <tr key={row.label}><td><strong>{row.label}</strong></td><td>{row.value}</td><td>{pct(row.value, preSql.length)}%</td></tr>)}</tbody></table></div></>}
   </section>;
 }
 

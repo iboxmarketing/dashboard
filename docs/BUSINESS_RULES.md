@@ -25,7 +25,18 @@ This document records the product owner's current rules. If a request conflicts 
 
 A deal is quality accepted when it reaches the configured SQL stage, normally Обработка.
 
-To avoid understating quality when Bitrix history is incomplete, genuine Sales losses and won deals also count as quality accepted. `Not Relevant` never does.
+A canonical **WON** also counts as quality accepted: an actual sale proves the
+lead was accepted, whatever the history shows. `Not Relevant` never does.
+
+A terminal **LOST** state is *not* by itself quality-acceptance evidence. It may
+stand in for evidence only when the qualification history genuinely could not be
+observed — the history source was unavailable, or returned no rows for the deal.
+History that was read and simply contains no SQL stage is positive evidence that
+the lead never reached SQL, and must not be upgraded.
+
+Before this correction the LOST fallback was unconditional. On the 2026-08 production
+cohort it promoted 82 of 249 SQL deals whose complete history showed paths such as
+`РАСПРЕДЕЛЁННЫЕ СДЕЛКИ → НЕТ ОТВЕТА → Сделка провалена` — leads that were never worked.
 
 ### Classified vs unclassified
 
@@ -50,6 +61,16 @@ unclassified by default rather than being silently miscounted.
 A `Not Relevant` deal that previously visited SQL stays `qualified: false`: it is
 classified and low quality, and must never also count as quality accepted.
 
+### Pre-SQL closure — "SQLgacha yopilgan"
+
+`salesStatus === "LOST"` and `lossReasonGroup === "SALES"` and `qualified !== true`.
+
+A deal closed inside the Sales funnel that never produced SQL evidence. It is a
+workflow signal, not a KPI, and belongs to none of SQL, Sifatli, Sifatsiz,
+Not Relevant, Sotilmadi or Sales Lost. It sits inside **Saralanmagan**, because
+its quality verdict was never actually reached — so Saralanmagan legitimately
+contains both still-active pre-SQL leads and these terminal ones.
+
 ## 3. Sales loss
 
 `Закрыто и не реализовано` / closed-and-not-realized is a Sales loss:
@@ -59,6 +80,17 @@ classified and low quality, and must never also count as quality accepted.
 - show its `Причина провала` separately from Marketing low-quality reasons.
 
 Routing reasons such as transfer to another brand/team may be placed in a separate routing group through configurable patterns and should not automatically blame a seller.
+
+Canonical **Sales Lost** requires both `lossReasonGroup === "SALES"` **and**
+`qualified === true`. Sales Lost is a post-SQL outcome by definition, so it is a
+strict subset of SQL and the invariant `Sales Lost <= SQL` always holds. The
+broader `salesStatus === "LOST"` state remains stored for diagnostics but must
+never power the Sotilmadi KPI on its own.
+
+`qualifiedAt` / `qualifiedStage` may only come from real SQL or downstream
+evidence. When a deal is qualified solely through the safe missing-history
+fallback, both stay `null` rather than being pointed at an arbitrary earlier
+stage.
 
 ## 4. Sale
 
