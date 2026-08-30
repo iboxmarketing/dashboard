@@ -111,3 +111,14 @@ test("dictionary builders derive stage ordering from SORT, never from names", ()
   const options = buildFieldOptionMap([{ key: "UF_X", options: [{ id: "1", value: "Bir" }] }]);
   assert.equal(options.get("UF_X")?.get("1"), "Bir");
 });
+
+test("9: a single backfill invocation stays far below the isolate limit", () => {
+  const backfill = code("../lib/analytics-backfill.ts");
+  const route = code("../app/api/backfill/route.ts");
+  const batchSize = Number(backfill.match(/BACKFILL_BATCH_SIZE = (\d+)/)?.[1]);
+  const perRequest = Number(route.match(/BATCHES_PER_REQUEST = (\d+)/)?.[1]);
+  assert.ok(Number.isFinite(batchSize) && Number.isFinite(perRequest));
+  // 60 x 4 = 240 deals in one invocation reproduced Error 1102 on staging.
+  // Keep the product well under that; this is a measured ceiling, not taste.
+  assert.ok(batchSize * perRequest <= 50, `one request rebuilds ${batchSize * perRequest} deals; keep it <= 50`);
+});

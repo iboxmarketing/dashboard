@@ -24,8 +24,16 @@ import type { CrmFieldOption } from "./types";
  * `deal_id`, so the row count cannot grow and re-running is a no-op.
  */
 
-/** Small enough that one batch's payloads never approach the isolate limit. */
-export const BACKFILL_BATCH_SIZE = 60;
+/**
+ * Deals rebuilt per batch.
+ *
+ * Measured, not guessed: 60 deals with four batches per request (240 in one
+ * invocation) reproducibly returned Error 1102 on staging within ~0.5s — a
+ * memory limit, since each deal carries its raw payload, its stage history and
+ * the rebuilt record's JSON at once. 25 keeps a single invocation's working set
+ * far below that even when the isolate is already serving page traffic.
+ */
+export const BACKFILL_BATCH_SIZE = 25;
 
 /**
  * Rebuilds one bounded page of records.

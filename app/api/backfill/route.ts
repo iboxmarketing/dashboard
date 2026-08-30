@@ -4,11 +4,15 @@ import { getDictionary, saveDictionary } from "@/lib/storage";
 
 const STATE_KEY = "analyticsBackfill";
 /**
- * Batches per request. Bounded on purpose: the Error 1102 incident was a
- * resource-limit failure, so the rebuild advances in small steps driven by the
- * caller rather than looping until done inside one invocation.
+ * Batches per request.
+ *
+ * One. The rebuild advances in small steps driven by the caller rather than
+ * looping inside a single invocation: four batches per request exhausted the
+ * isolate under concurrent page traffic and returned Error 1102, which is the
+ * exact failure this release exists to fix. More requests, each cheap, is the
+ * trade we want.
  */
-const BATCHES_PER_REQUEST = 4;
+const BATCHES_PER_REQUEST = 1;
 
 export async function GET() {
   const state = await getDictionary<BackfillState | null>(STATE_KEY, null);
