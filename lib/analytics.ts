@@ -13,8 +13,15 @@ import type { AnalyticsRecord, DashboardSettings, ProcessingSource, SalesManager
  * 5 — Sprint 15/16: SOURCE_ID-based source, per-funnel failure reason,
  *     downstream-stage qualification, qualification-based first processing and
  *     the removal of call-derived seller attribution.
+ * 6 — Sprint 28.1: `qualified` is evidence-based, so a terminal LOST outcome no
+ *     longer implies acceptance unless the history could not be observed;
+ *     `qualifiedAt`/`qualifiedStage` come only from real qualification
+ *     evidence; canonical Sales Lost is a strict subset of SQL and deals closed
+ *     before SQL are a separate pre-SQL population. A version 5 record was
+ *     written under the old rule and reports different SQL and Sotilmadi
+ *     numbers until it is rebuilt.
  */
-export const ANALYTICS_VERSION = 5;
+export const ANALYTICS_VERSION = 6;
 
 export type RawDeal = Record<string, unknown>;
 export type RawActivity = Record<string, unknown>;

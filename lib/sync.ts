@@ -1,4 +1,5 @@
 import { getD1 } from "@/db";
+import { buildFieldOptionMap, buildStatusMaps, buildUserMap } from "./analytics-dictionaries";
 import { buildAnalyticsRecords, type RawDeal, type RawStageHistory } from "./analytics";
 import { bitrixCall, bitrixList, bitrixPage, getBitrixDomain, safeBitrixMessage } from "./bitrix";
 import {
@@ -383,26 +384,12 @@ async function analyticsStep(job: StoredSyncJob) {
   const historyResult = await getD1().prepare(`SELECT payload FROM raw_stage_history WHERE deal_id IN (${placeholders})`).bind(...ids).all<{ payload: string }>();
   const userRows = await getDictionary<Record<string, unknown>[]>("users", []);
   const statusRows = await getDictionary<Record<string, unknown>[]>("statuses", []);
-  const users = new Map(userRows.map((row) => [value(row, "ID"), [value(row, "NAME"), value(row, "LAST_NAME")].filter(Boolean).join(" ") || `Menejer #${value(row, "ID")}`]));
+  const users = buildUserMap(userRows);
   const pipelines = new Map([...job.selectedPipelines, ...job.reportingPipelines].map((item) => [item.id, item.name]));
-  const stages = new Map<string, string>();
-  const sources = new Map<string, string>();
-  // Stage SORT plus its pipeline: this is what lets qualification recognise any
-  // stage downstream of the configured SQL stage without reading display names.
-  const stageMeta = new Map<string, { sort: number; categoryId: string }>();
-  for (const status of statusRows) {
-    const id = value(status, "STATUS_ID");
-    const name = value(status, "NAME") || id;
-    const entity = value(status, "ENTITY_ID");
-    if (entity.startsWith("DEAL_STAGE")) {
-      stages.set(id, name);
-      stageMeta.set(id, { sort: Number(status.SORT ?? 0), categoryId: entity === "DEAL_STAGE" ? "0" : entity.replace("DEAL_STAGE_", "") });
-    }
-    if (entity === "SOURCE") sources.set(id, name);
-  }
+  const { stages, sources, stageMeta } = buildStatusMaps(statusRows);
   const settings = await getSettings();
   const crmFields = await getDictionary<CrmFieldOption[]>("crmFields", []);
-  const fieldOptions = new Map(crmFields.map((field) => [field.key, new Map(field.options.map((option) => [option.id, option.value]))]));
+  const fieldOptions = buildFieldOptionMap(crmFields);
   const snapshots = await getSalesSnapshots(ids);
   const records = buildAnalyticsRecords({
     deals: parseRows<RawDeal>(rawDeals), stageHistories: parseRows<RawStageHistory>(historyResult.results ?? []),
