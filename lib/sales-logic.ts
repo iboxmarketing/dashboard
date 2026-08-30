@@ -192,3 +192,37 @@ export function isSqlOrDownstreamStage(input: {
 export function isEligibleCohortDeal(row: { lossReasonGroup?: LossReasonGroup | null }) {
   return row.lossReasonGroup !== "ROUTING";
 }
+
+/**
+ * Canonical "has this lead's quality been decided yet?" test.
+ *
+ * Quality and funnel progression are different questions, so they must not
+ * share a denominator. `qualified` answers "was the lead accepted?", and
+ * MARKETING answers "was it rejected as low quality?" — either one is a
+ * verdict. Everything else (Распределение, Нет ответа, Первое касание and any
+ * other pre-SQL stage) is simply undecided, and counting it as low quality
+ * would punish a young cohort for not having been worked yet.
+ *
+ * Deliberately expressed over the canonical `qualified` / `lossReasonGroup`
+ * fields rather than display stage names: a renamed or newly added pre-SQL
+ * stage stays unclassified without anyone editing a list.
+ */
+export function isClassifiedLead(row: { qualified?: boolean; lossReasonGroup?: LossReasonGroup | null }) {
+  return Boolean(row.qualified) || row.lossReasonGroup === "MARKETING";
+}
+
+/** Eligible leads whose quality is not yet decided. Unknown quality, not low quality. */
+export function isUnclassifiedLead(row: { qualified?: boolean; lossReasonGroup?: LossReasonGroup | null }) {
+  return !isClassifiedLead(row);
+}
+
+/**
+ * Records that claim both verdicts at once. Canonically impossible — MARKETING
+ * is only ever produced from a LOW_QUALITY status, which forces
+ * `qualified: false` — so a non-zero count means a stale or hand-edited record,
+ * and it is surfaced in Diagnostics rather than silently absorbed by the
+ * `Saralangan = Sifatli + Sifatsiz` equation.
+ */
+export function countClassificationConflicts(rows: { qualified?: boolean; lossReasonGroup?: LossReasonGroup | null }[]) {
+  return rows.filter((row) => Boolean(row.qualified) && row.lossReasonGroup === "MARKETING").length;
+}

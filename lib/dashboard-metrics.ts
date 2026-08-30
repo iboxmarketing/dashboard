@@ -1,6 +1,6 @@
 import { countDuplicates } from "./duplicates";
 import { countsAsOperational } from "./stale-resolution";
-import { isEligibleCohortDeal, isSalesLost } from "./sales-logic";
+import { countClassificationConflicts, isClassifiedLead, isEligibleCohortDeal, isSalesLost, isUnclassifiedLead } from "./sales-logic";
 import { summarizeSla } from "./sla";
 import type { AnalyticsRecord } from "./types";
 
@@ -14,12 +14,27 @@ import type { AnalyticsRecord } from "./types";
  * Two populations, deliberately different:
  *  - cohort  : deals CREATED inside the selected range, minus routed deals
  *  - period  : deals WON inside the selected range, whatever their creation date
+ *
+ * Inside the cohort there is a second, independent split that must never be
+ * confused with the first:
+ *  - classified   : quality already decided (accepted as SQL, or rejected as
+ *                   Not Relevant). This is the denominator for QUALITY rates.
+ *  - unclassified : quality not decided yet. Unknown, not bad.
+ *
+ * FUNNEL rates (Lead → SQL, Lead → Sotuv) keep the full eligible cohort as
+ * their denominator, because they measure how much of everything that arrived
+ * got through. QUALITY rates (Sifatli/Sifatsiz) use the classified population,
+ * because they measure the verdicts we have actually reached. Swapping the two
+ * makes a young cohort look low quality and a picked-over one look excellent.
  */
 
 export type DashboardMetricId =
   | "leads" | "sql" | "not_relevant" | "sales_lost" | "cohort_sales" | "period_sales"
   | "revenue" | "lead_to_sql" | "lead_to_sale" | "sql_to_sale" | "avg_processing"
-  | "sla" | "avg_check" | "median_check" | "sales_cycle" | "duplicates" | "active_cohort";
+  | "sla" | "avg_check" | "median_check" | "sales_cycle" | "duplicates" | "active_cohort"
+  | "classified_leads" | "unclassified_leads" | "classification_coverage"
+  | "quality_accepted_rate" | "low_quality_rate" | "not_relevant_of_leads"
+  | "duplicates_eligible" | "unique_ish_leads";
 
 /** Stable ids; user-facing labels may change without breaking saved settings. */
 export const DASHBOARD_METRICS: { id: DashboardMetricId; label: string }[] = [
@@ -40,6 +55,16 @@ export const DASHBOARD_METRICS: { id: DashboardMetricId; label: string }[] = [
   { id: "sales_cycle", label: "Savdo sikli" },
   { id: "duplicates", label: "Takroriy lead" },
   { id: "active_cohort", label: "Aktiv leadlar" },
+  // Added additively so every saved widget and saved card selection keeps its
+  // meaning; no existing id changed what it counts.
+  { id: "classified_leads", label: "Saralangan leadlar" },
+  { id: "unclassified_leads", label: "Saralanmagan leadlar" },
+  { id: "classification_coverage", label: "Saralash qamrovi" },
+  { id: "quality_accepted_rate", label: "Sifatli lead %" },
+  { id: "low_quality_rate", label: "Sifatsiz lead %" },
+  { id: "not_relevant_of_leads", label: "Umumiy leadlardan Not Relevant %" },
+  { id: "duplicates_eligible", label: "Takroriy lead (eligible)" },
+  { id: "unique_ish_leads", label: "Takrorsiz lead (taxminiy)" },
 ];
 
 export const DEFAULT_DASHBOARD_METRIC_IDS: DashboardMetricId[] = [
@@ -82,10 +107,21 @@ export function buildDashboardMetrics(cohortRecords: AnalyticsRecord[], periodSa
   const notRelevant = eligible.filter((row) => row.lossReasonGroup === "MARKETING");
   const salesLost = eligible.filter(isSalesLost);
   const cohortSales = eligible.filter((row) => row.salesStatus === "WON");
+  const classified = eligible.filter(isClassifiedLead);
+  const unclassified = eligible.filter(isUnclassifiedLead);
   const sla = summarizeSla(eligible);
+  // Duplicates are reported over both populations. The historical metric counts
+  // the raw cohort, which includes routed deals that Leadlar excludes, so the
+  // two are published side by side rather than one being changed underneath a
+  // label that has been read the same way for months.
+  const duplicatesRaw = countDuplicates(cohortRecords);
+  const duplicatesEligible = countDuplicates(eligible);
 
   return {
     eligible, sql, notRelevant, salesLost, cohortSales, periodSales, sla,
+    classified, unclassified,
+    /** Non-zero means a record asserts both verdicts; Diagnostics shows it. */
+    classificationConflicts: countClassificationConflicts(eligible),
     counts: {
       leads: eligible.length,
       sql: sql.length,
@@ -93,7 +129,13 @@ export function buildDashboardMetrics(cohortRecords: AnalyticsRecord[], periodSa
       sales_lost: salesLost.length,
       cohort_sales: cohortSales.length,
       period_sales: periodSales.length,
-      duplicates: countDuplicates(cohortRecords),
+      duplicates: duplicatesRaw,
+      duplicates_eligible: duplicatesEligible,
+      // Diagnostic estimate only. Never a substitute for Leadlar: one Bitrix
+      // deal id is one lead, and a repeat customer may be a real second deal.
+      unique_ish_leads: eligible.length - duplicatesEligible,
+      classified_leads: classified.length,
+      unclassified_leads: unclassified.length,
       // Aktiv leadlar is a *current operational* figure, so it excludes deals
       // that have left the sync scope or vanished from Bitrix. Every other
       // metric here is historical-cohort based and deliberately ignores
@@ -102,10 +144,18 @@ export function buildDashboardMetrics(cohortRecords: AnalyticsRecord[], periodSa
       active_cohort: eligible.filter((row) => row.salesStatus === "ACTIVE" && countsAsOperational(row.currentScope)).length,
     },
     rates: {
+      // Funnel: denominator is every incoming eligible lead.
       lead_to_sql: percent(sql.length, eligible.length),
+      lead_to_sale: percent(cohortSales.length, eligible.length),
+      // Quality: denominator is the leads we have actually judged.
+      quality_accepted_rate: percent(sql.length, classified.length),
+      low_quality_rate: percent(notRelevant.length, classified.length),
+      classification_coverage: percent(classified.length, eligible.length),
+      // Kept for the explicitly-labelled full-funnel card. `not_relevant` is
+      // retained as an alias so no existing consumer silently changes meaning.
+      not_relevant_of_leads: percent(notRelevant.length, eligible.length),
       not_relevant: percent(notRelevant.length, eligible.length),
       sales_lost: percent(salesLost.length, sql.length),
-      lead_to_sale: percent(cohortSales.length, eligible.length),
       sql_to_sale: percent(cohortSales.length, sql.length),
       sla: sla.rate,
     },
@@ -146,8 +196,12 @@ export function resolveDashboardMetric(metrics: DashboardMetrics, id: DashboardM
   switch (id) {
     case "leads": case "sql": case "not_relevant": case "sales_lost":
     case "cohort_sales": case "period_sales": case "duplicates": case "active_cohort":
+    case "classified_leads": case "unclassified_leads": case "duplicates_eligible":
+    case "unique_ish_leads":
       return { label, value: String(metrics.counts[id]) };
     case "lead_to_sql": case "lead_to_sale": case "sql_to_sale": case "sla":
+    case "classification_coverage": case "quality_accepted_rate":
+    case "low_quality_rate": case "not_relevant_of_leads":
       return { label, value: `${metrics.rates[id]}%` };
     case "revenue": return { label, value: metrics.money.revenue.toLocaleString("uz-UZ") };
     case "avg_check": return { label, value: number(metrics.money.avg_check) };

@@ -19,13 +19,36 @@ This document records the product owner's current rules. If a request conflicts 
 - It remains Marketing low quality even if the deal previously visited Обработка/SQL.
 - Failure-reason text does not override this stage-authoritative rule.
 - Numerator: unique `Not Relevant` deals in the chosen cohort.
-- Denominator for low-quality rate: unique project leads in the same cohort.
+- Denominator for the low-quality rate: **classified leads** in the same cohort, not all leads. See *Classified vs unclassified* below.
 
 ### Quality accepted
 
 A deal is quality accepted when it reaches the configured SQL stage, normally Обработка.
 
 To avoid understating quality when Bitrix history is incomplete, genuine Sales losses and won deals also count as quality accepted. `Not Relevant` never does.
+
+### Classified vs unclassified
+
+A lead's quality is **decided** once it has been either accepted (`qualified`) or
+rejected as `Not Relevant`. Everything else — Распределение, Нет ответа, Первое
+касание, callback/retry stages and any other pre-SQL stage — has **unknown**
+quality, not low quality.
+
+- Saralangan (classified) = `qualified === true` OR `lossReasonGroup === "MARKETING"`.
+- Saralanmagan (unclassified) = eligible cohort minus Saralangan.
+- Quality rates (Sifatli %, Sifatsiz %) divide by Saralangan.
+- Funnel rates (Lead → SQL, Lead → Sotuv) divide by Leadlar, and keep doing so:
+  they measure total funnel efficiency, not quality.
+- `Saralash qamrovi` = Saralangan ÷ Leadlar makes cohort maturity visible instead
+  of letting an unworked cohort masquerade as a low-quality one. No maturity
+  threshold is imposed; the percentage is reported objectively.
+
+Membership is determined only by the canonical `qualified` / `lossReasonGroup`
+fields, never by a display stage name, so an unlisted or renamed pre-SQL stage is
+unclassified by default rather than being silently miscounted.
+
+A `Not Relevant` deal that previously visited SQL stays `qualified: false`: it is
+classified and low quality, and must never also count as quality accepted.
 
 ## 3. Sales loss
 
@@ -98,6 +121,13 @@ Current stage workload uses current Bitrix `ASSIGNED_BY_ID`, because it answers 
 - Missing failure reason on a terminal lead is a data-quality issue and must be visible in Diagnostics.
 
 ## 10. Duplicate signal
+
+Duplicates are an analytical signal, never authoritative deduplication: one
+Bitrix deal id is one lead. They are not removed from Leadlar, SQL, Saralangan,
+Sifatli, Sifatsiz, sales or revenue, because the same contact or company can
+legitimately open a second real opportunity. *Takrorsiz lead (taxminiy)* is a
+diagnostic estimate only.
+
 
 - First key: Contact ID.
 - Fallback key: Company ID.

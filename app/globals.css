@@ -160,7 +160,12 @@ aside nav button i { margin-left: auto; width: 7px; height: 7px; border-radius: 
 .kpi-card.slate .kpi-icon { color: #657188; background: #eef0f4; }
 
 .dashboard-grid { display: grid; gap: 11px; margin-top: 11px; }
-.dashboard-grid.two-one { grid-template-columns: minmax(0, 1.7fr) minmax(320px, 1fr); }
+.dashboard-grid.two-one { grid-template-columns: minmax(0, 1.7fr) minmax(min(320px, 100%), 1fr); }
+/* Quality and funnel sit side by side so the two denominators read as separate
+   questions rather than one list of percentages. Both tracks use minmax(0,1fr)
+   so a long formula line scrolls inside its panel instead of widening the page. */
+.dashboard-grid.split { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.formula-note { color: #7c8798; font-size: 9px; display: block; margin-top: 2px; }
 .panel { margin-top: 11px; padding: 17px; border: 1px solid var(--line); border-radius: 13px; background: white; box-shadow: var(--shadow); }
 .dashboard-grid > .panel { margin-top: 0; }
 .section-header { min-height: 35px; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
@@ -390,7 +395,7 @@ footer { margin-top: 22px; padding-top: 14px; display: flex; justify-content: sp
   .sync-time, .avatar { display: none; }
   .content-inner { padding: 16px; }
   .filters-shell { top: 66px; margin-left: -16px; margin-right: -16px; padding-left: 16px; padding-right: 16px; }
-  .dashboard-grid.two-one, .settings-grid { grid-template-columns: 1fr; }
+  .dashboard-grid.two-one, .dashboard-grid.split, .settings-grid { grid-template-columns: 1fr; }
   .config-fields { grid-template-columns: 1fr; }
   .segment-grid { grid-template-columns: 1fr; }
   .page-title { align-items: flex-start; }
