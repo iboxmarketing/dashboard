@@ -232,3 +232,16 @@ test("27: sifat ko‘rsatkichlari maxrajini nomida ko‘rsatadi", () => {
   assert.match(label("not_relevant_of_leads"), /Umumiy leadlardan/);
   assert.match(label("unique_ish_leads"), /taxminiy/);
 });
+
+test("28: Custom Pages SALES_KPI widget yangi metriklarni qabul qiladi", async () => {
+  const { validateWidgetConfig } = await import("../lib/custom-pages");
+  for (const metricId of ["classified_leads", "unclassified_leads", "classification_coverage", "quality_accepted_rate", "low_quality_rate", "not_relevant_of_leads", "duplicates_eligible", "unique_ish_leads"]) {
+    const result = validateWidgetConfig("SALES_KPI", { metricId, range: "30" });
+    assert.equal(result.ok, true, `${metricId} widget sifatida saqlanishi kerak`);
+  }
+  // Saved widgets on existing pages keep validating against the same ids.
+  for (const legacy of ["leads", "sql", "not_relevant", "cohort_sales", "revenue", "duplicates"]) {
+    assert.equal(validateWidgetConfig("SALES_KPI", { metricId: legacy, range: "30" }).ok, true, `${legacy} buzilmasligi kerak`);
+  }
+  assert.equal(validateWidgetConfig("SALES_KPI", { metricId: "made_up_metric", range: "30" }).ok, false);
+});
