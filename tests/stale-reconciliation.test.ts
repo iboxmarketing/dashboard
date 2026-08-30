@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { scheduledDecision } from "../lib/sync-schedule";
 import { classifyLookupFailure, DEFINITIVE_MISSING_CODES, TRANSIENT_CODES, toDealSnapshot } from "../lib/deal-snapshot";
 import { currentScopeFor, resolveStaleDeal, countsAsOperational } from "../lib/stale-resolution";
 import { selectStaleCandidates, RECONCILE_BATCH_LIMIT, reconcileStateKey } from "../lib/reconcile-plan";
@@ -230,4 +231,68 @@ test("the by-id snapshot still carries the fields reconciliation needs", () => {
   assert.equal(snap.closed, true);
   assert.equal(snap.categoryId, "0");
   assert.equal(snap.opportunity, 500);
+});
+
+// ------------------------------------------- incident 1102 scale hardening ---
+
+test("reconciliation selects candidates without loading full analytics payloads", () => {
+  const recon = readFileSync(new URL("../lib/post-sync-reconciliation.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(recon, /listAnalyticsRecords/,
+    "the full-table parse must not run inside the sync's final step");
+  assert.match(recon, /listReconcileCandidates\(categoryIds\)/);
+
+  const storage = readFileSync(new URL("../lib/storage.ts", import.meta.url), "utf8");
+  const fn = storage.slice(storage.indexOf("export async function listReconcileCandidates"), storage.indexOf("export async function setAnalyticsCurrentScope"));
+  // Only the four fields candidate selection needs, extracted in SQLite.
+  assert.match(fn, /json_extract\(payload, '\$\.salesStatus'\)/);
+  assert.match(fn, /json_extract\(payload, '\$\.currentScope'\)/);
+  assert.doesNotMatch(fn, /JSON\.parse/, "no payload is parsed in JS");
+  assert.doesNotMatch(fn, /SELECT payload FROM analytics_records/, "the whole payload is never selected");
+  assert.match(fn, /WHERE category_id IN/, "scoped to the synced funnels, not the whole table");
+});
+
+test("reconcileState is persisted even when there is nothing to do", () => {
+  const recon = readFileSync(new URL("../lib/post-sync-reconciliation.ts", import.meta.url), "utf8");
+  const empty = recon.slice(recon.indexOf("if (!batch.length)"), recon.indexOf("const lookups"));
+  assert.match(empty, /saveDictionary\(reconcileStateKey\(pipelineId\), state\)/,
+    "lastRunAt must reflect the real last run, not the last run that found work");
+});
+
+test("autoSyncMinutes controls the interval, not just on/off", () => {
+  const base = { selectedPipelineIds: ["3"], job: null, now: new Date("2026-08-30T12:00:00.000Z") };
+  const ago = (minutes: number) => new Date(base.now.getTime() - minutes * 60_000).toISOString();
+
+  // The incident: 60 was treated as "enabled" and ran on every 15-minute tick.
+  assert.deepEqual(scheduledDecision({ ...base, autoSyncMinutes: 60, lastSyncAt: ago(15) }), { run: false, reason: "TOO_SOON" });
+  assert.deepEqual(scheduledDecision({ ...base, autoSyncMinutes: 60, lastSyncAt: ago(30) }), { run: false, reason: "TOO_SOON" });
+  assert.deepEqual(scheduledDecision({ ...base, autoSyncMinutes: 60, lastSyncAt: ago(45) }), { run: false, reason: "TOO_SOON" });
+  assert.equal(scheduledDecision({ ...base, autoSyncMinutes: 60, lastSyncAt: ago(61) }).run, true, "runs once an hour");
+
+  assert.deepEqual(scheduledDecision({ ...base, autoSyncMinutes: 30, lastSyncAt: ago(15) }), { run: false, reason: "TOO_SOON" });
+  assert.equal(scheduledDecision({ ...base, autoSyncMinutes: 30, lastSyncAt: ago(31) }).run, true);
+
+  // 15 matches the cron cadence, so every eligible tick runs.
+  assert.equal(scheduledDecision({ ...base, autoSyncMinutes: 15, lastSyncAt: ago(15) }).run, true);
+  assert.deepEqual(scheduledDecision({ ...base, autoSyncMinutes: 0, lastSyncAt: ago(999) }), { run: false, reason: "DISABLED" });
+});
+
+test("cron jitter does not skip a run that is essentially due", () => {
+  const now = new Date("2026-08-30T12:00:00.000Z");
+  const base = { selectedPipelineIds: ["3"], job: null, now };
+  // Cloudflare fires up to ~a minute late; 59m50s must still count as 60.
+  assert.equal(scheduledDecision({ ...base, autoSyncMinutes: 60, lastSyncAt: new Date(now.getTime() - 59 * 60_000).toISOString() }).run, true);
+  // A first run with no recorded sync is never blocked.
+  assert.equal(scheduledDecision({ ...base, autoSyncMinutes: 60, lastSyncAt: null }).run, true);
+  assert.equal(scheduledDecision({ ...base, autoSyncMinutes: 60, lastSyncAt: "not-a-date" }).run, true);
+});
+
+test("existing scheduled semantics are unchanged by the interval gate", () => {
+  const now = new Date("2026-08-30T12:00:00.000Z");
+  const stale = new Date(now.getTime() - 999 * 60_000).toISOString();
+  const base = { autoSyncMinutes: 15, selectedPipelineIds: ["3"], lastSyncAt: stale, now };
+  assert.deepEqual(scheduledDecision({ ...base, job: { status: "running", heartbeatAt: new Date(now.getTime() - 60_000).toISOString() } }), { run: false, reason: "JOB_RUNNING" });
+  assert.deepEqual(scheduledDecision({ ...base, job: { status: "error" } }), { run: false, reason: "PREVIOUS_ERROR" });
+  assert.deepEqual(scheduledDecision({ ...base, job: { status: "paused" } }), { run: false, reason: "PAUSED" });
+  assert.deepEqual(scheduledDecision({ ...base, job: { status: "running", heartbeatAt: new Date(now.getTime() - 30 * 60_000).toISOString() } }), { run: true, action: "RESUME" });
+  assert.deepEqual(scheduledDecision({ ...base, selectedPipelineIds: [], job: null }), { run: false, reason: "NOT_CONFIGURED" });
 });

@@ -1,7 +1,7 @@
 import { getDealsByIds } from "./deal-lookup";
 import { emptyReconcileState, reconcileStateKey, selectStaleCandidates, type ReconcileState } from "./reconcile-plan";
 import { currentScopeFor, resolveStaleDeal, type StaleResolution } from "./stale-resolution";
-import { getDictionary, listAnalyticsRecords, saveDictionary, setAnalyticsCurrentScope } from "./storage";
+import { getDictionary, listReconcileCandidates, saveDictionary, setAnalyticsCurrentScope } from "./storage";
 import { bitrixList, safeBitrixMessage } from "./bitrix";
 import type { RawCurrentStageDeal } from "./current-stages";
 import type { DashboardSettings } from "./types";
@@ -38,13 +38,18 @@ export async function runPostSyncReconciliation(settings: DashboardSettings): Pr
         },
         select: ["ID"],
       }, { maxPages: 100 }),
-      listAnalyticsRecords(),
+      listReconcileCandidates(categoryIds),
     ]);
     const liveIds = new Set(live.map((row) => String((row as Record<string, unknown>).ID ?? "")));
     const { batch, pending } = selectStaleCandidates(records, liveIds, categoryIds);
     state.pending = pending;
     state.checked = batch.length;
-    if (!batch.length) return state;
+    // Persist even with nothing to do, so lastRunAt reflects the real last run
+    // rather than the last run that happened to find work.
+    if (!batch.length) {
+      await saveDictionary(reconcileStateKey(pipelineId), state);
+      return state;
+    }
 
     const lookups = await getDealsByIds(batch);
     const config = { selectedPipelineIds: categoryIds, postSalePipelineIds: settings.postSalePipelineIds ?? [] };

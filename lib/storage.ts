@@ -79,6 +79,38 @@ export async function saveSettings(settings: DashboardSettings) {
  * next canonical rebuild overwrites the payload wholesale and naturally clears
  * the mark, which is how a deal that returns to the funnel recovers.
  */
+/**
+ * Candidate rows for stale reconciliation.
+ *
+ * Deliberately NOT `listAnalyticsRecords()`. That loads and JSON.parses every
+ * analytics payload — 3,000+ records and ~8 MB of JSON on production — when
+ * reconciliation needs four fields. Doing it inside the sync's final step put a
+ * third full-table load into a request that already holds the raw-deal batch,
+ * stage history and dictionaries, for no benefit.
+ *
+ * `json_extract` keeps the work in SQLite and returns scalars.
+ */
+export async function listReconcileCandidates(categoryIds: string[]) {
+  await ensureSchema();
+  const ids = categoryIds.map(String).filter(Boolean);
+  if (!ids.length) return [];
+  const placeholders = ids.map(() => "?").join(", ");
+  const result = await getD1().prepare(
+    `SELECT deal_id AS dealId,
+            category_id AS categoryId,
+            json_extract(payload, '$.salesStatus') AS salesStatus,
+            json_extract(payload, '$.currentScope') AS currentScope
+       FROM analytics_records
+      WHERE category_id IN (${placeholders})`,
+  ).bind(...ids).all<{ dealId: string; categoryId: string; salesStatus: string | null; currentScope: string | null }>();
+  return (result.results ?? []).map((row) => ({
+    dealId: String(row.dealId),
+    categoryId: String(row.categoryId),
+    salesStatus: row.salesStatus ?? "ACTIVE",
+    currentScope: (row.currentScope ?? undefined) as "IN_SCOPE" | "OUT_OF_SCOPE" | "UNAVAILABLE" | undefined,
+  }));
+}
+
 export async function setAnalyticsCurrentScope(dealId: string, scope: "IN_SCOPE" | "OUT_OF_SCOPE" | "UNAVAILABLE") {
   await ensureSchema();
   const row = await getD1().prepare("SELECT payload FROM analytics_records WHERE deal_id = ?").bind(dealId).first<{ payload: string }>();
