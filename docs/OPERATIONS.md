@@ -91,6 +91,49 @@ GitHub stores migrations, not D1 rows. Most analytics data is recoverable from B
 
 Capture these values in an internal password manager/runbook, never in a public or AI-readable repository.
 
+## Rolling back a release that changed stored analytics semantics
+
+`qualified` and the fields derived from it are **computed during sync and stored
+on the record**, so an analytics-version bump plus a backfill changes data, not
+just code. Code and data must then be rolled back together.
+
+A code-only rollback is safe **only before the backfill starts**. Once
+version-6 records exist, the old Worker reads them with the old rules, and the
+two disagree. Concretely, the old `isSalesLost` is `lossReasonGroup === "SALES"`
+with no `qualified` requirement, so on the 2026-08 production cohort:
+
+| Combination | SQL | Sotilmadi | rate |
+| --- | --- | --- | --- |
+| old code + v5 data (before release) | 249 | 124 | 50% |
+| new code + v6 data (target) | 167 | 42 | 25% |
+| **old code + v6 data (code-only rollback)** | **167** | **124** | **74%** |
+
+The last row is a state neither rule produces by design: the 82 pre-SQL closures
+are excluded from SQL but still counted in Sotilmadi. Do not describe that as a
+restored dashboard.
+
+**Rollback matrix**
+
+| Situation | Action |
+| --- | --- |
+| Failure **before** any backfill write | Worker rollback alone is sufficient. |
+| Failure during/after backfill, corrected data acceptable | Stay on the new Worker. Resume the backfill from its stored cursor, or leave it partially rebuilt — records stay individually consistent and the legacy banner flags the v5/v6 mix. |
+| Full **old** semantics required | Worker rollback **and** D1 Time Travel restore to the pre-backfill bookmark. Both, always. |
+
+Take the bookmark immediately before the first backfill write and keep it with
+the release notes:
+
+```
+wrangler d1 time-travel info ibox-dashboard-production            # record the bookmark
+wrangler d1 export ibox-dashboard-production --remote --output <path>   # optional second copy
+wrangler d1 time-travel restore ibox-dashboard-production --bookmark=<id>
+```
+
+A full Bitrix re-sync is **not** a rollback: it re-derives records with whatever
+code is deployed, so it cannot restore the previous semantics and it is exactly
+the load this release avoids. The export contains hashed share tokens only and no
+webhook, but it is still production data — keep it out of the repository.
+
 ## Release checklist
 
 - [ ] PR explains numerator, denominator and date basis.
@@ -100,5 +143,6 @@ Capture these values in an internal password manager/runbook, never in a public 
 - [ ] No secret or production data is tracked.
 - [ ] Migration is additive and reviewed, if present.
 - [ ] Resync requirement is stated.
+- [ ] If persisted analytics semantics changed: ANALYTICS_VERSION bumped, a pre-backfill Time Travel bookmark recorded, and `autoSyncMinutes` set to 0 for the backfill window.
 - [ ] Site deployment reaches `succeeded`.
 - [ ] One Bitrix number is manually reconciled after deploy.

@@ -96,8 +96,11 @@ SQL evidence are **SQLgacha yopilgan** and count in none of the quality KPIs.
 
 Note for releases: `qualified` is computed during sync and **stored** on the
 record, so a change to this rule only affects deals that are subsequently
-re-synced. Existing records keep the value they were written with until their
-history is re-processed.
+re-synced or rebuilt by the analytics-only backfill. Existing records keep the
+value they were written with until then — and because the value is stored,
+rolling the *code* back after a backfill does not roll the *data* back. See
+"Rolling back a release that changed stored analytics semantics" in
+`docs/OPERATIONS.md`.
 
 Invariants, enforced by `tests/lead-classification.test.ts` and `tests/sql-evidence.test.ts`:
 
