@@ -114,14 +114,18 @@ test("dictionary builders derive stage ordering from SORT, never from names", ()
   assert.equal(options.get("UF_X")?.get("1"), "Bir");
 });
 
-test("9: one request rebuilds at most 5 deals, in exactly one batch", () => {
+test("9: one request rebuilds a measured-safe page, in exactly one batch", () => {
   const backfill = code("../lib/analytics-backfill.ts");
   const route = code("../app/api/backfill/route.ts");
   const batchSize = Number(backfill.match(/BACKFILL_BATCH_SIZE = (\d+)/)?.[1]);
   assert.ok(Number.isFinite(batchSize));
-  // Production returned Error 1102 at 25 deals in a single batch. Raising this
-  // again requires deliberately editing this test, which is the point.
-  assert.ok(batchSize <= 5, `BACKFILL_BATCH_SIZE is ${batchSize}; production 1102'd at 25`);
+  // The limit is CPU, and most of a request's cost is fixed rather than
+  // per-deal, so this is a floor as well as a ceiling: too small and the
+  // rebuild pays the fixed cost too many times, which is how 5 failed where 40
+  // completed three full passes cleanly. Changing either bound should mean
+  // re-measuring, which is why both are pinned here.
+  assert.ok(batchSize >= 25, `BACKFILL_BATCH_SIZE is ${batchSize}; below 25 the fixed per-request cost dominates`);
+  assert.ok(batchSize <= 80, `BACKFILL_BATCH_SIZE is ${batchSize}; the sync's own step size is the upper reference`);
   assert.doesNotMatch(route, /for\s*\(|while\s*\(/, "no batch loop in the request handler");
   assert.equal((route.match(/runAnalyticsBackfillBatch\(/g) ?? []).length, 1, "exactly one batch call site per request");
 });

@@ -27,20 +27,26 @@ import type { CrmFieldOption } from "./types";
 /**
  * Deals rebuilt per batch.
  *
- * Measured on production, not guessed. At 25 the request still returned Error
- * 1102, because the per-deal data was never the dominant term:
+ * Measured, and the measurement inverted the obvious answer. The failure mode
+ * is `exceededCpu`, not memory, and most of a request's cost is fixed rather
+ * than per-deal:
  *
- *   users + statuses + crmFields   185 KB of JSON, parsed on EVERY batch
- *   25 raw deals                    11 KB
- *   ~95 stage-history rows          14 KB
- *   25 rebuilt payloads             65 KB stringified on write
+ *   users + statuses + crmFields   185 KB of JSON parsed on every request
+ *   ensureSchema()                 ~140 idempotent DDL statements per request
+ *   N raw deals                    ~443 B each
+ *   N rebuilt payloads             ~2.6 KB each, stringified on write
  *
- * The dictionaries are a fixed cost that shrinking the batch cannot touch, and
- * parsed object graphs run several times their JSON size. So the fix is both:
- * five deals per batch, and — see below — never holding a raw dictionary array
- * alive once its lookup Map has been derived from it.
+ * Shrinking the batch therefore makes things *worse per deal*: the same fixed
+ * cost buys less work, so the whole rebuild pays it far more times. Staging
+ * bore that out — at 5 deals the rebuild failed repeatedly (once after 15
+ * requests, once after 232), while at 40 it completed three consecutive full
+ * passes in 43 requests each with zero failures and the dashboard serving 200s
+ * throughout.
+ *
+ * This is why the sync's own analytics step, at 80 deals, has never hit the
+ * limit: it amortises the same overhead over sixteen times the work.
  */
-export const BACKFILL_BATCH_SIZE = 5;
+export const BACKFILL_BATCH_SIZE = 40;
 
 /**
  * Rebuilds one bounded page of records.
