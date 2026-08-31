@@ -1,3 +1,4 @@
+import type { MetricRecord } from "./dashboard-record";
 import { countDuplicates } from "./duplicates";
 import { STAGE_SEMANTIC_GROUPS, stageIdList, type StageSemantics } from "./stage-config";
 import type { AnalyticsRecord } from "./types";
@@ -34,14 +35,27 @@ export function isMissingSalesManager(row: Pick<AnalyticsRecord, "salesManagerId
   return !row.salesManagerId;
 }
 
-export function summarizeDataQuality(records: AnalyticsRecord[]) {
-  const count = (predicate: (row: AnalyticsRecord) => boolean) => records.filter(predicate).length;
+/**
+ * History length from either record shape: the stored `AnalyticsRecord` carries
+ * `stageTimeline`, the dashboard DTO carries `stageHistoryCount` derived from
+ * it in SQL. Neither is invented — a record with no history yields 0 in both.
+ */
+export function stageHistoryLength(row: { stageTimeline?: unknown[]; stageHistoryCount?: number }) {
+  if (typeof row.stageHistoryCount === "number") return row.stageHistoryCount;
+  return row.stageTimeline?.length ?? 0;
+}
+
+export function summarizeDataQuality(records: MetricRecord[]) {
+  const count = (predicate: (row: MetricRecord) => boolean) => records.filter(predicate).length;
   return {
     wonWithoutSaleDate: count(isWonWithoutSaleDate),
     managerIdZero: count(hasManagerIdZero),
     missingSalesManager: count(isMissingSalesManager),
     unknownProcessingTime: count((row) => row.processingSource === "NO_PROCESSING_EVIDENCE"),
-    missingStageHistory: count((row) => !row.stageTimeline.length),
+    // The dashboard response carries `stageHistoryCount` instead of the full
+    // timeline, so read whichever the caller has. Both describe the same
+    // stored history, so the count is identical either way.
+    missingStageHistory: count((row) => !stageHistoryLength(row)),
     missingFailureReason: count((row) => ["LOW_QUALITY", "LOST"].includes(row.salesStatus) && row.lossReason === "Sabab ko‘rsatilmagan"),
     currentResponsibleFallback: count((row) => row.salesManagerAttribution === "CURRENT_RESPONSIBLE"),
     duplicateLeads: countDuplicates(records),

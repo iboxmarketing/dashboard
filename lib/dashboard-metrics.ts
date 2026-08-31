@@ -2,7 +2,7 @@ import { countDuplicates } from "./duplicates";
 import { countsAsOperational } from "./stale-resolution";
 import { countClassificationConflicts, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isSalesLost, isUnclassifiedLead } from "./sales-logic";
 import { summarizeSla } from "./sla";
-import type { AnalyticsRecord } from "./types";
+import type { MetricRecord } from "./dashboard-record";
 
 /**
  * Canonical dashboard metric definitions.
@@ -102,7 +102,7 @@ export type DashboardMetrics = ReturnType<typeof buildDashboardMetrics>;
  * @param cohortRecords deals created inside the selected range (routing still present)
  * @param periodSales   deals whose trustworthy wonAt falls inside the selected range
  */
-export function buildDashboardMetrics(cohortRecords: AnalyticsRecord[], periodSales: AnalyticsRecord[]) {
+export function buildDashboardMetrics(cohortRecords: MetricRecord[], periodSales: MetricRecord[]) {
   const eligible = cohortRecords.filter(isEligibleCohortDeal);
   const sql = eligible.filter((row) => row.qualified);
   const notRelevant = eligible.filter((row) => row.lossReasonGroup === "MARKETING");
@@ -183,7 +183,7 @@ export function buildDashboardMetrics(cohortRecords: AnalyticsRecord[], periodSa
  * Shared so Custom Pages compute Sales numbers from the same definitions as
  * the Sales dashboard rather than re-deriving them.
  */
-export function selectPeriodPopulations(records: AnalyticsRecord[], fromMs: number, toMs: number) {
+export function selectPeriodPopulations(records: MetricRecord[], fromMs: number, toMs: number) {
   const inRange = (value: string | null) => {
     if (!value) return false;
     const time = new Date(value).getTime();

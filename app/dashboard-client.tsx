@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ErrorInfo, ReactNode } from "react";
+import type { DashboardRecord, StageFunnelRecord } from "@/lib/dashboard-record";
 import type { AnalyticsRecord, CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, StageReconciliation, SyncProgressState } from "@/lib/types";
 import { ANALYTICS_VERSION } from "@/lib/analytics";
 import { canonicalizeFieldOptions, normalizeCrmFields } from "@/lib/crm-fields";
@@ -113,10 +114,10 @@ function fmtDate(value: string | null, withTime = true) {
 }
 /** Re-resolves SLA state against the current clock so a lead can cross its
  * deadline without waiting for another sync. */
-function withLiveSlaState(rows: AnalyticsRecord[], settings: DashboardSettings, now = new Date()): AnalyticsRecord[] {
+function withLiveSlaState(rows: DashboardRecord[], settings: DashboardSettings, now = new Date()): DashboardRecord[] {
   return rows.map((row) => ({ ...row, slaStatus: resolveSlaState(row, settings, now) }));
 }
-function hydrateRecord(row: AnalyticsRecord): AnalyticsRecord {
+function hydrateRecord(row: DashboardRecord): DashboardRecord {
   return {
     ...row,
     analyticsVersion: Number(row.analyticsVersion ?? 1),
@@ -142,7 +143,7 @@ function hydrateRecord(row: AnalyticsRecord): AnalyticsRecord {
     companyId: row.companyId ?? null,
     customerKey: row.customerKey ?? null,
     duplicateOfDealId: row.duplicateOfDealId ?? null,
-    stageTimeline: row.stageTimeline ?? [],
+    stageHistoryCount: Number(row.stageHistoryCount ?? 0),
     salesManagerId: row.salesManagerId ?? null,
     salesManager: row.salesManager ?? null,
     salesManagerAttribution: row.salesManagerAttribution ?? "UNKNOWN",
@@ -257,8 +258,8 @@ type ManagerRow = {
   avgCheck: number | null; medianCheck: number | null; salesCycle: number | null;
 };
 
-function buildManagers(records: AnalyticsRecord[], wonRecords: AnalyticsRecord[] = records.filter((row) => row.salesStatus === "WON")): ManagerRow[] {
-  const grouped = new Map<string, AnalyticsRecord[]>(); const wonGrouped = new Map<string, AnalyticsRecord[]>();
+function buildManagers(records: DashboardRecord[], wonRecords: DashboardRecord[] = records.filter((row) => row.salesStatus === "WON")): ManagerRow[] {
+  const grouped = new Map<string, DashboardRecord[]>(); const wonGrouped = new Map<string, DashboardRecord[]>();
   for (const record of records) {
     const key = salesManagerKey(record);
     grouped.set(key, [...(grouped.get(key) ?? []), record]);
@@ -317,7 +318,7 @@ function ManagerTable({ rows, onSelect }: { rows: ManagerRow[]; onSelect: (manag
   </tr>)}</tbody></table>{!rows.length && <div className="empty-table">Tanlangan filtr bo‘yicha menejerlar topilmadi.</div>}</div>;
 }
 
-function FiltersBar({ filters, setFilters, records, currentStages, mode = "cohort" }: { filters: Filters; setFilters: React.Dispatch<React.SetStateAction<Filters>>; records: AnalyticsRecord[]; currentStages?: CurrentStageRecord[]; mode?: "cohort" | "current" }) {
+function FiltersBar({ filters, setFilters, records, currentStages, mode = "cohort" }: { filters: Filters; setFilters: React.Dispatch<React.SetStateAction<Filters>>; records: DashboardRecord[]; currentStages?: CurrentStageRecord[]; mode?: "cohort" | "current" }) {
   const [expanded, setExpanded] = useState(false);
   const managers = mode === "current"
     ? [...new Map((currentStages ?? []).map((row) => [row.assignedManagerId, row.assignedManager] as const)).entries()]
@@ -357,7 +358,7 @@ function FiltersBar({ filters, setFilters, records, currentStages, mode = "cohor
   </div>;
 }
 
-function DashboardView({ records, salesRecords, previousRecords, previousSalesRecords, metricIds, onManager }: { records: AnalyticsRecord[]; salesRecords: AnalyticsRecord[]; previousRecords: AnalyticsRecord[]; previousSalesRecords: AnalyticsRecord[]; metricIds: string[]; onManager: (manager: ManagerRow) => void }) {
+function DashboardView({ records, salesRecords, previousRecords, previousSalesRecords, metricIds, onManager }: { records: DashboardRecord[]; salesRecords: DashboardRecord[]; previousRecords: DashboardRecord[]; previousSalesRecords: DashboardRecord[]; metricIds: string[]; onManager: (manager: ManagerRow) => void }) {
   const previousMetrics = buildDashboardMetrics(previousRecords, previousSalesRecords);
   const managers = buildManagers(records, salesRecords);
   const metrics = buildDashboardMetrics(records, salesRecords);
@@ -432,10 +433,10 @@ function QualityVsFunnel({ metrics }: { metrics: DashboardMetrics }) {
   </section>;
 }
 
-function TrendChart({ records }: { records: AnalyticsRecord[] }) {
+function TrendChart({ records }: { records: DashboardRecord[] }) {
   const [metric, setMetric] = useState("avg");
   const days = useMemo(() => {
-    const map = new Map<string, AnalyticsRecord[]>();
+    const map = new Map<string, DashboardRecord[]>();
     for (const row of records) { const key = localDateKey(new Date(row.createdAt)); map.set(key, [...(map.get(key) ?? []), row]); }
     return [...map.entries()].sort(([a], [b]) => a.localeCompare(b)).slice(-30).map(([date, rows]) => ({
       date, avg: average(rows.map((row) => row.processingBusinessMinutes)) ?? 0,
@@ -451,8 +452,8 @@ function TrendChart({ records }: { records: AnalyticsRecord[] }) {
   </section>;
 }
 
-function ManagerDetailView({ manager, cohortRecords, salesRecords, currentStages, onBack }: { manager: ManagerRow; cohortRecords: AnalyticsRecord[]; salesRecords: AnalyticsRecord[]; currentStages: CurrentStageRecord[] | null; onBack: () => void }) {
-  const belongs = (row: AnalyticsRecord) => salesManagerKey(row) === manager.id;
+function ManagerDetailView({ manager, cohortRecords, salesRecords, currentStages, onBack }: { manager: ManagerRow; cohortRecords: DashboardRecord[]; salesRecords: DashboardRecord[]; currentStages: CurrentStageRecord[] | null; onBack: () => void }) {
+  const belongs = (row: DashboardRecord) => salesManagerKey(row) === manager.id;
   const rawLeads = cohortRecords.filter(belongs); const sales = salesRecords.filter(belongs);
   // `leads` is the canonical routing-free cohort, so every card on this page
   // divides by the same population the main dashboard calls Leadlar.
@@ -478,7 +479,7 @@ function ManagerDetailView({ manager, cohortRecords, salesRecords, currentStages
   </>;
 }
 
-function LeadFlowView({ records }: { records: AnalyticsRecord[] }) {
+function LeadFlowView({ records }: { records: DashboardRecord[] }) {
   const weekdays = ["Dushanba", "Seshanba", "Chorshanba", "Payshanba", "Juma", "Shanba", "Yakshanba"];
   const hours = Array.from({ length: 24 }, (_, hour) => ({ hour, rows: records.filter((row) => zonedCreationParts(row.createdAt).hour === hour) }));
   const dayRows = weekdays.map((label, weekday) => ({ label, rows: records.filter((row) => zonedCreationParts(row.createdAt).weekday === weekday) }));
@@ -501,7 +502,7 @@ function LeadFlowView({ records }: { records: AnalyticsRecord[] }) {
   </>;
 }
 
-function DealsTable({ records }: { records: AnalyticsRecord[] }) {
+function DealsTable({ records }: { records: DashboardRecord[] }) {
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<"createdAt" | "processingBusinessMinutes">("createdAt");
   const perPage = 20;
@@ -537,7 +538,7 @@ function groupedCount<T>(records: T[], key: (row: T) => string) {
   return [...counts.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value);
 }
 
-function QualityView({ records }: { records: AnalyticsRecord[] }) {
+function QualityView({ records }: { records: DashboardRecord[] }) {
   const eligible = records.filter(isEligibleCohortDeal);
   const low = records.filter((row) => row.lossReasonGroup === "MARKETING");
   const lost = records.filter(isSalesLost);
@@ -558,7 +559,7 @@ function QualityView({ records }: { records: AnalyticsRecord[] }) {
   </>;
 }
 
-function StageControlView({ records, historicalRecords, reconciliation, loading, error, onRefresh }: { records: CurrentStageRecord[]; historicalRecords: AnalyticsRecord[]; reconciliation: StageReconciliation | null; loading: boolean; error: string | null; onRefresh: () => void }) {
+function StageControlView({ records, historicalRecords, reconciliation, loading, error, onRefresh }: { records: CurrentStageRecord[]; historicalRecords: StageFunnelRecord[]; reconciliation: StageReconciliation | null; loading: boolean; error: string | null; onRefresh: () => void }) {
   const active = records;
   const overdue = active.filter((row) => row.stageOverdue);
   const stages = [...new Set(active.map((row) => row.stage))].sort(); const managers = [...new Set(active.map((row) => row.assignedManager || "Aniqlanmagan"))].sort();
@@ -600,7 +601,7 @@ function StageControlView({ records, historicalRecords, reconciliation, loading,
  * computed over them are incomplete rather than bad. The import window is never
  * widened automatically — that is a settings decision and a full re-sync.
  */
-function CoverageNotice({ records, filters }: { records: AnalyticsRecord[]; filters: Filters }) {
+function CoverageNotice({ records, filters }: { records: DashboardRecord[]; filters: Filters }) {
   const bounds = rangeBounds(filters);
   if (!bounds.from || !records.length) return null;
   const earliest = records.reduce((min, row) => (row.createdAt && row.createdAt < min ? row.createdAt : min), records[0].createdAt);
@@ -612,7 +613,7 @@ function CoverageNotice({ records, filters }: { records: AnalyticsRecord[]; filt
   </div>;
 }
 
-function ClassificationDiagnostics({ records }: { records: AnalyticsRecord[] }) {
+function ClassificationDiagnostics({ records }: { records: DashboardRecord[] }) {
   const routing = records.filter((row) => !isEligibleCohortDeal(row));
   const eligible = records.filter(isEligibleCohortDeal);
   const classified = eligible.filter(isClassifiedLead);
@@ -641,7 +642,7 @@ function ClassificationDiagnostics({ records }: { records: AnalyticsRecord[] }) 
   </section>;
 }
 
-function DiagnosticsView({ sync, records, reconciliation, settings }: { sync: SyncState; records: AnalyticsRecord[]; reconciliation: StageReconciliation | null; settings: DashboardSettings }) {
+function DiagnosticsView({ sync, records, reconciliation, settings }: { sync: SyncState; records: DashboardRecord[]; reconciliation: StageReconciliation | null; settings: DashboardSettings }) {
   // Calls are no longer a data source, so those API permissions are irrelevant.
   const permissions = [["Deal API", sync.permissions.deals], ["Stage history", sync.permissions.stageHistory], ["User API", sync.permissions.managers]];
   const quality = summarizeDataQuality(records);
@@ -1176,7 +1177,7 @@ type WidgetDraft = { id?: string; pageId: string; widgetType: WidgetType; title:
 
 /** Renders one widget. Sales numbers come from the canonical metric helper. */
 function WidgetBlock({ widget, records, projects, updates, page, editing }: {
-  widget: PageWidget; records: AnalyticsRecord[]; projects: Project[]; updates: ProjectUpdate[];
+  widget: PageWidget; records: DashboardRecord[]; projects: Project[]; updates: ProjectUpdate[];
   page: Pick<CustomPage, "defaultRange" | "defaultFrom" | "defaultTo">; editing: boolean;
 }) {
   const pageRange = page.defaultRange;
@@ -1468,7 +1469,11 @@ function SharePanel({ page, widgets, shares, draft, setDraft, createdUrl, dismis
 export default function DashboardClient() {
   const [loading, setLoading] = useState(true);
   const [configured, setConfigured] = useState(false);
-  const [records, setRecords] = useState<AnalyticsRecord[]>([]);
+  const [records, setRecords] = useState<DashboardRecord[]>([]);
+  // Stage history is fetched the first time Stage Control is opened, never on
+  // the dashboard's initial load.
+  const [stageFunnelRecords, setStageFunnelRecords] = useState<StageFunnelRecord[]>([]);
+  const [stageFunnelLoaded, setStageFunnelLoaded] = useState(false);
   const [currentStageRecords, setCurrentStageRecords] = useState<CurrentStageRecord[] | null>(null);
   const [stageReconciliation, setStageReconciliation] = useState<StageReconciliation | null>(null);
   const [currentStageLoading, setCurrentStageLoading] = useState(false);
@@ -1518,6 +1523,19 @@ export default function DashboardClient() {
     } catch (caught) {
       setCurrentStageError(caught instanceof Error ? caught.message : "Joriy stage’lar yuklanmadi");
     } finally { setCurrentStageLoading(false); }
+  }, []);
+
+  /** Fetched once, when Stage Control is first opened. */
+  const loadStageFunnel = useCallback(async () => {
+    try {
+      const response = await fetch("/api/stage-funnel", { cache: "no-store" });
+      const payload = await response.json() as { records?: StageFunnelRecord[]; error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Stage tarixi yuklanmadi");
+      setStageFunnelRecords(payload.records ?? []);
+    } catch {
+      // The funnel simply stays empty; the rest of Stage Control is unaffected.
+      setStageFunnelRecords([]);
+    } finally { setStageFunnelLoaded(true); }
   }, []);
 
   const loadProjects = useCallback(async () => {
@@ -1593,7 +1611,7 @@ export default function DashboardClient() {
       setConfigured(bootstrap.configured); setSettings(normalizeSettings(bootstrap.settings)); setSync(bootstrap.sync);
       if (bootstrap.configured) {
         const response = await fetch("/api/dashboard", { cache: "no-store" });
-        const payload = await response.json() as { records: AnalyticsRecord[]; settings: DashboardSettings; sync: SyncState; providers: ProviderDiagnostic[]; error?: string };
+        const payload = await response.json() as { records: DashboardRecord[]; settings: DashboardSettings; sync: SyncState; providers: ProviderDiagnostic[]; error?: string };
         if (!response.ok) throw new Error(payload.error ?? "Dashboard ma’lumotlari yuklanmadi");
         const selectedOrigins = new Set(payload.settings.selectedPipelineIds.map(String));
         const selectedProjectCategories = new Set([...payload.settings.selectedPipelineIds, ...payload.settings.postSalePipelineIds].map(String));
@@ -1656,15 +1674,18 @@ export default function DashboardClient() {
       return true;
     });
   }, [effectiveCurrentStages, filters.manager, filters.pipeline, filters.stage, filters.search]);
+  // Same predicates as before, applied to the rows fetched for this view only.
+  // The dashboard payload no longer carries stageTimeline, so the funnel reads
+  // its own minimal records instead of the full cohort.
   const stageHistoricalRecords = useMemo(() => {
     const search = filters.search.trim().toLowerCase();
-    return records.filter((row) => {
+    return stageFunnelRecords.filter((row) => {
       if (filters.manager && row.assignedManagerId !== filters.manager && row.salesManagerId !== filters.manager) return false;
       if (filters.pipeline && row.originPipeline !== filters.pipeline) return false;
       if (search && !`${row.dealId} ${row.title}`.toLowerCase().includes(search)) return false;
       return true;
     });
-  }, [records, filters.manager, filters.pipeline, filters.search]);
+  }, [stageFunnelRecords, filters.manager, filters.pipeline, filters.search]);
 
   async function postSync(body: Record<string, unknown>) {
     const response = await fetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -1736,11 +1757,16 @@ export default function DashboardClient() {
   const projectStatusSuggestions = statusOptions(projects, projectUpdateRows);
   /** Leaving Settings with unsaved edits asks first. */
   function changeView(next: View) {
+    let moved = false;
     setView((current) => {
       if (current === "settings" && next !== "settings" && settingsDirty
         && !window.confirm("Sozlamalarda saqlanmagan o‘zgarishlar bor. Ularni tashlab ketilsinmi?")) return current;
+      moved = true;
       return next;
     });
+    // Stage history is only needed by Stage Control, so it is fetched when the
+    // user actually navigates there — once — rather than on the initial load.
+    if (moved && next === "stages" && !stageFunnelLoaded) void loadStageFunnel();
   }
 
   const openPage = pages.find((page) => page.id === openPageId) ?? null;
