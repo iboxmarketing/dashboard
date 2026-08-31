@@ -143,11 +143,12 @@ test("the dashboard route projects in SQL and never parses the records", () => {
 
 test("the stage funnel is not fetched on the dashboard's initial load", () => {
   const client = code("../app/dashboard-client.tsx");
-  assert.match(client, /loadStageFunnel/);
-  // It is triggered by navigating to Stage Control, not by the bootstrap path
-  // that already fires loadCurrentStages/loadProjects/loadPages/loadShares.
-  assert.match(client, /next === "stages" && !stageFunnelLoaded\) void loadStageFunnel\(\)/);
+  assert.match(client, /runStageFunnelFetch/);
+  // Triggered by navigating to Stage Control, not by the bootstrap path that
+  // already fires loadCurrentStages/loadProjects/loadPages/loadShares.
+  // The lifecycle itself is covered behaviourally in stage-funnel-cache.test.ts.
+  assert.match(client, /if \(next === "stages"\) dispatchStageFunnel\(\{ type: "OPEN" \}\);/);
   const bootstrap = client.slice(client.indexOf("void loadCurrentStages(); void loadProjects()"), client.indexOf("void loadCurrentStages(); void loadProjects()") + 160);
-  assert.doesNotMatch(bootstrap, /loadStageFunnel/, "must not run on initial load");
+  assert.doesNotMatch(bootstrap, /StageFunnelFetch/, "must not fetch history on initial load");
   assert.doesNotMatch(client, /stageTimeline: row\.stageTimeline/, "the dashboard record no longer carries a timeline");
 });

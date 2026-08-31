@@ -9,7 +9,8 @@ import {
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ErrorInfo, ReactNode } from "react";
 import type { DashboardRecord, StageFunnelRecord } from "@/lib/dashboard-record";
-import type { AnalyticsRecord, CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, StageReconciliation, SyncProgressState } from "@/lib/types";
+import { initialStageFunnelState, stageFunnelNext, type StageFunnelAction, type StageFunnelState, type StageFunnelStatus } from "@/lib/stage-funnel-cache";
+import type { CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, StageReconciliation, SyncProgressState } from "@/lib/types";
 import { ANALYTICS_VERSION } from "@/lib/analytics";
 import { canonicalizeFieldOptions, normalizeCrmFields } from "@/lib/crm-fields";
 import { normalizeSettings } from "@/lib/settings-safety";
@@ -559,7 +560,7 @@ function QualityView({ records }: { records: DashboardRecord[] }) {
   </>;
 }
 
-function StageControlView({ records, historicalRecords, reconciliation, loading, error, onRefresh }: { records: CurrentStageRecord[]; historicalRecords: StageFunnelRecord[]; reconciliation: StageReconciliation | null; loading: boolean; error: string | null; onRefresh: () => void }) {
+function StageControlView({ records, historicalRecords, reconciliation, loading, error, onRefresh, funnelStatus, onRetryFunnel }: { records: CurrentStageRecord[]; historicalRecords: StageFunnelRecord[]; reconciliation: StageReconciliation | null; loading: boolean; error: string | null; onRefresh: () => void; funnelStatus: StageFunnelStatus; onRetryFunnel: () => void }) {
   const active = records;
   const overdue = active.filter((row) => row.stageOverdue);
   const stages = [...new Set(active.map((row) => row.stage))].sort(); const managers = [...new Set(active.map((row) => row.assignedManager || "Aniqlanmagan"))].sort();
@@ -584,7 +585,9 @@ function StageControlView({ records, historicalRecords, reconciliation, loading,
     <section className="kpi-grid"><KpiCard label="Joriy aktiv lead" value={String(active.length)} detail={reconciliation ? "Bitrix live snapshot" : "Oxirgi sync bazasi"} icon={Layers3} /><KpiCard label="Limitdan oshgan" value={String(overdue.length)} detail={`${pct(overdue.length, active.length)}% aktiv lead`} icon={AlertTriangle} tone="red" /><KpiCard label="Eng eski lead" value={active.length ? `${Math.round(Math.max(...active.map((row) => row.stageAgeHours)))} soat` : "—"} detail="Joriy stage’da" icon={Clock3} tone="amber" /></section>
     <section className="panel"><SectionHeader title="Sotuvchi × joriy stage" subtitle="Bitrix ASSIGNED_BY_ID bo‘yicha" /><div className="table-wrap"><table className="data-table stage-matrix"><thead><tr><th>Sotuvchi</th>{stages.map((stage) => <th key={stage}>{stage}</th>)}<th>Jami</th></tr></thead><tbody>{managers.map((manager) => { const rows = active.filter((row) => (row.assignedManager || "Aniqlanmagan") === manager); return <tr key={manager}><td><strong>{manager}</strong></td>{stages.map((stage) => { const cell = rows.filter((row) => row.stage === stage); return <td key={stage}><span className={cell.some((row) => row.stageOverdue) ? "pill danger" : "pill neutral"}>{cell.length}</span></td>; })}<td><strong>{rows.length}</strong></td></tr>; })}</tbody></table></div></section>
     <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Stage bo‘yicha yuklama" /><BarList rows={stageStats.map((row) => ({ ...row, total: active.length, color: "#246bfd" }))} /></article><article className="panel"><SectionHeader title="Limitdan oshgan Deal’lar" subtitle="Sozlamadagi har bir stage limiti bo‘yicha" /><div className="stuck-list">{overdue.sort((a, b) => b.stageAgeHours - a.stageAgeHours).slice(0, 20).map((row) => <a key={row.dealId} href={row.bitrixUrl ?? undefined} target="_blank" rel="noreferrer"><span><strong>{row.title}</strong><small>{row.assignedManager} · {row.stage}</small></span><b>{Math.round(row.stageAgeHours)} / {row.stageLimitHours} soat</b></a>)}{!overdue.length && <div className="empty-table">Limitdan oshgan aktiv Deal yo‘q.</div>}</div></article></section>
-    <section className="panel"><SectionHeader title="Tarixiy stage funnel" subtitle="Tanlangan import oralig‘idagi history: bosqichga kirgan, keyingisiga o‘tgan, drop-off va sarflangan vaqt" /><div className="table-wrap"><table className="data-table"><thead><tr><th>Pipeline</th><th>Stage</th><th>Kirgan</th><th>Keyingi / sotuv</th><th>Konversiya</th><th>Drop-off</th><th>Avg vaqt</th><th>Median vaqt</th></tr></thead><tbody>{funnelRows.map((row) => <tr key={`${row.pipeline}:${row.stage}`}><td>{row.pipeline}</td><td><strong>{row.stage}</strong></td><td>{row.entered}</td><td>{row.advanced}</td><td><span className="pill success">{pct(row.advanced, row.entered)}%</span></td><td><span className={row.dropOff ? "pill danger" : "pill neutral"}>{row.dropOff}</span></td><td>{fmtHours(average(row.durations))}</td><td>{fmtHours(median(row.durations))}</td></tr>)}</tbody></table>{!funnelRows.length && <div className="empty-table">Stage history sync qilingandan keyin funnel ko‘rinadi.</div>}</div></section>
+    <section className="panel"><SectionHeader title="Tarixiy stage funnel" subtitle="Tanlangan import oralig‘idagi history: bosqichga kirgan, keyingisiga o‘tgan, drop-off va sarflangan vaqt" /><div className="table-wrap"><table className="data-table"><thead><tr><th>Pipeline</th><th>Stage</th><th>Kirgan</th><th>Keyingi / sotuv</th><th>Konversiya</th><th>Drop-off</th><th>Avg vaqt</th><th>Median vaqt</th></tr></thead><tbody>{funnelRows.map((row) => <tr key={`${row.pipeline}:${row.stage}`}><td>{row.pipeline}</td><td><strong>{row.stage}</strong></td><td>{row.entered}</td><td>{row.advanced}</td><td><span className="pill success">{pct(row.advanced, row.entered)}%</span></td><td><span className={row.dropOff ? "pill danger" : "pill neutral"}>{row.dropOff}</span></td><td>{fmtHours(average(row.durations))}</td><td>{fmtHours(median(row.durations))}</td></tr>)}</tbody></table>{funnelStatus === "loading" && !funnelRows.length && <div className="empty-table"><Loader2 size={16} className="spin" /> Stage tarixi yuklanmoqda…</div>}
+{funnelStatus === "error" && <div className="notice warning page-notice"><AlertTriangle size={17} /><span>Stage tarixi yuklanmadi. Bu — tarix yo‘q degani emas.</span><button className="button secondary" onClick={onRetryFunnel}><RefreshCw size={15} />Qayta urinish</button></div>}
+{funnelStatus !== "loading" && funnelStatus !== "error" && !funnelRows.length && <div className="empty-table">Stage history sync qilingandan keyin funnel ko‘rinadi.</div>}</div></section>
   </>;
 }
 
@@ -1473,7 +1476,13 @@ export default function DashboardClient() {
   // Stage history is fetched the first time Stage Control is opened, never on
   // the dashboard's initial load.
   const [stageFunnelRecords, setStageFunnelRecords] = useState<StageFunnelRecord[]>([]);
-  const [stageFunnelLoaded, setStageFunnelLoaded] = useState(false);
+  const [stageFunnelStatus, setStageFunnelStatus] = useState<StageFunnelStatus>("idle");
+  // The machine's state is mirrored in a ref because every trigger — a nav
+  // click, an invalidation from load(), a request settling — reads it outside
+  // React's render, where the state variable would be a stale closure.
+  const stageFunnelRef = useRef<StageFunnelState>(initialStageFunnelState);
+  const dispatchRef = useRef<((action: StageFunnelAction) => void) | null>(null);
+  const viewRef = useRef<View>("dashboard");
   const [currentStageRecords, setCurrentStageRecords] = useState<CurrentStageRecord[] | null>(null);
   const [stageReconciliation, setStageReconciliation] = useState<StageReconciliation | null>(null);
   const [currentStageLoading, setCurrentStageLoading] = useState(false);
@@ -1525,18 +1534,40 @@ export default function DashboardClient() {
     } finally { setCurrentStageLoading(false); }
   }, []);
 
-  /** Fetched once, when Stage Control is first opened. */
-  const loadStageFunnel = useCallback(async () => {
+  /**
+   * Runs one Stage Control history request. Every caller goes through
+   * `dispatchStageFunnel`, so the machine decides whether a request happens at
+   * all — this function never guards for itself.
+   */
+  const runStageFunnelFetch = useCallback(async () => {
     try {
       const response = await fetch("/api/stage-funnel", { cache: "no-store" });
       const payload = await response.json() as { records?: StageFunnelRecord[]; error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Stage tarixi yuklanmadi");
       setStageFunnelRecords(payload.records ?? []);
+      dispatchRef.current?.({ type: "SUCCESS" });
     } catch {
-      // The funnel simply stays empty; the rest of Stage Control is unaffected.
-      setStageFunnelRecords([]);
-    } finally { setStageFunnelLoaded(true); }
+      // The previous records are kept rather than replaced with an empty list:
+      // "we could not load history" must not render as "there is no history".
+      dispatchRef.current?.({ type: "FAILURE" });
+    }
   }, []);
+
+  const dispatchStageFunnel = useCallback((action: StageFunnelAction) => {
+    const next = stageFunnelNext(stageFunnelRef.current, action);
+    stageFunnelRef.current = { status: next.status, dirty: next.dirty };
+    setStageFunnelStatus(next.status);
+    if (next.fetch) void runStageFunnelFetch();
+  }, [runStageFunnelFetch]);
+  // SUCCESS/FAILURE are dispatched from inside the fetch, which is defined
+  // first; the ref breaks that cycle without reordering the file. Assigned in
+  // an effect, matching how syncRunnerRef is kept current below.
+  useEffect(() => { dispatchRef.current = dispatchStageFunnel; });
+
+  /** The analytics dataset changed, so the cached history is now older than it. */
+  const invalidateStageFunnel = useCallback(() => {
+    dispatchStageFunnel({ type: "INVALIDATE", visible: viewRef.current === "stages" });
+  }, [dispatchStageFunnel]);
 
   const loadProjects = useCallback(async () => {
     try {
@@ -1617,11 +1648,16 @@ export default function DashboardClient() {
         const selectedProjectCategories = new Set([...payload.settings.selectedPipelineIds, ...payload.settings.postSalePipelineIds].map(String));
         const projectRecords = (payload.records ?? []).map(hydrateRecord).filter((row) => !selectedOrigins.size || selectedOrigins.has(String(row.originCategoryId)) || selectedProjectCategories.has(String(row.categoryId)));
         setRecords(markDuplicates(withLiveSlaState(projectRecords, normalizeSettings(payload.settings)))); setSettings(normalizeSettings(payload.settings)); setSync(payload.sync);
+        // The analytics dataset was just replaced, so any cached Stage Control
+        // history now describes an older one. Deliberately here and nowhere
+        // else: project/page/share/current-stage reloads are unrelated.
+        invalidateStageFunnel();
         void loadCurrentStages(); void loadProjects(); void loadPages(); void loadShares();
       }
     } catch (caught) { setLoadError(caught instanceof Error ? caught.message : "Dashboard yuklanmadi"); }
     finally { setLoading(false); }
-  }, [loadCurrentStages, loadProjects, loadPages, loadShares]);
+  }, [loadCurrentStages, loadProjects, loadPages, loadShares, invalidateStageFunnel]);
+  useEffect(() => { viewRef.current = view; });
   useEffect(() => {
     const timer = window.setTimeout(() => { void load(); }, 0);
     return () => window.clearTimeout(timer);
@@ -1765,7 +1801,7 @@ export default function DashboardClient() {
     setView(next);
     // Stage history is only needed by Stage Control, so it is fetched when the
     // user actually navigates there — once — rather than on the initial load.
-    if (next === "stages" && !stageFunnelLoaded) void loadStageFunnel();
+    if (next === "stages") dispatchStageFunnel({ type: "OPEN" });
   }
 
   const openPage = pages.find((page) => page.id === openPageId) ?? null;
@@ -1796,7 +1832,7 @@ export default function DashboardClient() {
         {view === "managerDetail" && selectedManager && <ManagerDetailView manager={selectedManager} cohortRecords={cohortFiltered} salesRecords={wonFiltered} currentStages={currentStageRecords} onBack={() => setView("managers")} />}
         {view === "leadFlow" && <LeadFlowView records={cohortFiltered} />}
         {view === "quality" && <QualityView records={cohortFiltered} />}
-        {view === "stages" && <StageControlView records={filteredCurrentStages} historicalRecords={stageHistoricalRecords} reconciliation={stageReconciliation} loading={currentStageLoading} error={currentStageError} onRefresh={() => void loadCurrentStages()} />}
+        {view === "stages" && <StageControlView records={filteredCurrentStages} historicalRecords={stageHistoricalRecords} reconciliation={stageReconciliation} loading={currentStageLoading} error={currentStageError} onRefresh={() => void loadCurrentStages()} funnelStatus={stageFunnelStatus} onRetryFunnel={() => dispatchStageFunnel({ type: "RETRY" })} />}
         {view === "projects" && <ProjectsView projects={projects} updates={projectUpdateRows} filters={projectFilters} setFilters={setProjectFilters} busy={projectBusy}
           onOpen={(project) => { setOpenProjectId(project.id); setView("projectDetail"); }}
           onNew={() => setProjectDraft({ name: "", description: "", status: "", deadline: "" })} />}
