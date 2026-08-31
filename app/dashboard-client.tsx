@@ -1757,16 +1757,15 @@ export default function DashboardClient() {
   const projectStatusSuggestions = statusOptions(projects, projectUpdateRows);
   /** Leaving Settings with unsaved edits asks first. */
   function changeView(next: View) {
-    let moved = false;
-    setView((current) => {
-      if (current === "settings" && next !== "settings" && settingsDirty
-        && !window.confirm("Sozlamalarda saqlanmagan o‘zgarishlar bor. Ularni tashlab ketilsinmi?")) return current;
-      moved = true;
-      return next;
-    });
+    // The guard reads `view` directly rather than the setState updater: the
+    // updater runs after this function returns, so a flag set inside it is
+    // still false here and the fetch below would never fire.
+    if (view === "settings" && next !== "settings" && settingsDirty
+      && !window.confirm("Sozlamalarda saqlanmagan o‘zgarishlar bor. Ularni tashlab ketilsinmi?")) return;
+    setView(next);
     // Stage history is only needed by Stage Control, so it is fetched when the
     // user actually navigates there — once — rather than on the initial load.
-    if (moved && next === "stages" && !stageFunnelLoaded) void loadStageFunnel();
+    if (next === "stages" && !stageFunnelLoaded) void loadStageFunnel();
   }
 
   const openPage = pages.find((page) => page.id === openPageId) ?? null;
