@@ -155,6 +155,15 @@ test("every registry widget declares a source; manual is never labelled Bitrix",
 });
 
 test("existing Sales dashboard definitions unchanged", () => {
-  assert.equal(DASHBOARD_METRICS.length, 17);
+  // The registry may only grow at the end: a saved widget stores a metric id,
+  // so reordering or repurposing one of these 17 would silently change what an
+  // existing page reports. New metrics are appended instead.
+  const ORIGINAL: string[] = [
+    "leads", "sql", "not_relevant", "sales_lost", "cohort_sales", "period_sales",
+    "revenue", "avg_processing", "sla", "lead_to_sql", "lead_to_sale", "sql_to_sale",
+    "avg_check", "median_check", "sales_cycle", "duplicates", "active_cohort",
+  ];
+  assert.deepEqual(DASHBOARD_METRICS.slice(0, ORIGINAL.length).map((m) => m.id), ORIGINAL);
+  assert.ok(DASHBOARD_METRICS.length >= ORIGINAL.length);
   assert.deepEqual(DASHBOARD_METRICS.slice(0, 3).map((m) => m.label), ["Leadlar", "SQL", "Not Relevant"]);
 });

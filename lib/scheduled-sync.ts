@@ -27,11 +27,12 @@ export type ScheduledOutcome =
  * sanitised by `safeBitrixMessage` before they reach `safeError`.
  */
 export async function runScheduledSync(now: Date = new Date()): Promise<ScheduledOutcome> {
-  const [settings, job] = await Promise.all([getSettings(), getSyncJob()]);
+  const [settings, job, priorState] = await Promise.all([getSettings(), getSyncJob(), getSyncState()]);
   const decision = scheduledDecision({
     autoSyncMinutes: settings.autoSyncMinutes,
     selectedPipelineIds: settings.selectedPipelineIds ?? [],
     job,
+    lastSyncAt: priorState.lastSyncAt,
     now,
   });
   if (!decision.run) return { ran: false, reason: decision.reason };

@@ -47,13 +47,79 @@ vaqti, SLA.
 | --- | --- | --- | --- | --- | --- |
 | **Leadlar** | eligible cohort deals | — | `createdAt` in range | routing | `crm.deal.list` `DATE_CREATE` |
 | **SQL** | `qualified === true` | Leadlar | `createdAt` | routing | stage history + live stage `SORT` |
-| **Not Relevant** | `lossReasonGroup === "MARKETING"` | Leadlar | `createdAt` | routing | current stage = configured low-quality stage |
-| **Sotilmadi** | `lossReasonGroup === "SALES"` | **SQL** | `createdAt` | routing | closed-lost stage, non-routing reason |
+| **Not Relevant** | `lossReasonGroup === "MARKETING"` | **Saralangan leadlar** for the quality rate | `createdAt` | routing | current stage = configured low-quality stage |
+| **Saralangan leadlar** | `qualified === true \|\| lossReasonGroup === "MARKETING"` | — | `createdAt` | routing | canonical fields, never stage names |
+| **Saralanmagan leadlar** | eligible − Saralangan | — | `createdAt` | routing | canonical fields |
+| **Saralash qamrovi** | Saralangan | Leadlar | `createdAt` | routing | — |
+| **Sifatli lead %** | SQL | **Saralangan leadlar** | `createdAt` | routing | — |
+| **Sifatsiz lead %** | Not Relevant | **Saralangan leadlar** | `createdAt` | routing | — |
+| **Umumiy leadlardan Not Relevant %** | Not Relevant | Leadlar | `createdAt` | routing | full-funnel share, *not* a quality rate |
+| **Sotilmadi** | `lossReasonGroup === "SALES"` **and** `qualified === true` | **SQL** | `createdAt` | routing, pre-SQL closures | closed-lost stage, non-routing reason |
+| **SQLgacha yopilgan** | `LOST` + `SALES` + `qualified !== true` | — | `createdAt` | routing | diagnostic only; inside Saralanmagan |
 | **Kelgan leadlardan sotuv** | eligible cohort `salesStatus === "WON"` | Leadlar (and SQL for the second rate) | `createdAt` — sale may land later | routing | payment stage / history / post-sale funnel |
 | **Shu davrdagi sotuvlar** | `salesStatus === "WON" && wonAt` in range | — | **`wonAt`** — creation date irrelevant | needs a trustworthy `wonAt` | as above |
 | **Sotuv summasi** | Σ `OPPORTUNITY` over *Shu davrdagi sotuvlar* | — | `wonAt` | — | `OPPORTUNITY` |
 | **Leadni saralash vaqti** | avg business minutes `slaStart` → first SQL-or-downstream **or** Not Relevant entry | — | `createdAt` | routing | stage history; **never calls** |
 | **SLA** | `ON_TIME` | `ON_TIME + LATE + OVERDUE_UNPROCESSED` | `createdAt` | PENDING, UNKNOWN_EVIDENCE | stage history |
+
+## Quality is not funnel
+
+Three questions, three denominators, and they must never be mixed:
+
+| Question | Metric | Formula |
+| --- | --- | --- |
+| How many real leads came in? | Leadlar | eligible cohort (routing excluded) |
+| Of the leads we have judged, how many were good? | Sifatli / Sifatsiz lead % | SQL ÷ **Saralangan**, Not Relevant ÷ **Saralangan** |
+| Of everything that arrived, how much progressed? | Lead → SQL, Lead → Sotuv | SQL ÷ **Leadlar**, Cohort sotuv ÷ **Leadlar** |
+
+`Leadlar ≠ Saralangan leadlar`, and `Lead → SQL ≠ Sifatli lead %`. A lead sitting
+in Распределение, Нет ответа, Первое касание or any other pre-SQL stage is
+**unclassified**, not low quality: its verdict has not been reached yet. Dividing
+Not Relevant by Leadlar therefore answers "what share of everything that arrived
+was rejected", which is a funnel share — it is available as *Umumiy leadlardan
+Not Relevant %* and is deliberately **not** the primary quality metric.
+
+`Saralash qamrovi` (Saralangan ÷ Leadlar) is what separates "quality is good"
+from "we have barely judged this cohort yet". A young cohort with 40% coverage
+and 75% Sifatli is a different situation from a mature one with 95% coverage and
+75% Sifatli, and no threshold is imposed on it — the percentage is shown as-is.
+
+Membership is decided by the canonical `qualified` and `lossReasonGroup` fields
+via `isClassifiedLead()` in `lib/sales-logic.ts`, never by matching a display
+stage name, so new or renamed pre-SQL stages stay unclassified automatically.
+
+SQL is evidence-based: a lead is qualified by explicit configured SQL-stage
+evidence, by downstream same-pipeline evidence at or after the SQL threshold, or
+by being a canonical WON. A terminal LOST outcome qualifies a deal only when the
+history could not be observed at all. Deals closed in the Sales funnel with no
+SQL evidence are **SQLgacha yopilgan** and count in none of the quality KPIs.
+
+Note for releases: `qualified` is computed during sync and **stored** on the
+record, so a change to this rule only affects deals that are subsequently
+re-synced or rebuilt by the analytics-only backfill. Existing records keep the
+value they were written with until then — and because the value is stored,
+rolling the *code* back after a backfill does not roll the *data* back. See
+"Rolling back a release that changed stored analytics semantics" in
+`docs/OPERATIONS.md`.
+
+Invariants, enforced by `tests/lead-classification.test.ts` and `tests/sql-evidence.test.ts`:
+
+```
+raw cohort  = Leadlar + Routing
+Leadlar     = Saralangan + Saralanmagan
+Saralangan  = Sifatli (SQL) + Sifatsiz (Not Relevant)
+Sales Lost <= SQL                       (Sales Lost is a post-SQL outcome)
+```
+
+The last one holds because MARKETING is only ever produced from a `LOW_QUALITY`
+status, which forces `qualified: false`. Should a record ever assert both, the
+overlap is counted and surfaced in Diagnostics rather than absorbed silently.
+
+Duplicates remain **analytical only**. One Bitrix deal id is one lead, and a
+repeat customer may be a genuine second opportunity, so duplicates are never
+removed from Leadlar, SQL, Saralangan, Sifatli, Sifatsiz, sales or revenue.
+*Takrorsiz lead (taxminiy)* is a diagnostic estimate, never the canonical
+population.
 
 The two sales cards are different populations by design. A July lead sold in
 August appears only in *Shu davrdagi sotuvlar*; an August lead sold in September

@@ -100,20 +100,49 @@ export function fieldDisplayValue(raw: unknown, options: Map<string, string> = n
 }
 
 /**
- * Canonical Sales Lost population: a quality-accepted lead that Sales did not
- * close. Routing/transfer outcomes carry their own group and are deliberately
- * excluded, so this is narrower than `salesStatus === "LOST"`.
+ * Can a terminal LOST outcome stand in for qualification evidence?
  *
- * Every metric labelled "Sotilmadi" / "Sales loss" must go through here.
- * `SalesStatus.LOST` stays useful as the broader terminal state (quality
- * acceptance, drop-off, missing-reason diagnostics) but must never power a
- * Sales Lost KPI on its own.
+ * Only when the qualification history genuinely could not be observed. A deal
+ * whose history was read and simply contains no SQL stage is evidence that the
+ * lead never reached SQL — not an absence of evidence — and must not be
+ * upgraded. `buildStageTimeline` synthesises a single entry from the current
+ * stage when no history rows exist, so the timeline being non-empty proves
+ * nothing; the raw row count is the honest signal.
  */
-export function isSalesLost(row: { lossReasonGroup?: LossReasonGroup | null }) {
-  return row.lossReasonGroup === "SALES";
+export function canInferQualificationFromOutcome(input: { stageHistoryAvailable: boolean; historyRowCount: number }) {
+  return !input.stageHistoryAvailable || input.historyRowCount === 0;
 }
 
-export function countSalesLost(rows: { lossReasonGroup?: LossReasonGroup | null }[]) {
+/**
+ * Canonical Sales Lost population: a **quality-accepted** lead that Sales did
+ * not close. Both halves are required — routing/transfer outcomes carry their
+ * own group, and a deal closed before it ever reached SQL was never a sales
+ * loss, it was a lead that never got worked. This is therefore strictly
+ * narrower than `salesStatus === "LOST"`, and a strict subset of SQL.
+ *
+ * Every metric labelled "Sotilmadi" / "Sales loss" must go through here.
+ * `SalesStatus.LOST` stays useful as the broader terminal state (drop-off and
+ * missing-reason diagnostics) but must never power a Sales Lost KPI on its own.
+ */
+export function isSalesLost(row: { lossReasonGroup?: LossReasonGroup | null; qualified?: boolean }) {
+  return row.lossReasonGroup === "SALES" && Boolean(row.qualified);
+}
+
+/**
+ * Deals closed inside the Sales funnel that never produced canonical SQL
+ * evidence — "SQLgacha yopilgan". A workflow signal, not a KPI: it belongs to
+ * none of SQL, Sifatli, Sifatsiz, Sotilmadi or Sales Lost. It falls inside
+ * Saralanmagan because its quality verdict was never actually reached.
+ */
+export function isPreSqlClosed(row: { salesStatus?: SalesStatus; lossReasonGroup?: LossReasonGroup | null; qualified?: boolean }) {
+  return row.salesStatus === "LOST" && row.lossReasonGroup === "SALES" && row.qualified !== true;
+}
+
+export function countPreSqlClosed(rows: { salesStatus?: SalesStatus; lossReasonGroup?: LossReasonGroup | null; qualified?: boolean }[]) {
+  return rows.filter(isPreSqlClosed).length;
+}
+
+export function countSalesLost(rows: { lossReasonGroup?: LossReasonGroup | null; qualified?: boolean }[]) {
   return rows.filter(isSalesLost).length;
 }
 
@@ -142,13 +171,14 @@ export type DealOutcomePresentation = { label: string; tone: "success" | "danger
  * card no longer reads "Sotilmadi" while every Sotilmadi count excludes it.
  * Presentation only: no new SalesStatus value and no stored field.
  */
-export function dealOutcomeLabel(row: { salesStatus?: SalesStatus; lossReasonGroup?: LossReasonGroup | null }): DealOutcomePresentation {
+export function dealOutcomeLabel(row: { salesStatus?: SalesStatus; lossReasonGroup?: LossReasonGroup | null; qualified?: boolean }): DealOutcomePresentation {
   if (row.salesStatus === "WON") return { label: "Sotilgan", tone: "success" };
   if (row.salesStatus === "LOW_QUALITY") return { label: "Sifatsiz", tone: "warning" };
   if (row.salesStatus === "LOST") {
-    return row.lossReasonGroup === "ROUTING"
-      ? { label: "Yo‘naltirildi", tone: "neutral" }
-      : { label: "Sotilmadi", tone: "danger" };
+    if (row.lossReasonGroup === "ROUTING") return { label: "Yo‘naltirildi", tone: "neutral" };
+    // A row must not read "Sotilmadi" while every Sotilmadi count excludes it.
+    if (isPreSqlClosed(row)) return { label: "SQLgacha yopilgan", tone: "warning" };
+    return { label: "Sotilmadi", tone: "danger" };
   }
   return { label: "Aktiv", tone: "neutral" };
 }
@@ -191,4 +221,38 @@ export function isSqlOrDownstreamStage(input: {
  */
 export function isEligibleCohortDeal(row: { lossReasonGroup?: LossReasonGroup | null }) {
   return row.lossReasonGroup !== "ROUTING";
+}
+
+/**
+ * Canonical "has this lead's quality been decided yet?" test.
+ *
+ * Quality and funnel progression are different questions, so they must not
+ * share a denominator. `qualified` answers "was the lead accepted?", and
+ * MARKETING answers "was it rejected as low quality?" — either one is a
+ * verdict. Everything else (Распределение, Нет ответа, Первое касание and any
+ * other pre-SQL stage) is simply undecided, and counting it as low quality
+ * would punish a young cohort for not having been worked yet.
+ *
+ * Deliberately expressed over the canonical `qualified` / `lossReasonGroup`
+ * fields rather than display stage names: a renamed or newly added pre-SQL
+ * stage stays unclassified without anyone editing a list.
+ */
+export function isClassifiedLead(row: { qualified?: boolean; lossReasonGroup?: LossReasonGroup | null }) {
+  return Boolean(row.qualified) || row.lossReasonGroup === "MARKETING";
+}
+
+/** Eligible leads whose quality is not yet decided. Unknown quality, not low quality. */
+export function isUnclassifiedLead(row: { qualified?: boolean; lossReasonGroup?: LossReasonGroup | null }) {
+  return !isClassifiedLead(row);
+}
+
+/**
+ * Records that claim both verdicts at once. Canonically impossible — MARKETING
+ * is only ever produced from a LOW_QUALITY status, which forces
+ * `qualified: false` — so a non-zero count means a stale or hand-edited record,
+ * and it is surfaced in Diagnostics rather than silently absorbed by the
+ * `Saralangan = Sifatli + Sifatsiz` equation.
+ */
+export function countClassificationConflicts(rows: { qualified?: boolean; lossReasonGroup?: LossReasonGroup | null }[]) {
+  return rows.filter((row) => Boolean(row.qualified) && row.lossReasonGroup === "MARKETING").length;
 }

@@ -27,13 +27,16 @@ test("1: analyticsVersion 4 yozuvi eskirgan deb hisoblanadi", () => {
   assert.equal(isStale(3), true);
 });
 
-test("2: analyticsVersion 5 yozuvi joriy", () => {
-  assert.equal(isStale(5), false);
-  assert.equal(ANALYTICS_VERSION, 5);
+test("2: analyticsVersion 6 joriy, 5 esa eskirgan deb belgilanadi", () => {
+  assert.equal(ANALYTICS_VERSION, 6);
+  assert.equal(isStale(6), false);
+  // Version 5 was written under the unconditional Sales-Lost fallback, so it
+  // reports different SQL and Sotilmadi values until it is rebuilt.
+  assert.equal(isStale(5), true);
 });
 
-test("3: yangi qurilgan yozuvlar 5-versiya bilan saqlanadi", () => {
-  assert.equal(record().analyticsVersion, 5);
+test("3: yangi qurilgan yozuvlar 6-versiya bilan saqlanadi", () => {
+  assert.equal(record().analyticsVersion, 6);
   assert.equal(record().analyticsVersion, ANALYTICS_VERSION);
 });
 
