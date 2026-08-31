@@ -54,7 +54,9 @@ test("4/6: paging is bounded and idempotent by construction", () => {
   assert.match(storage, /INSERT OR REPLACE INTO analytics_records\(deal_id/);
 
   const route = code("../app/api/backfill/route.ts");
-  assert.match(route, /batch < BATCHES_PER_REQUEST/, "one request runs a bounded number of batches");
+  assert.doesNotMatch(route, /for\s*\(|while\s*\(/, "the route must not loop over batches");
+  assert.match(route, /if \(state\.status === "running"\) state = await runAnalyticsBackfillBatch\(state\);/,
+    "exactly one batch per request");
 });
 
 test("5: currentScope written by reconciliation survives a rebuild", () => {
@@ -112,13 +114,39 @@ test("dictionary builders derive stage ordering from SORT, never from names", ()
   assert.equal(options.get("UF_X")?.get("1"), "Bir");
 });
 
-test("9: a single backfill invocation stays far below the isolate limit", () => {
+test("9: one request rebuilds at most 5 deals, in exactly one batch", () => {
   const backfill = code("../lib/analytics-backfill.ts");
   const route = code("../app/api/backfill/route.ts");
   const batchSize = Number(backfill.match(/BACKFILL_BATCH_SIZE = (\d+)/)?.[1]);
-  const perRequest = Number(route.match(/BATCHES_PER_REQUEST = (\d+)/)?.[1]);
-  assert.ok(Number.isFinite(batchSize) && Number.isFinite(perRequest));
-  // 60 x 4 = 240 deals in one invocation reproduced Error 1102 on staging.
-  // Keep the product well under that; this is a measured ceiling, not taste.
-  assert.ok(batchSize * perRequest <= 50, `one request rebuilds ${batchSize * perRequest} deals; keep it <= 50`);
+  assert.ok(Number.isFinite(batchSize));
+  // Production returned Error 1102 at 25 deals in a single batch. Raising this
+  // again requires deliberately editing this test, which is the point.
+  assert.ok(batchSize <= 5, `BACKFILL_BATCH_SIZE is ${batchSize}; production 1102'd at 25`);
+  assert.doesNotMatch(route, /for\s*\(|while\s*\(/, "no batch loop in the request handler");
+  assert.equal((route.match(/runAnalyticsBackfillBatch\(/g) ?? []).length, 1, "exactly one batch call site per request");
+});
+
+test("2/3: no raw dictionary array is retained once its Map is built", () => {
+  const backfill = code("../lib/analytics-backfill.ts");
+  // Promise.all into destructured consts kept users+statuses+crmFields (185 KB
+  // of JSON, far more as objects) alive for the whole function. Each dictionary
+  // must now be reduced to its Map in the same expression that loads it.
+  assert.doesNotMatch(backfill, /Promise\.all/, "dictionaries must not be loaded into a retained tuple");
+  for (const call of [
+    /buildUserMap\(await getDictionary/,
+    /buildStatusMaps\(await getDictionary/,
+    /buildFieldOptionMap\(await getDictionary/,
+  ]) assert.match(backfill, call);
+  // The raw page rows are released before the records are built.
+  assert.match(backfill, /dealRows\.length = 0;/);
+  assert.match(backfill, /historyRows\.length = 0;/);
+  // Only this page's deals are ever queried.
+  assert.match(backfill, /getSalesSnapshots\(ids\)/);
+});
+
+test("4: the response carries progress metadata only", () => {
+  const route = code("../app/api/backfill/route.ts");
+  assert.doesNotMatch(route, /backfill: state/, "must not echo the full state object");
+  assert.doesNotMatch(route, /records/, "must never return rebuilt records");
+  for (const field of ["status:", "cursor:", "total:", "progress:"]) assert.ok(route.includes(field), `${field} missing`);
 });

@@ -27,13 +27,20 @@ import type { CrmFieldOption } from "./types";
 /**
  * Deals rebuilt per batch.
  *
- * Measured, not guessed: 60 deals with four batches per request (240 in one
- * invocation) reproducibly returned Error 1102 on staging within ~0.5s — a
- * memory limit, since each deal carries its raw payload, its stage history and
- * the rebuilt record's JSON at once. 25 keeps a single invocation's working set
- * far below that even when the isolate is already serving page traffic.
+ * Measured on production, not guessed. At 25 the request still returned Error
+ * 1102, because the per-deal data was never the dominant term:
+ *
+ *   users + statuses + crmFields   185 KB of JSON, parsed on EVERY batch
+ *   25 raw deals                    11 KB
+ *   ~95 stage-history rows          14 KB
+ *   25 rebuilt payloads             65 KB stringified on write
+ *
+ * The dictionaries are a fixed cost that shrinking the batch cannot touch, and
+ * parsed object graphs run several times their JSON size. So the fix is both:
+ * five deals per batch, and — see below — never holding a raw dictionary array
+ * alive once its lookup Map has been derived from it.
  */
-export const BACKFILL_BATCH_SIZE = 25;
+export const BACKFILL_BATCH_SIZE = 5;
 
 /**
  * Rebuilds one bounded page of records.
@@ -55,6 +62,7 @@ export async function runAnalyticsBackfillBatch(state: BackfillState): Promise<B
     return { ...state, status: "success", progress: 100, message: "Analitika qayta hisoblandi" };
   }
 
+  const pageSize = dealRows.length;
   const ids = dealRows.map((row: { deal_id: string }) => row.deal_id);
   const placeholders = ids.map(() => "?").join(", ");
   const historyRows = (await db
@@ -73,23 +81,32 @@ export async function runAnalyticsBackfillBatch(state: BackfillState): Promise<B
     .filter((row: { currentScope: string | null }) => row.currentScope)
     .map((row: { deal_id: string; currentScope: string | null }) => [row.deal_id, String(row.currentScope)]));
 
-  const [userRows, statusRows, pipelineRows, crmFields, snapshots] = await Promise.all([
-    getDictionary<Record<string, unknown>[]>("users", []),
-    getDictionary<Record<string, unknown>[]>("statuses", []),
-    getDictionary<{ id: string; name: string }[]>("pipelines", []),
-    getDictionary<CrmFieldOption[]>("crmFields", []),
-    getSalesSnapshots(ids),
-  ]);
+  // Loaded one at a time and immediately reduced to the small lookup Map the
+  // builder needs. `Promise.all` into destructured consts kept all four raw
+  // arrays — 185 KB of JSON, far more as objects — alive for the rest of the
+  // function; this way each becomes unreachable as soon as its Map exists.
+  const users = buildUserMap(await getDictionary<Record<string, unknown>[]>("users", []));
+  const { stages, sources, stageMeta } = buildStatusMaps(await getDictionary<Record<string, unknown>[]>("statuses", []));
+  const fieldOptions = buildFieldOptionMap(await getDictionary<CrmFieldOption[]>("crmFields", []));
+  const pipelines = new Map((await getDictionary<{ id: string; name: string }[]>("pipelines", []))
+    .map((row: { id: string; name: string }) => [String(row.id), String(row.name)]));
+  const snapshots = await getSalesSnapshots(ids);
 
-  const { stages, sources, stageMeta } = buildStatusMaps(statusRows);
+  // Parse in place and drop the row wrappers: holding the raw payload strings
+  // and their parsed objects at the same time doubled this page's footprint.
+  const deals = dealRows.map((row: { payload: string }) => JSON.parse(row.payload) as RawDeal);
+  const stageHistories = historyRows.map((row: { payload: string }) => JSON.parse(row.payload) as RawStageHistory);
+  dealRows.length = 0;
+  historyRows.length = 0;
+
   const records = buildAnalyticsRecords({
-    deals: dealRows.map((row: { payload: string }) => JSON.parse(row.payload) as RawDeal),
-    stageHistories: historyRows.map((row: { payload: string }) => JSON.parse(row.payload) as RawStageHistory),
+    deals,
+    stageHistories,
     settings,
-    users: buildUserMap(userRows),
-    pipelines: new Map(pipelineRows.map((row: { id: string; name: string }) => [String(row.id), String(row.name)])),
+    users,
+    pipelines,
     stages, sources, stageMeta,
-    fieldOptions: buildFieldOptionMap(crmFields),
+    fieldOptions,
     snapshots,
     domain: getBitrixDomain(),
     // The raw history in D1 is what the last successful sync stored. Treating
@@ -104,12 +121,12 @@ export async function runAnalyticsBackfillBatch(state: BackfillState): Promise<B
   }
   await upsertAnalyticsRecords(records);
 
-  const cursor = state.cursor + dealRows.length;
+  const cursor = state.cursor + pageSize;
   return {
     ...state,
     cursor,
     rebuilt: state.rebuilt + records.length,
-    status: dealRows.length < BACKFILL_BATCH_SIZE ? "success" : "running",
+    status: pageSize < BACKFILL_BATCH_SIZE ? "success" : "running",
     progress: backfillProgress(cursor, state.total),
     message: `${cursor} / ${state.total} ta Deal qayta hisoblandi`,
     version: ANALYTICS_VERSION,
