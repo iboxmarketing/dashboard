@@ -4,7 +4,7 @@ import { reconcileCurrentStages } from "../lib/current-stages";
 import { DASHBOARD_OMITTED_FIELDS, DASHBOARD_TIMELINE_FIELD, STAGE_FUNNEL_FIELDS, type StageFunnelRecord } from "../lib/dashboard-record";
 import {
   buildHistorical, buildManagerMatrix, buildOverdueRows, buildReconciliationView, buildStageCatalog,
-  buildStageHealth, buildSummary, humanDuration, limitRatio, overrunHours, stageKey,
+  buildStageHealth, buildSummary, humanDuration, limitRatio, overrunHours, stageKey, terminalStageKeys,
 } from "../lib/stage-control-analytics";
 import type { AnalyticsRecord, CurrentStageRecord, PipelineStageOption, StageTimelineEntry } from "../lib/types";
 
@@ -411,7 +411,9 @@ test("AK: the same stageId with a renamed/case-changed label stays one historica
 
 test("AL: known progression stages follow Bitrix order", () => {
   const known = HIST.progression.filter((row) => !row.legacy).map((row) => row.stage);
-  assert.deepEqual(known, ["РАСПРЕДЕЛЁННЫЕ СДЕЛКИ", "ОБРАБОТКА", "Оплата получена"]);
+  // Оплата получена is a Bitrix won stage (SEMANTICS "S"), so it is an outcome
+  // rather than a progression row — the funnel ends at the last process stage.
+  assert.deepEqual(known, ["РАСПРЕДЕЛЁННЫЕ СДЕЛКИ", "ОБРАБОТКА"]);
 });
 
 test("AM: a historical stage with no live catalog match stays visible as legacy", () => {
@@ -465,4 +467,34 @@ test("fallback order applies only when Bitrix SORT metadata is unavailable", () 
     ],
   });
   assert.deepEqual(withSort.map((stage) => stage.name), ["ВСТРЕЧА ПРОВЕДЕНА", "РАСПРЕДЕЛЁННЫЕ СДЕЛКИ"]);
+});
+
+test("a Bitrix won/lost stage is terminal even when Settings has not listed it", () => {
+  const catalog = buildStageCatalog({ catalog: IBOX_STAGES });
+  // Nothing configured at all: Bitrix SEMANTICS alone must still end the funnel.
+  const keys = terminalStageKeys(catalog, {});
+  assert.equal(keys.has("1:C1:PAID"), true, "S = won stage");
+  assert.equal(keys.has("1:C1:NR"), true, "F = lost stage");
+  assert.equal(keys.has("1:C1:WORK"), false, "a process stage stays progression");
+  const hist = buildHistorical(HISTORY, HIST_CATALOG, {});
+  assert.equal(hist.progression.some((row) => row.key === "1:C1:PAID"), false,
+    "the won stage no longer renders a 232/232/100% progression row");
+  assert.deepEqual(hist.progression.filter((row) => !row.legacy).map((row) => row.stage),
+    ["РАСПРЕДЕЛЁННЫЕ СДЕЛКИ", "ОБРАБОТКА"]);
+});
+
+test("a process stage keeps its place even when its NAME looks terminal", () => {
+  // Bitrix reports this mid-funnel stage as a normal process stage (sem: "")
+  // and Settings has not classified it, so it is progression — renaming a stage
+  // must never move it out of the funnel by text.
+  const catalog = buildStageCatalog({
+    catalog: [
+      { id: "S_NEW", name: "РАСПРЕДЕЛЁННЫЕ СДЕЛКИ", categoryId: "1", sort: 10, semantics: "" },
+      { id: "S_NRLIKE", name: "Not Relevant", categoryId: "1", sort: 30, semantics: "" },
+      { id: "S_LOSE", name: "Сделка провалена", categoryId: "1", sort: 120, semantics: "F" },
+    ],
+  });
+  const keys = terminalStageKeys(catalog, {});
+  assert.equal(keys.has("1:S_NRLIKE"), false, "not classified by display text");
+  assert.equal(keys.has("1:S_LOSE"), true);
 });

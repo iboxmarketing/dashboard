@@ -131,9 +131,25 @@ function fallbackRank(name: string) {
   return index === -1 ? Number.MAX_SAFE_INTEGER : index;
 }
 
-/** Stage ids configured as a terminal outcome — not a progression step. */
-export function terminalStageIds(config: StageSemantics) {
-  return new Set([...stageIdList(config.lowQualityStageIds), ...stageIdList(config.closedLostStageIds)]);
+/**
+ * Stage keys that end the funnel rather than continue it.
+ *
+ * Two independent, metadata-only sources — never the display name:
+ *  - the semantic stage ids configured in Settings, and
+ *  - Bitrix's own `SEMANTICS`, where `S` is a won stage and `F` a lost one.
+ *
+ * Bitrix marking decides the general case, configuration covers stages the
+ * product owner has classified beyond it. A stage Bitrix reports as a normal
+ * process stage stays in the progression table even if its NAME looks terminal:
+ * renaming a stage must not silently move it out of the funnel.
+ */
+export function terminalStageKeys(catalog: StageCatalogEntry[], config: StageSemantics) {
+  const configured = new Set([...stageIdList(config.lowQualityStageIds), ...stageIdList(config.closedLostStageIds)]);
+  const keys = new Set<string>();
+  for (const stage of catalog) {
+    if (configured.has(stage.stageId) || stage.semantics === "S" || stage.semantics === "F") keys.add(stage.key);
+  }
+  return keys;
 }
 
 // ---------------------------------------------------------------- live summary
@@ -415,7 +431,7 @@ export function buildHistorical(
   catalog: StageCatalogEntry[],
   config: StageSemantics = {},
 ): HistoricalView {
-  const terminal = terminalStageIds(config);
+  const terminal = terminalStageKeys(catalog, config);
   const meta = new Map(catalog.map((stage) => [stage.key, stage]));
   const rank = new Map(catalog.map((stage, index) => [stage.key, index]));
   const stats = new Map<string, { entered: number; advanced: number; dropOff: number; durations: number[] }>();
@@ -423,7 +439,7 @@ export function buildHistorical(
   for (const record of records) {
     const timeline = (record.stageTimeline ?? []).filter((entry) => entry.categoryId === record.originCategoryId);
     // Progression positions only; terminal stages are outcomes and are skipped.
-    const steps = timeline.map((entry, index) => ({ entry, index, terminal: terminal.has(entry.stageId) }));
+    const steps = timeline.map((entry, index) => ({ entry, index, terminal: terminal.has(stageKey(entry.categoryId, entry.stageId)) }));
     const progression = steps.filter((step) => !step.terminal);
     for (let i = 0; i < progression.length; i++) {
       const step = progression[i];
