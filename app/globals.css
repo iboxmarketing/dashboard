@@ -332,6 +332,21 @@ aside nav button i { margin-left: auto; width: 7px; height: 7px; border-radius: 
 .sql-stage-options { margin-top: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 8px; }
 /* Dashboard card order. The row is the running order, so the handle and the
    index are part of the information, not decoration. */
+/* Manager funnel table. The group row names the funnel stages and must stay
+   quiet — the table should still read as one table, not five. */
+.funnel-table thead .group-row th { font-size: 8px; letter-spacing: .09em; color: #9aa4b2; font-weight: 600;
+  background: #fbfcfd; border-bottom: 1px solid var(--line); padding: 5px 10px; text-align: left; }
+.funnel-table thead .group-row th:not(:first-child) { border-left: 1px solid var(--line); }
+/* Stacked cell: the primary figure leads, the secondary explains it quietly. */
+.funnel-table tbody td { vertical-align: top; }
+.funnel-table tbody td:not(.sticky-col) strong { display: block; font-size: 12px; line-height: 1.3; }
+.funnel-table tbody td small { display: block; color: #8a94a6; font-size: 9px; margin-top: 1px; white-space: nowrap; }
+.funnel-table tbody td .pill { display: inline-block; }
+/* The seller stays visible while the funnel scrolls horizontally. */
+.funnel-table .sticky-col { position: sticky; left: 0; z-index: 2; background: #fff; }
+.funnel-table thead .sticky-col { background: #fbfcfd; }
+.funnel-table tbody tr:hover .sticky-col { background: #f6f8fb; }
+.funnel-table .sticky-col::after { content: ""; position: absolute; top: 0; right: 0; bottom: 0; width: 1px; background: var(--line); }
 .metric-order { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 6px; }
 .metric-order-row { display: grid; grid-template-columns: auto auto auto minmax(0, 1fr) auto; align-items: center; gap: 10px;
   padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fafbfc; cursor: grab; }

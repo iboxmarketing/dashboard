@@ -29,7 +29,7 @@ import {
   DEFAULT_SHARED_WIDGET_TYPES, SHARE_STATUS_LABELS, defaultVisibleWidgetIds, shareStatus,
   type PageShare,
 } from "@/lib/share-tokens";
-import { countClassificationConflicts, countSalesLost, dealOutcomeLabel, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isSalesLost, isUnclassifiedLead, salesLostRate, salesManagerKey } from "@/lib/sales-logic";
+import { countClassificationConflicts, dealOutcomeLabel, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isSalesLost, isUnclassifiedLead, salesLostRate, salesManagerKey } from "@/lib/sales-logic";
 import { countDuplicates, markDuplicates } from "@/lib/duplicates";
 import { stageConfigConflicts } from "@/lib/stage-config";
 import { DASHBOARD_METRICS, buildDashboardMetrics, resolveDashboardMetric, selectPeriodPopulations, type DashboardMetricId } from "@/lib/dashboard-metrics";
@@ -252,50 +252,95 @@ function SectionHeader({ title, subtitle, action }: { title: string; subtitle?: 
   return <div className="section-header"><div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div>{action}</div>;
 }
 
+/**
+ * One manager row, read left to right as a funnel: how many leads arrived,
+ * were they classified, what quality, what the cohort produced, how efficiently
+ * SQL closed, what was lost, what closed this period, and the operational load.
+ *
+ * Every figure comes from `buildDashboardMetrics` over that manager's own
+ * records, so a row is the dashboard's definitions restricted to one seller
+ * rather than a second set of formulas.
+ */
 type ManagerRow = {
-  id: string; name: string; deals: number; avg: number | null; median: number | null;
-  noProcessing: number;
-  lowQuality: number; lost: number; active: number; sales: number; cohortSales: number; amount: number; conversion: number;
-  classified: number; coverage: number; lowQualityRate: number;
-  avgCheck: number | null; medianCheck: number | null; salesCycle: number | null;
+  id: string; name: string;
+  leads: number; leadShare: number;
+  classified: number; classificationCoverage: number;
+  sql: number; qualityAcceptedRate: number;
+  notRelevant: number; lowQualityRate: number;
+  cohortSales: number; leadToSale: number; cohortRevenue: number;
+  sqlToSale: number;
+  salesLost: number; salesLostRate: number;
+  periodSales: number; revenue: number;
+  active: number;
+  avgProcessing: number | null;
+  overdueUnprocessed: number; overdueRate: number;
+  currency: string;
 };
 
+
+/**
+ * Manager rows built from the canonical metric helper.
+ *
+ * The two populations mirror the dashboard exactly: `records` is the cohort
+ * (deals created in the period) and `wonRecords` is the period-sales set
+ * (deals won in the period). They are partitioned by `salesManagerKey`, so
+ * every deal lands in exactly one row and the rows sum back to the dashboard's
+ * own totals — which is what makes the lead-share denominator trustworthy.
+ */
 function buildManagers(records: DashboardRecord[], wonRecords: DashboardRecord[] = records.filter((row) => row.salesStatus === "WON")): ManagerRow[] {
-  const grouped = new Map<string, DashboardRecord[]>(); const wonGrouped = new Map<string, DashboardRecord[]>();
+  const cohortByManager = new Map<string, DashboardRecord[]>();
+  const wonByManager = new Map<string, DashboardRecord[]>();
   for (const record of records) {
     const key = salesManagerKey(record);
-    grouped.set(key, [...(grouped.get(key) ?? []), record]);
+    cohortByManager.set(key, [...(cohortByManager.get(key) ?? []), record]);
   }
   for (const record of wonRecords) {
-    const key = salesManagerKey(record); wonGrouped.set(key, [...(wonGrouped.get(key) ?? []), record]);
+    const key = salesManagerKey(record);
+    wonByManager.set(key, [...(wonByManager.get(key) ?? []), record]);
   }
-  const ids = new Set([...grouped.keys(), ...wonGrouped.keys()]);
-  return [...ids].map((id) => { const raw = grouped.get(id) ?? []; const won = wonGrouped.get(id) ?? [];
-    // Routing left the cohort on the main dashboard but not here, so a manager's
-    // "Lead" column counted deals that Leadlar excluded and every rate below it
-    // used a denominator the dashboard never shows. One definition now.
-    const rows = raw.filter(isEligibleCohortDeal);
-    const classified = rows.filter(isClassifiedLead);
-    return ({
-    id, name: raw[0]?.salesManager ?? won[0]?.salesManager ?? "Aniqlanmagan", deals: rows.length,
-    avg: average(rows.map((row) => row.processingBusinessMinutes)),
-    median: median(rows.map((row) => row.processingBusinessMinutes)),
-    noProcessing: summarizeSla(rows).overdue,
-    lowQuality: rows.filter((row) => row.lossReasonGroup === "MARKETING").length,
-    classified: classified.length,
-    coverage: pct(classified.length, rows.length),
-    lowQualityRate: pct(rows.filter((row) => row.lossReasonGroup === "MARKETING").length, classified.length),
-    lost: countSalesLost(rows),
-    active: rows.filter((row) => row.salesStatus === "ACTIVE").length,
-    sales: won.length, cohortSales: rows.filter((row) => row.salesStatus === "WON").length, amount: won.reduce((sum, row) => sum + row.opportunity, 0),
-    conversion: pct(rows.filter((row) => row.salesStatus === "WON").length, rows.length),
-    avgCheck: average(won.map((row) => row.opportunity)), medianCheck: median(won.map((row) => row.opportunity)),
-    salesCycle: average(won.map((row) => row.salesCycleHours)),
-  }); }).sort((a, b) => b.sales - a.sales || b.conversion - a.conversion);
+  const ids = new Set([...cohortByManager.keys(), ...wonByManager.keys()]);
+  const built = [...ids].map((id) => {
+    const cohort = cohortByManager.get(id) ?? [];
+    const won = wonByManager.get(id) ?? [];
+    const metrics = buildDashboardMetrics(cohort, won);
+    return {
+      id,
+      name: cohort[0]?.salesManager ?? won[0]?.salesManager ?? "Aniqlanmagan",
+      leads: metrics.counts.leads,
+      leadShare: 0, // filled once every row is known — see below
+      classified: metrics.counts.classified_leads,
+      classificationCoverage: metrics.rates.classification_coverage,
+      sql: metrics.counts.sql,
+      qualityAcceptedRate: metrics.rates.quality_accepted_rate,
+      notRelevant: metrics.counts.not_relevant,
+      lowQualityRate: metrics.rates.low_quality_rate,
+      cohortSales: metrics.counts.cohort_sales,
+      leadToSale: metrics.rates.lead_to_sale,
+      cohortRevenue: metrics.money.cohort_revenue,
+      sqlToSale: metrics.rates.sql_to_sale,
+      salesLost: metrics.counts.sales_lost,
+      salesLostRate: metrics.rates.sales_lost,
+      periodSales: metrics.counts.period_sales,
+      revenue: metrics.money.revenue,
+      active: metrics.counts.active_cohort,
+      avgProcessing: metrics.timing.avg_processing,
+      // Canonical OVERDUE_UNPROCESSED, not the SLA rate — different metrics.
+      overdueUnprocessed: metrics.sla.overdue,
+      overdueRate: pct(metrics.sla.overdue, metrics.counts.leads),
+      currency: metrics.money.currency,
+    } satisfies ManagerRow;
+  });
+  // The share denominator is every manager's leads, never just the rows a
+  // caller happens to display: the Dashboard shows a top-8 slice, and dividing
+  // by that would report percentages of a subset as percentages of the team.
+  const totalLeads = built.reduce((sum, row) => sum + row.leads, 0);
+  return built
+    .map((row) => ({ ...row, leadShare: pct(row.leads, totalLeads) }))
+    .sort((a, b) => b.periodSales - a.periodSales || b.cohortSales - a.cohortSales);
 }
 
 function ManagerTable({ rows, onSelect }: { rows: ManagerRow[]; onSelect: (manager: ManagerRow) => void }) {
-  const [sort, setSort] = useState<keyof ManagerRow>("sales");
+  const [sort, setSort] = useState<keyof ManagerRow>("periodSales");
   const [direction, setDirection] = useState<"asc" | "desc">("desc");
   const sorted = useMemo(() => [...rows].sort((a, b) => {
     const aValue = a[sort]; const bValue = b[sort];
@@ -306,18 +351,51 @@ function ManagerTable({ rows, onSelect }: { rows: ManagerRow[]; onSelect: (manag
     if (sort === column) setDirection(direction === "asc" ? "desc" : "asc");
     else { setSort(column); setDirection("asc"); }
   }
+  /** Each combined column sorts by the primary figure it leads with. */
   const header = (label: string, key: keyof ManagerRow) => <button onClick={() => setColumn(key)}>{label}{sort === key && (direction === "asc" ? " ↑" : " ↓")}</button>;
-  return <div className="table-wrap"><table className="data-table manager-table"><thead><tr>
-    <th>{header("Sotuvchi", "name")}</th><th>{header("Lead", "deals")}</th><th>{header("Davr sotuv", "sales")}</th><th>{header("Cohort sotuv", "cohortSales")}</th><th>{header("Summa", "amount")}</th>
-    <th title="Cohort sotuv / Leadlar">{header("Lead → Sotuv", "conversion")}</th><th title="Saralangan / Leadlar">{header("Saralash qamrovi", "coverage")}</th><th title="Not Relevant / Saralangan">{header("Sifatsiz lead %", "lowQualityRate")}</th><th>{header("Sifatsiz", "lowQuality")}</th><th>{header("Sotilmadi", "lost")}</th><th>{header("Cohort aktiv", "active")}</th>
-    <th>{header("Avg ishlov", "avg")}</th><th>{header("Muddati o‘tgan", "noProcessing")}</th>
-  </tr></thead><tbody>{sorted.map((row) => <tr key={row.id} onClick={() => onSelect(row)}>
-    <td><div className="manager-cell"><span>{row.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span><strong>{row.name}</strong></div></td>
-    <td>{row.deals}</td><td><strong className="success-text">{row.sales}</strong></td><td>{row.cohortSales}</td><td>{row.amount.toLocaleString("uz-UZ")}</td>
-    <td><span className="pill success">{row.conversion}%</span></td><td>{row.coverage}%</td><td><span className="pill warning">{row.lowQualityRate}%</span></td><td><span className={row.lowQuality ? "warning-text" : ""}>{row.lowQuality}</span></td>
-    <td><span className={row.lost ? "danger-text" : ""}>{row.lost}</span></td><td>{row.active}</td><td>{fmtMinutes(row.avg)}</td>
-    <td><span className={row.noProcessing ? "danger-text" : ""}>{row.noProcessing}</span></td>
-  </tr>)}</tbody></table>{!rows.length && <div className="empty-table">Tanlangan filtr bo‘yicha menejerlar topilmadi.</div>}</div>;
+  const money = (value: number, currency: string) => `${Math.round(value).toLocaleString("uz-UZ")} ${currency || "UZS"}`;
+  return <div className="table-wrap"><table className="data-table manager-table funnel-table">
+    {/* A second header row names the funnel stages, so the columns read as a
+        sequence rather than as unrelated numbers. */}
+    <thead>
+      <tr className="group-row">
+        <th aria-hidden="true" />
+        <th colSpan={2}>LEAD TAQSIMOTI</th>
+        <th colSpan={2}>SIFAT</th>
+        <th colSpan={3}>COHORT NATIJA</th>
+        <th>DAVR NATIJA</th>
+        <th colSpan={3}>OPERATSIYA</th>
+      </tr>
+      <tr>
+        <th className="sticky-col">{header("Sotuvchi", "name")}</th>
+        <th title="Menejer leadlari / barcha menejerlar leadlari">{header("Leadlar", "leads")}</th>
+        <th title="Saralangan / Leadlar">{header("Saralash", "classificationCoverage")}</th>
+        <th title="SQL / Saralangan">{header("SQL", "sql")}</th>
+        <th title="Not Relevant / Saralangan">{header("Not Relevant", "notRelevant")}</th>
+        <th title="Cohort sotuv soni, Lead → Sotuv % va o‘sha sotuvlar summasi">{header("Cohort sotuv", "cohortSales")}</th>
+        <th title="Cohort sotuv / SQL">{header("SQL → Sotuv", "sqlToSale")}</th>
+        <th title="Sotilmadi / SQL">{header("Sotilmadi", "salesLost")}</th>
+        <th title="Sotuv sanasi tanlangan davrda bo‘lgan sotuvlar">{header("Davr sotuv", "periodSales")}</th>
+        <th title="Tanlangan davrda kelib, hali yopilmagan">{header("Aktiv", "active")}</th>
+        <th title="Lead kelganidan SQL yoki Not Relevant bo‘lguncha">{header("Avg saralash", "avgProcessing")}</th>
+        <th title="OVERDUE_UNPROCESSED — SLA foizi emas">{header("Ishlov muddati o‘tgan", "overdueUnprocessed")}</th>
+      </tr>
+    </thead>
+    <tbody>{sorted.map((row) => <tr key={row.id} onClick={() => onSelect(row)}>
+      <td className="sticky-col"><div className="manager-cell"><span>{row.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span><strong>{row.name}</strong></div></td>
+      <td><strong>{row.leads}</strong><small>{row.leadShare}% jamidan</small></td>
+      <td><strong>{row.classified} / {row.leads}</strong><small>{row.classificationCoverage}%</small></td>
+      <td><strong>{row.sql}</strong><small>{row.qualityAcceptedRate}% saralanganlardan</small></td>
+      <td><strong className={row.notRelevant ? "warning-text" : ""}>{row.notRelevant}</strong><small>{row.lowQualityRate}% saralanganlardan</small></td>
+      <td><strong className="success-text">{row.cohortSales} ta · {row.leadToSale}%</strong><small>{money(row.cohortRevenue, row.currency)}</small></td>
+      <td><span className="pill success">{row.sqlToSale}%</span><small>{row.cohortSales} / {row.sql} SQL</small></td>
+      <td><strong className={row.salesLost ? "danger-text" : ""}>{row.salesLost} ta</strong><small>{row.salesLostRate}% SQL’dan</small></td>
+      <td><strong className="success-text">{row.periodSales} ta</strong><small>{money(row.revenue, row.currency)}</small></td>
+      <td>{row.active}</td>
+      <td>{fmtMinutes(row.avgProcessing)}</td>
+      <td><strong className={row.overdueUnprocessed ? "danger-text" : ""}>{row.overdueUnprocessed} ta</strong><small>{row.overdueRate}% leadlardan</small></td>
+    </tr>)}</tbody>
+  </table>{!rows.length && <div className="empty-table">Tanlangan filtr bo‘yicha menejerlar topilmadi.</div>}</div>;
 }
 
 function FiltersBar({ filters, setFilters, records, currentStages, mode = "cohort" }: { filters: Filters; setFilters: React.Dispatch<React.SetStateAction<Filters>>; records: DashboardRecord[]; currentStages?: CurrentStageRecord[]; mode?: "cohort" | "current" }) {
