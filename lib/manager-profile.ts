@@ -106,9 +106,12 @@ export function sourceFunnelRows(cohort: MetricRecord[]): SourceFunnelRow[] {
     const key = row.source || "Aniqlanmagan";
     bySource.set(key, [...(bySource.get(key) ?? []), row]);
   }
-  return [...bySource.entries()].map(([source, rows]) => {
+  return [...bySource.entries()].flatMap(([source, rows]) => {
     const metrics = buildDashboardMetrics(rows, []);
-    return {
+    // Grouping happens before canonical eligibility, so a routing-only source
+    // exists in the Map but must not become a visible zero-Lead row.
+    if (metrics.counts.leads === 0) return [];
+    return [{
       source,
       leads: metrics.counts.leads,
       classified: metrics.counts.classified_leads,
@@ -124,7 +127,7 @@ export function sourceFunnelRows(cohort: MetricRecord[]): SourceFunnelRow[] {
       salesLost: metrics.counts.sales_lost,
       salesLostRate: metrics.rates.sales_lost,
       currency: metrics.money.currency,
-    };
+    }];
   }).sort((a, b) => b.leads - a.leads || a.source.localeCompare(b.source));
 }
 

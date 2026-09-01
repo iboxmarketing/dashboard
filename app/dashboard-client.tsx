@@ -603,9 +603,10 @@ function TrendChart({ records, previousRecords, bounds, previousBounds }: { reco
  */
 function ManagerDetailView({ manager, cohortRecords, salesRecords, currentStages, onBack }: { manager: ManagerRow; cohortRecords: DashboardRecord[]; salesRecords: DashboardRecord[]; currentStages: CurrentStageRecord[] | null; onBack: () => void }) {
   const { cohort, metrics } = buildManagerProfile(cohortRecords, salesRecords, manager.id);
-  // The whole team under the same filters — the lead-share denominator and the
-  // benchmark medians must never come from a displayed subset.
+  // Lead share reconciles to every manager bucket, including unattributed
+  // deals. Performance benchmarks compare real seller accounts only.
   const team = useMemo(() => buildManagers(cohortRecords, salesRecords), [cohortRecords, salesRecords]);
+  const benchmarkTeam = team.filter((row) => row.id !== "unknown");
   const teamLeads = team.reduce((sum, row) => sum + row.leads, 0);
 
   const money = (value: number) => `${Math.round(value).toLocaleString("uz-UZ")} ${metrics.money.currency || "UZS"}`;
@@ -623,11 +624,11 @@ function ManagerDetailView({ manager, cohortRecords, salesRecords, currentStages
     return `Jamoa medianasi ${Math.round(median)}% · ${sign}${delta} p.p.${good ? "" : ""}`;
   };
   const withSql = (row: ManagerRow) => row.sql > 0;
-  const medianSqlToSale = teamMedian(team, (row) => row.sqlToSale, withSql);
-  const medianSalesLostRate = teamMedian(team, (row) => row.salesLostRate, withSql);
-  const medianProcessing = teamMedian(team, (row) => row.avgProcessing, (row) => row.avgProcessing !== null);
-  const medianSla = teamMedian(team, (row) => row.slaRate, (row) => row.slaDenominator > 0);
-  const medianCycle = teamMedian(team, (row) => row.salesCycleHours, (row) => row.salesCycleHours !== null);
+  const medianSqlToSale = teamMedian(benchmarkTeam, (row) => row.sqlToSale, withSql);
+  const medianSalesLostRate = teamMedian(benchmarkTeam, (row) => row.salesLostRate, withSql);
+  const medianProcessing = teamMedian(benchmarkTeam, (row) => row.avgProcessing, (row) => row.avgProcessing !== null);
+  const medianSla = teamMedian(benchmarkTeam, (row) => row.slaRate, (row) => row.slaDenominator > 0);
+  const medianCycle = teamMedian(benchmarkTeam, (row) => row.salesCycleHours, (row) => row.salesCycleHours !== null);
 
   const active = currentStages?.filter((row) => (row.assignedManagerId || "unknown") === manager.id) ?? [];
   const stageRows = stageWorkloadRows(active);

@@ -116,6 +116,16 @@ test("O/P/Q: the source table is a created-cohort funnel with no period sales", 
   assert.doesNotMatch(table, /period_sales|money\.revenue/, "Q: and none rendered");
 });
 
+test("Source Funnel hides a routing-only source instead of rendering zero Leadlar", () => {
+  const rows = sourceFunnelRows([
+    deal({ dealId: "eligible-source", source: "CRM-форма" }),
+    deal({ dealId: "routing-source", source: "Faqat routing", salesStatus: "LOST", lossReasonGroup: "ROUTING" }),
+  ]);
+  assert.deepEqual(rows.map((row) => row.source), ["CRM-форма"]);
+  assert.equal(rows[0].leads, 1);
+  assert.equal(rows.some((row) => row.leads === 0), false);
+});
+
 test("R/S: stage workload shows overdue count and rate, problems first", () => {
   const rows = stageWorkloadRows([
     { stage: "ОБРАБОТКА", stageOverdue: true }, { stage: "ОБРАБОТКА", stageOverdue: true }, { stage: "ОБРАБОТКА" },
@@ -164,7 +174,7 @@ test("Z/AA: processing is not repeated at the bottom, and Chek uses period sales
   assert.doesNotMatch(profile, /title="Sabablar profili"/, "the mixed reason panel is gone");
 });
 
-test("AB/AC: benchmarks are team medians over eligible managers only", () => {
+test("AB/AC: benchmarks are team medians over eligible real sellers only", () => {
   assert.equal(medianOf([10, 20, 30]), 20);
   assert.equal(medianOf([10, 20]), 15);
   assert.equal(medianOf([]), null);
@@ -173,14 +183,38 @@ test("AB/AC: benchmarks are team medians over eligible managers only", () => {
   const rows = [{ sql: 4, sqlToSale: 50 }, { sql: 2, sqlToSale: 10 }, { sql: 0, sqlToSale: 0 }];
   assert.equal(teamMedian(rows, (row) => row.sqlToSale, (row) => row.sql > 0), 30, "AC: excludes the SQL=0 manager");
   assert.equal(teamMedian(rows, (row) => row.sqlToSale, () => true), 10, "including it would say 10");
-  assert.match(profile, /teamMedian\(team, \(row\) => row\.sqlToSale, withSql\)/);
-  assert.match(profile, /teamMedian\(team, \(row\) => row\.salesLostRate, withSql\)/);
+  assert.match(profile, /const benchmarkTeam = team\.filter\(\(row\) => row\.id !== "unknown"\)/);
+  assert.match(profile, /teamMedian\(benchmarkTeam, \(row\) => row\.sqlToSale, withSql\)/);
+  assert.match(profile, /teamMedian\(benchmarkTeam, \(row\) => row\.salesLostRate, withSql\)/);
   assert.match(profile, /row\.slaDenominator > 0/, "SLA median needs a valid denominator");
   assert.match(profile, /Jamoa medianasi/);
   assert.doesNotMatch(profile, /Manager Score|Ball|Reyting ball/i, "no score is invented");
   // Not Relevant is source quality, not seller performance — never benchmarked.
   const nrCard = profile.slice(profile.indexOf('label="Not Relevant"'), profile.indexOf('label="Kelgan leadlardan sotuv"'));
   assert.doesNotMatch(nrCard, /Jamoa medianasi/);
+});
+
+test("unknown stays in lead share but is excluded from every performance median", () => {
+  const team = [
+    { id: "seller-a", leads: 10, sql: 10, sqlToSale: 30, salesLostRate: 20, avgProcessing: 10, slaRate: 80, slaDenominator: 10, salesCycleHours: 20 },
+    { id: "seller-b", leads: 10, sql: 10, sqlToSale: 50, salesLostRate: 40, avgProcessing: 20, slaRate: 60, slaDenominator: 10, salesCycleHours: 40 },
+    { id: "unknown", leads: 5, sql: 5, sqlToSale: 100, salesLostRate: 100, avgProcessing: 100, slaRate: 0, slaDenominator: 5, salesCycleHours: 100 },
+  ];
+  const benchmarkTeam = team.filter((row) => row.id !== "unknown");
+  const teamLeads = team.reduce((sum, row) => sum + row.leads, 0);
+
+  assert.equal(teamLeads, 25, "A: unattributed leads remain in the denominator");
+  assert.equal(pct(team[0].leads, teamLeads), 40, "B: seller A lead share remains 10 / all 25 leads");
+  assert.equal(teamMedian(team, (row) => row.sqlToSale, (row) => row.sql > 0), 50, "old SQL→Sale median included unknown");
+  assert.equal(teamMedian(benchmarkTeam, (row) => row.sqlToSale, (row) => row.sql > 0), 40, "C: 30% and 50% median to 40%");
+  assert.equal(teamMedian(benchmarkTeam, (row) => row.salesLostRate, (row) => row.sql > 0), 30, "D");
+  assert.equal(teamMedian(benchmarkTeam, (row) => row.avgProcessing, (row) => row.avgProcessing !== null), 15, "E");
+  assert.equal(teamMedian(benchmarkTeam, (row) => row.slaRate, (row) => row.slaDenominator > 0), 70, "F");
+  assert.equal(teamMedian(benchmarkTeam, (row) => row.salesCycleHours, (row) => row.salesCycleHours !== null), 30, "G");
+
+  assert.match(profile, /const teamLeads = team\.reduce\(\(sum, row\) => sum \+ row\.leads, 0\)/, "lead share still reads team");
+  for (const metric of ["sqlToSale", "salesLostRate", "avgProcessing", "slaRate", "salesCycleHours"])
+    assert.match(profile, new RegExp(`teamMedian\\(benchmarkTeam, \\(row\\) => row\\.${metric}`), `${metric} reads benchmarkTeam`);
 });
 
 test("semantic mismatch detectors report rather than silently reclassify", () => {
