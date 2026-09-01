@@ -783,7 +783,7 @@ function LeadFlowView({ records }: { records: DashboardRecord[] }) {
         </div>)}
       </div>
       <div className="trend-legend">
-        <span><i className="swatch bar" style={{ background: `rgba(${palette}, .85)` }} />{definition.label} — {higherIsHealthier(metric) ? "och rang = SLA past" : "to‘q rang = yuklama/bosim yuqori"}</span>
+        <span><i className="swatch bar" style={{ background: `rgba(${palette}, .85)` }} />{definition.label} — {higherIsHealthier(metric) ? "to‘q rang = SLA past · och rang = SLA yuqori" : "to‘q rang = yuklama/bosim yuqori"}</span>
         <span><i className="swatch prev" />— · ma’lumot yo‘q</span>
       </div>
     </section>

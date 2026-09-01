@@ -138,3 +138,8 @@ test("heatmap renders missing evidence as an em dash", () => {
   assert.match(view, /\{format\(value\)\}/);
   assert.match(view, /if \(value === null\) return "—"/);
 });
+
+test("SLA legend describes low SLA as the darker risk state", () => {
+  assert.doesNotMatch(view, /och rang = SLA past/);
+  assert.match(view, /to‘q rang = SLA past · och rang = SLA yuqori/);
+});
