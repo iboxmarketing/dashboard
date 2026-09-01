@@ -10,7 +10,7 @@ import { Component, useCallback, useEffect, useMemo, useRef, useState } from "re
 import type { ErrorInfo, ReactNode } from "react";
 import type { DashboardRecord, StageFunnelRecord } from "@/lib/dashboard-record";
 import { DASHBOARD_HEADLINE_CARD_IDS, headlineCardLabel, resolveHeadlineCardIds, type HeadlineCardId } from "@/lib/dashboard-cards";
-import { DEFAULT_TREND_METRIC, TREND_METRICS, buildTrendSeries, supportsMovingAverage, trendMetric, type TrendMetricId, type TrendPoint } from "@/lib/trend-series";
+import { DEFAULT_TREND_METRIC, TREND_METRICS, buildTrendSeries, supportsMovingAverage, trendMetric, type TrendBounds, type TrendMetricId, type TrendPoint } from "@/lib/trend-series";
 import { initialStageFunnelState, stageFunnelNext, type StageFunnelAction, type StageFunnelState, type StageFunnelStatus } from "@/lib/stage-funnel-cache";
 import type { CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, StageReconciliation, SyncProgressState } from "@/lib/types";
 import { ANALYTICS_VERSION } from "@/lib/analytics";
@@ -531,12 +531,12 @@ const MONTHS_UZ = ["yanvar", "fevral", "mart", "aprel", "may", "iyun", "iyul", "
  *
  * Sales metrics are intentionally not offered here — see `lib/trend-series.ts`.
  */
-function TrendChart({ records, previousRecords }: { records: DashboardRecord[]; previousRecords: DashboardRecord[] }) {
+function TrendChart({ records, previousRecords, bounds, previousBounds }: { records: DashboardRecord[]; previousRecords: DashboardRecord[]; bounds: TrendBounds | null; previousBounds: TrendBounds | null }) {
   const [metric, setMetric] = useState<TrendMetricId>(DEFAULT_TREND_METRIC);
   const definition = trendMetric(metric);
   const { points, hasPrevious } = useMemo(
-    () => buildTrendSeries(records, previousRecords, metric),
-    [records, previousRecords, metric],
+    () => buildTrendSeries(records, previousRecords, metric, bounds ?? undefined, previousBounds ?? undefined),
+    [records, previousRecords, metric, bounds, previousBounds],
   );
   const format = (value: number | null) => {
     if (value === null) return "—";
@@ -1868,7 +1868,7 @@ export default function DashboardClient() {
     return () => window.clearInterval(interval);
   }, [configured, loadCurrentStages]);
 
-  const { cohortFiltered, wonFiltered, previousCohortFiltered, previousWonFiltered, detailFiltered } = useMemo(() => {
+  const { cohortFiltered, wonFiltered, previousCohortFiltered, previousWonFiltered, trendBounds, previousTrendBounds, detailFiltered } = useMemo(() => {
     const bounds = rangeBounds(filters); const search = filters.search.trim().toLowerCase();
     const from = bounds.from ? new Date(`${bounds.from}T00:00:00+05:00`).getTime() : -Infinity;
     const to = bounds.to ? new Date(`${bounds.to}T23:59:59+05:00`).getTime() : Infinity;
@@ -1889,7 +1889,13 @@ export default function DashboardClient() {
     const previousTo = from - 1; const previousFrom = previousTo - span + 1;
     const previousCohort = span ? base.filter((row) => { const created = new Date(row.createdAt).getTime(); return created >= previousFrom && created <= previousTo; }) : [];
     const previousWon = span ? base.filter((row) => row.salesStatus === "WON" && row.wonAt && new Date(row.wonAt).getTime() >= previousFrom && new Date(row.wonAt).getTime() <= previousTo) : [];
-    return { cohortFiltered: cohort, wonFiltered: won, previousCohortFiltered: previousCohort, previousWonFiltered: previousWon, detailFiltered: [...new Map([...cohort, ...won].map((row) => [row.dealId, row])).values()] };
+    // The Trend needs the period itself, not just the records in it: its
+    // calendar axis must include days on which nobody created a lead.
+    const trendBounds = bounds.from && bounds.to ? { from: bounds.from, to: bounds.to } : null;
+    const previousTrendBounds = span && trendBounds
+      ? { from: localDateKey(new Date(previousFrom)), to: localDateKey(new Date(previousTo)) }
+      : null;
+    return { cohortFiltered: cohort, wonFiltered: won, previousCohortFiltered: previousCohort, previousWonFiltered: previousWon, trendBounds, previousTrendBounds, detailFiltered: [...new Map([...cohort, ...won].map((row) => [row.dealId, row])).values()] };
   }, [records, filters]);
 
   const cachedCurrentStages = useMemo<CurrentStageRecord[]>(() => records.filter((row) => row.salesStatus === "ACTIVE" && row.operationalPipeline).map((row) => ({
@@ -2027,7 +2033,7 @@ export default function DashboardClient() {
         {isSalesView(view) && <FiltersBar filters={filters} setFilters={setFilters} records={records} currentStages={effectiveCurrentStages} mode={view === "stages" ? "current" : "cohort"} />}
         {isSalesView(view) && <CoverageNotice records={records} filters={filters} />}
         <ViewErrorBoundary onBack={() => setView("dashboard")}>
-        {view === "dashboard" && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{cohortFiltered.filter(isEligibleCohortDeal).length} Leadlar</strong></div></div><DashboardView records={cohortFiltered} salesRecords={wonFiltered} previousRecords={previousCohortFiltered} previousSalesRecords={previousWonFiltered} metricIds={settings.dashboardMetricIds} onManager={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /><TrendChart records={cohortFiltered} previousRecords={previousCohortFiltered} /></>}
+        {view === "dashboard" && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{cohortFiltered.filter(isEligibleCohortDeal).length} Leadlar</strong></div></div><DashboardView records={cohortFiltered} salesRecords={wonFiltered} previousRecords={previousCohortFiltered} previousSalesRecords={previousWonFiltered} metricIds={settings.dashboardMetricIds} onManager={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /><TrendChart records={cohortFiltered} previousRecords={previousCohortFiltered} bounds={trendBounds} previousBounds={previousTrendBounds} /></>}
         {view === "managers" && <><div className="page-title"><div><p className="eyebrow">TEAM PERFORMANCE</p><h1>Menejerlar</h1><p>Lead, sifatsizlik, sales loss, sotuv soni va Opportunity kesimida.</p></div></div><section className="panel"><SectionHeader title="Menejerlar reytingi" subtitle="Lead va cohort konversiya — yaratilgan sana; davr sotuv — Oplata sanasi bo‘yicha" /><ManagerTable rows={buildManagers(cohortFiltered, wonFiltered)} onSelect={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /></section></>}
         {view === "managerDetail" && selectedManager && <ManagerDetailView manager={selectedManager} cohortRecords={cohortFiltered} salesRecords={wonFiltered} currentStages={currentStageRecords} onBack={() => setView("managers")} />}
         {view === "leadFlow" && <LeadFlowView records={cohortFiltered} />}

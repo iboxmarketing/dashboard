@@ -66,6 +66,28 @@ export function tashkentDayKey(value: string) {
   }).format(new Date(value));
 }
 
+export type TrendBounds = { from: string; to: string };
+
+/**
+ * Every calendar date from `from` to `to` inclusive.
+ *
+ * The keys are plain `YYYY-MM-DD` strings, so stepping them as UTC midnights is
+ * calendar arithmetic on the label itself — no instant is converted and no
+ * local offset can shift a boundary. Tashkent has no DST, so a day is always a
+ * day here.
+ */
+export function calendarSpine({ from, to }: TrendBounds): string[] {
+  if (!from || !to || from > to) return [];
+  const days: string[] = [];
+  const cursor = new Date(`${from}T00:00:00Z`);
+  const last = new Date(`${to}T00:00:00Z`);
+  while (cursor.getTime() <= last.getTime() && days.length < 400) {
+    days.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return days;
+}
+
 /** Everything one day contributes, so the tooltip never recomputes anything. */
 export type TrendDay = {
   date: string;
@@ -87,20 +109,29 @@ function medianOf(values: (number | null)[]) {
 }
 
 /**
- * Groups by Tashkent day and runs the canonical metric build per day.
+ * Builds one point per calendar day in the selected period.
  *
- * A rate whose denominator is zero is `null`, not `0`: "no classified leads
- * yet" and "0% were accepted" are different statements, and a zero-height bar
- * would assert the second.
+ * The axis comes from the period, not from the data. Deriving it from the
+ * records dropped any day nobody happened to create a lead on, which silently
+ * shortened the series, shifted the previous-period alignment and made a
+ * 7-calendar-day average span more than seven calendar days.
+ *
+ * A rate whose denominator is zero is `null`, not `0`: "no classified leads"
+ * and "0% were accepted" are different statements, and a zero-height bar would
+ * assert the second. A zero *count*, by contrast, is a real business fact.
  */
-export function buildTrendDays(records: MetricRecord[]): TrendDay[] {
+export function buildTrendDays(records: MetricRecord[], bounds?: TrendBounds): TrendDay[] {
   const byDay = new Map<string, MetricRecord[]>();
   for (const row of records) {
     if (!row.createdAt) continue;
     const key = tashkentDayKey(row.createdAt);
     byDay.set(key, [...(byDay.get(key) ?? []), row]);
   }
-  return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, rows]) => {
+  const dates = bounds
+    ? calendarSpine(bounds)
+    : [...byDay.keys()].sort((a, b) => a.localeCompare(b));
+  return dates.map((date) => {
+    const rows = byDay.get(date) ?? [];
     const metrics = buildDashboardMetrics(rows, []);
     const eligible = metrics.eligible;
     return {
@@ -173,16 +204,19 @@ export type TrendPoint = TrendDay & {
 export const MATURITY_COVERAGE_THRESHOLD = 70;
 
 /**
- * Current and previous periods are aligned by position, not by date: the
- * periods are different calendar windows, so day 1 compares with day 1.
+ * Current and previous periods align by RELATIVE CALENDAR DAY: both spines are
+ * built from their own bounds, so day 1 compares with day 1 even when either
+ * period contains days on which nobody created a lead.
  */
 export function buildTrendSeries(
   records: MetricRecord[],
   previousRecords: MetricRecord[],
   id: TrendMetricId,
+  bounds?: TrendBounds,
+  previousBounds?: TrendBounds,
 ): { points: TrendPoint[]; hasPrevious: boolean } {
-  const days = buildTrendDays(records);
-  const previousDays = buildTrendDays(previousRecords);
+  const days = buildTrendDays(records, bounds);
+  const previousDays = buildTrendDays(previousRecords, previousBounds);
   const values = days.map((day) => trendValue(day, id));
   const averages = supportsMovingAverage(id) ? movingAverage(values) : values.map(() => null);
   const needsCoverage = Boolean(trendMetric(id).needsCoverage);
@@ -194,5 +228,7 @@ export function buildTrendSeries(
     previous: previousDays[index] ? trendValue(previousDays[index], id) : null,
     immature: needsCoverage && day.coverage !== null && day.coverage < MATURITY_COVERAGE_THRESHOLD,
   }));
-  return { points, hasPrevious: previousDays.length > 0 };
+  // With no historical coverage at all there is nothing to compare against.
+  const hasPrevious = previousDays.some((day) => day.leads > 0);
+  return { points: points.map((point) => (hasPrevious ? point : { ...point, previous: null })), hasPrevious };
 }

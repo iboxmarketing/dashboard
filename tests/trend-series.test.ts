@@ -3,7 +3,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import {
   DEFAULT_TREND_METRIC, EXCLUDED_SALES_METRIC_IDS, MATURITY_COVERAGE_THRESHOLD, TREND_METRICS,
-  buildTrendDays, buildTrendSeries, movingAverage, supportsMovingAverage, tashkentDayKey, trendMetric, trendValue,
+  buildTrendDays, buildTrendSeries, calendarSpine, movingAverage, supportsMovingAverage, tashkentDayKey, trendMetric, trendValue,
 } from "../lib/trend-series";
 import { summarizeSla } from "../lib/sla";
 import type { AnalyticsRecord } from "../lib/types";
@@ -210,6 +210,126 @@ test("the selector groups metrics and the chart draws all three layers", () => {
   assert.match(chart, /<optgroup key=\{group\} label=\{group\}>/);
   assert.match(chart, /trend-average/); assert.match(chart, /trend-previous/);
   assert.match(chart, /supportsMovingAverage\(metric\)/);
-  assert.match(chart, /buildTrendSeries\(records, previousRecords, metric\)/, "no per-chart formulas");
-  assert.match(client, /<TrendChart records=\{cohortFiltered\} previousRecords=\{previousCohortFiltered\} \/>/);
+  assert.match(chart, /buildTrendSeries\(records, previousRecords, metric, bounds \?\? undefined, previousBounds \?\? undefined\)/, "no per-chart formulas");
+  assert.match(client, /<TrendChart records=\{cohortFiltered\} previousRecords=\{previousCohortFiltered\} bounds=\{trendBounds\} previousBounds=\{previousTrendBounds\} \/>/);
+});
+
+// ------------------------------------------------- calendar spine (bounds) ---
+
+test("A/B/C: a day with no records still exists, as a real zero with null rates", () => {
+  const days = buildTrendDays(
+    [on("2026-08-01"), on("2026-08-01"), on("2026-08-03", { qualified: true })],
+    { from: "2026-08-01", to: "2026-08-03" },
+  );
+  assert.equal(days.length, 3, "A: the axis comes from the period, not the data");
+  assert.deepEqual(days.map((d) => d.date), ["2026-08-01", "2026-08-02", "2026-08-03"]);
+
+  const empty = days[1];
+  assert.equal(empty.leads, 0, "B: zero leads is a real business fact");
+  assert.equal(empty.classified, 0);
+  assert.equal(empty.sql, 0);
+  assert.equal(empty.notRelevant, 0);
+  assert.equal(empty.overdue, 0);
+  // C: no denominator, no evidence -> null, never a misleading zero.
+  assert.equal(empty.coverage, null);
+  assert.equal(empty.qualityAccepted, null);
+  assert.equal(empty.lowQuality, null);
+  assert.equal(empty.slaRate, null);
+  assert.equal(empty.avgProcessing, null);
+  assert.equal(empty.medianProcessing, null);
+  assert.equal(empty.overdueRate, null);
+});
+
+test("I/J: leading and trailing zero days survive", () => {
+  const days = buildTrendDays([on("2026-08-03")], { from: "2026-08-01", to: "2026-08-05" });
+  assert.equal(days.length, 5);
+  assert.deepEqual(days.map((d) => d.leads), [0, 0, 1, 0, 0], "leading and trailing zeros kept");
+  // Without bounds the old behaviour would have collapsed this to one point.
+  assert.equal(buildTrendDays([on("2026-08-03")]).length, 1);
+});
+
+test("H: a 30-day filter produces 30 calendar positions", () => {
+  assert.equal(calendarSpine({ from: "2026-08-03", to: "2026-09-01" }).length, 30);
+  assert.equal(calendarSpine({ from: "2026-08-01", to: "2026-08-01" }).length, 1, "Bugun");
+  assert.equal(calendarSpine({ from: "2026-08-26", to: "2026-09-01" }).length, 7, "Oxirgi 7 kun");
+  assert.equal(calendarSpine({ from: "2026-09-01", to: "2026-09-01" }).length, 1, "Kecha/Bugun");
+  assert.equal(calendarSpine({ from: "2026-07-01", to: "2026-07-31" }).length, 31, "O‘tgan oy");
+  // Month and year rollovers step correctly.
+  assert.deepEqual(calendarSpine({ from: "2026-08-30", to: "2026-09-02" }), ["2026-08-30", "2026-08-31", "2026-09-01", "2026-09-02"]);
+  assert.deepEqual(calendarSpine({ from: "2026-12-31", to: "2027-01-01" }), ["2026-12-31", "2027-01-01"]);
+  assert.deepEqual(calendarSpine({ from: "2028-02-28", to: "2028-03-01" }), ["2028-02-28", "2028-02-29", "2028-03-01"], "leap day");
+  assert.deepEqual(calendarSpine({ from: "2026-08-05", to: "2026-08-01" }), [], "an inverted range is empty, not infinite");
+});
+
+test("D: a zero calendar day participates in a count moving average", () => {
+  const rows = [
+    ...Array.from({ length: 10 }, (_, i) => on("2026-08-01", { dealId: `a${i}` })),
+    ...Array.from({ length: 8 }, (_, i) => on("2026-08-03", { dealId: `c${i}` })),
+  ];
+  const { points } = buildTrendSeries(rows, [], "leads", { from: "2026-08-01", to: "2026-08-03" });
+  assert.deepEqual(points.map((p) => p.value), [10, 0, 8]);
+  assert.deepEqual(points.map((p) => p.average), [10, 5, 6], "(10)/1, (10+0)/2, (10+0+8)/3");
+});
+
+test("E: a null-evidence day is still skipped by the processing moving average", () => {
+  const rows = [
+    on("2026-08-01", { processingBusinessMinutes: 10 }),
+    on("2026-08-03", { processingBusinessMinutes: 20 }),
+  ];
+  const { points } = buildTrendSeries(rows, [], "avg_processing", { from: "2026-08-01", to: "2026-08-03" });
+  assert.deepEqual(points.map((p) => p.value), [10, null, 20], "the empty day has no measurement");
+  assert.deepEqual(points.map((p) => p.average), [10, 10, 15], "null is skipped, not read as 0 minutes");
+});
+
+test("F/G: relative alignment holds when either period has a zero-lead day", () => {
+  const current = { from: "2026-08-01", to: "2026-08-03" };
+  const previous = { from: "2026-07-01", to: "2026-07-03" };
+  // F: current has the gap, previous does not.
+  const f = buildTrendSeries(
+    [on("2026-08-01"), on("2026-08-03")],
+    [on("2026-07-01"), on("2026-07-02"), on("2026-07-02"), on("2026-07-03")],
+    "leads", current, previous);
+  assert.deepEqual(f.points.map((p) => p.value), [1, 0, 1]);
+  assert.deepEqual(f.points.map((p) => p.previous), [1, 2, 1], "day 2 still compares with day 2");
+  // G: previous has the gap, current does not.
+  const g = buildTrendSeries(
+    [on("2026-08-01"), on("2026-08-02"), on("2026-08-03")],
+    [on("2026-07-01"), on("2026-07-03")],
+    "leads", current, previous);
+  assert.deepEqual(g.points.map((p) => p.value), [1, 1, 1]);
+  assert.deepEqual(g.points.map((p) => p.previous), [1, 0, 1], "the previous gap is a real zero");
+  // No history at all still hides the comparison.
+  const none = buildTrendSeries([on("2026-08-01")], [], "leads", current, previous);
+  assert.equal(none.hasPrevious, false);
+  assert.deepEqual(none.points.map((p) => p.previous), [null, null, null]);
+});
+
+test("L: a zero-lead day is never labelled an immature cohort", () => {
+  const { points } = buildTrendSeries(
+    [on("2026-08-01", { qualified: true })],
+    [], "quality_accepted", { from: "2026-08-01", to: "2026-08-02" });
+  const zeroDay = points[1];
+  assert.equal(zeroDay.leads, 0);
+  assert.equal(zeroDay.value, null);
+  assert.equal(zeroDay.coverage, null);
+  assert.equal(zeroDay.immature, false, "there is no cohort that day to be immature");
+  // The warning still fires where it should: leads > 0 and coverage below threshold.
+  const low = buildTrendSeries(
+    [...Array.from({ length: 9 }, (_, i) => on("2026-08-01", { dealId: `u${i}` })), on("2026-08-01", { dealId: "q", qualified: true })],
+    [], "quality_accepted", { from: "2026-08-01", to: "2026-08-01" });
+  assert.equal(low.points[0].coverage, 10);
+  assert.equal(low.points[0].immature, true);
+});
+
+test("K: the Tashkent boundary still decides which calendar slot a lead lands in", () => {
+  const days = buildTrendDays(
+    [deal({ createdAt: "2026-08-18T21:30:00.000Z" })],
+    { from: "2026-08-18", to: "2026-08-19" },
+  );
+  assert.deepEqual(days.map((d) => d.leads), [0, 1], "02:30 Tashkent belongs to the 19th");
+  const edge = buildTrendDays(
+    [deal({ createdAt: "2026-08-18T18:59:59.000Z" })],
+    { from: "2026-08-18", to: "2026-08-19" },
+  );
+  assert.deepEqual(edge.map((d) => d.leads), [1, 0], "23:59:59 Tashkent stays on the 18th");
 });
