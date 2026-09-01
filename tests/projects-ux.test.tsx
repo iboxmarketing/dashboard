@@ -233,8 +233,12 @@ test("toggling a selection off and on again is not an unsaved change", () => {
   assert.deepEqual([...toggled.qualifiedStageIds].sort(), [...saved.qualifiedStageIds].sort(), "same selection");
   assert.equal(isSettingsDirty(saved, toggled), false, "order-only difference is not a change");
 
-  // Same for the metric picker.
-  assert.equal(isSettingsDirty(saved, { ...saved, dashboardMetricIds: ["revenue", "leads", "sql"] }), false);
+  // NOT the metric picker any more: dashboardMetricIds carries the dashboard
+  // card order, so resequencing it is a real edit and must enable Save.
+  assert.equal(isSettingsDirty(saved, { ...saved, dashboardMetricIds: ["revenue", "leads", "sql"] }), true,
+    "reordering dashboard cards is a change");
+  assert.equal(isSettingsDirty(saved, { ...saved, dashboardMetricIds: ["leads", "sql", "revenue"] }), false,
+    "an identical order is not a change");
 
   // A real change is still detected.
   assert.equal(isSettingsDirty(saved, { ...saved, qualifiedStageIds: ["C3:A"] }), true, "removal is a change");

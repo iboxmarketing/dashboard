@@ -235,12 +235,15 @@ test("stage options render the stage name with its id underneath", () => {
 });
 
 test("dashboard metrics render full labels on their own grid", () => {
-  assert.match(client, /<div className="metric-options">\{DASHBOARD_METRICS\.map/,
-    "metrics use the wider metric grid, not the stage chip container");
+  // Selected metrics are now an ordered list; the unselected ones keep the
+  // wider metric grid rather than the stage chip container.
+  const picker = client.slice(client.indexOf("function DashboardMetricOrder"), client.indexOf("function SettingsView"));
+  assert.match(picker, /<ol className="metric-order"/, "selected metrics render as an ordered list");
+  assert.match(picker, /<div className="metric-options">\{available\.map/, "unselected metrics keep the wider grid");
   // Every canonical label must be renderable in full — no abbreviation step.
-  const dashboardTab = client.slice(client.indexOf('{tab === "dashboard"'), client.indexOf('{tab === "sla"'));
-  assert.match(dashboardTab, /title=\{metric\.label\}/, "the full metric label is passed through");
-  assert.doesNotMatch(dashboardTab, /slice\(0,|substring\(|truncate/, "no label shortening");
+  assert.match(picker, /title=\{metric\.label\}/, "the full metric label is passed through");
+  assert.match(picker, /\{label\(id\)\}/, "selected rows show the full registry label");
+  assert.doesNotMatch(picker, /slice\(0,|substring\(|truncate/, "no label shortening");
 });
 
 test("the project card shows name, paired funnel and ids as separate lines", () => {

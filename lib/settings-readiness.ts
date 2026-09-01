@@ -105,10 +105,15 @@ export function fullSyncConfirmation(funnelName: string, historyDays: number): s
  * are positionally paired with their id arrays, and reordering them would
  * mismatch a funnel with its post-sale partner.
  */
+/**
+ * Arrays where membership matters but sequence does not, so reshuffling them is
+ * not an edit. `dashboardMetricIds` is deliberately absent: it now carries the
+ * dashboard's card order, so moving a card IS a change and must enable Save.
+ */
 const UNORDERED_SELECTION_KEYS = new Set<keyof DashboardSettings>([
   "selectedPipelineIds", "postSalePipelineIds",
   "qualifiedStageIds", "lowQualityStageIds", "paymentStageIds", "closedLostStageIds",
-  "dashboardMetricIds", "routingReasonPatterns",
+  "routingReasonPatterns",
 ]);
 
 /** True when the user has edits that are not yet saved. */

@@ -34,7 +34,12 @@ test("11-12: kartani yashirish faqat o‘shani olib tashlaydi, qaytarilsa qiymat
   const shown = buildDashboardMetrics(rows, rows);
   assert.equal(hidden.money.revenue, shown.money.revenue);
   assert.equal(shown.money.revenue, 500);
-  assert.deepEqual(resolveDashboardMetricIds([...without, "revenue"]), DEFAULT_DASHBOARD_METRIC_IDS);
+  // Re-enabling appends to the end: the array is the card order now, so a
+  // re-checked metric returns at the bottom rather than to its old slot.
+  assert.deepEqual(resolveDashboardMetricIds([...without, "revenue"]), [...without, "revenue"]);
+  assert.equal(resolveDashboardMetricIds([...without, "revenue"]).at(-1), "revenue");
+  assert.deepEqual([...resolveDashboardMetricIds([...without, "revenue"])].sort(), [...DEFAULT_DASHBOARD_METRIC_IDS].sort(),
+    "the same set of cards, only the order differs");
   assert.deepEqual(resolveDashboardMetricIds(["bogus", "sql"]), ["sql"]);
 });
 

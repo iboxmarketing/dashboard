@@ -77,11 +77,22 @@ export function isDashboardMetricId(value: string): value is DashboardMetricId {
   return DASHBOARD_METRICS.some((metric) => metric.id === value);
 }
 
-/** Keeps saved ids valid and ordered as the registry declares them. */
+/**
+ * Keeps saved ids valid while preserving the order they were saved in.
+ *
+ * The array is now both the selection AND the presentation order, so this must
+ * not re-sort by the registry: doing so was why the Settings checkboxes could
+ * only ever toggle visibility. Invalid ids are dropped and duplicates collapse
+ * to their first occurrence, neither of which disturbs the surviving order.
+ *
+ * Existing saved settings were written in registry order, so they resolve to
+ * exactly the same sequence as before — no dashboard reorders on deploy.
+ */
 export function resolveDashboardMetricIds(saved: unknown): DashboardMetricId[] {
-  const selected = Array.isArray(saved) ? saved.map(String).filter(isDashboardMetricId) : [];
-  if (!selected.length) return DEFAULT_DASHBOARD_METRIC_IDS;
-  return DASHBOARD_METRICS.map((metric) => metric.id).filter((id) => selected.includes(id));
+  const raw = Array.isArray(saved) ? saved.map(String).filter(isDashboardMetricId) : [];
+  const ordered = [...new Set(raw)];
+  if (!ordered.length) return DEFAULT_DASHBOARD_METRIC_IDS;
+  return ordered;
 }
 
 const percent = (value: number, total: number) => (total ? Math.round((value / total) * 100) : 0);

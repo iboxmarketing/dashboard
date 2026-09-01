@@ -4,7 +4,7 @@ import {
   Activity, AlertTriangle, ArrowLeft, BarChart3, CalendarDays, Check,
   ChevronDown, Clock3, Database, Download, ExternalLink, Gauge, LayoutDashboard,
   Loader2, Menu, RefreshCw, Search, Settings, ShieldCheck,
-  SlidersHorizontal, TimerReset, Users, X, XCircle, CircleDollarSign, ClipboardList, Layers3,
+  SlidersHorizontal, TimerReset, Users, X, XCircle, CircleDollarSign, ClipboardList, Layers3, GripVertical, ChevronUp
 } from "lucide-react";
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ErrorInfo, ReactNode } from "react";
@@ -394,9 +394,12 @@ function DashboardView({ records, salesRecords, previousRecords, previousSalesRe
   };
   return <>
     <section className="kpi-grid sales-kpis">
-      {DASHBOARD_METRICS.filter((metric) => selected.includes(metric.id)).map((metric) => {
-        const card = cards[metric.id];
-        return <KpiCard key={metric.id} label={metric.label} value={card.value} detail={card.detail} tone={card.tone} icon={card.icon} />;
+      {/* Driven by the saved order, not the registry order; the registry is
+          still the single source for each card's label. */}
+      {selected.map((id) => {
+        const card = cards[id];
+        const label = DASHBOARD_METRICS.find((metric) => metric.id === id)?.label ?? id;
+        return <KpiCard key={id} label={label} value={card.value} detail={card.detail} tone={card.tone} icon={card.icon} />;
       })}
     </section>
     <QualityVsFunnel metrics={metrics} />
@@ -724,6 +727,74 @@ function ReadinessBar({ readiness, lastSyncAt }: { readiness: SettingsReadiness;
   ))}</div>;
 }
 
+/**
+ * Dashboard card selection *and* order.
+ *
+ * `dashboardMetricIds` is the saved order, so this list is the dashboard's
+ * running order rather than a set of checkboxes: dragging a row moves the card.
+ * Drag uses the native HTML5 API — the list is short and flat, so a dependency
+ * would buy nothing — and every move is also available from the Up/Down
+ * buttons, which is what makes it usable without a pointer.
+ */
+function DashboardMetricOrder({ selected, onChange }: { selected: DashboardMetricId[]; onChange: (ids: DashboardMetricId[]) => void }) {
+  const [dragging, setDragging] = useState<DashboardMetricId | null>(null);
+  const [over, setOver] = useState<DashboardMetricId | null>(null);
+  const label = (id: DashboardMetricId) => DASHBOARD_METRICS.find((metric) => metric.id === id)?.label ?? id;
+  const available = DASHBOARD_METRICS.filter((metric) => !selected.includes(metric.id));
+
+  const move = (id: DashboardMetricId, offset: number) => {
+    const from = selected.indexOf(id);
+    const to = from + offset;
+    if (from < 0 || to < 0 || to >= selected.length) return;
+    const next = [...selected];
+    next.splice(to, 0, ...next.splice(from, 1));
+    onChange(next);
+  };
+  const dropOn = (target: DashboardMetricId) => {
+    if (!dragging || dragging === target) return;
+    const next = selected.filter((id) => id !== dragging);
+    next.splice(next.indexOf(target), 0, dragging);
+    onChange(next);
+  };
+  // Never leave the dashboard with no cards at all: the last one stays.
+  const remove = (id: DashboardMetricId) => { if (selected.length > 1) onChange(selected.filter((entry) => entry !== id)); };
+
+  return <section className="panel">
+    <SectionHeader title="Dashboard ko‘rsatkichlari" subtitle="Kartalarni tanlang va tartibini o‘zgartiring. Ro‘yxatdagi tartib — dashboarddagi tartib. Hisoblash o‘zgarmaydi." />
+    <ol className="metric-order" aria-label="Tanlangan kartalar tartibi">
+      {selected.map((id, index) => (
+        <li key={id}
+          className={`metric-order-row${dragging === id ? " dragging" : ""}${over === id && dragging !== id ? " over" : ""}`}
+          draggable
+          onDragStart={() => setDragging(id)}
+          onDragEnd={() => { setDragging(null); setOver(null); }}
+          onDragOver={(event) => { event.preventDefault(); setOver(id); }}
+          onDrop={(event) => { event.preventDefault(); dropOn(id); setDragging(null); setOver(null); }}>
+          <span className="metric-order-handle" aria-hidden="true"><GripVertical size={15} /></span>
+          <span className="metric-order-index">{index + 1}</span>
+          <input type="checkbox" checked readOnly={selected.length === 1}
+            aria-label={`${label(id)} kartasini o‘chirish`}
+            onChange={() => remove(id)} />
+          <span className="metric-order-label">{label(id)}</span>
+          <span className="metric-order-actions">
+            <button type="button" aria-label={`${label(id)} — yuqoriga`} disabled={index === 0}
+              onClick={() => move(id, -1)}><ChevronUp size={15} /></button>
+            <button type="button" aria-label={`${label(id)} — pastga`} disabled={index === selected.length - 1}
+              onClick={() => move(id, 1)}><ChevronDown size={15} /></button>
+          </span>
+        </li>
+      ))}
+    </ol>
+    {Boolean(available.length) && <>
+      <SectionHeader title="Ko‘rsatilmayotgan kartalar" subtitle="Belgilansa, ro‘yxat oxiriga qo‘shiladi" />
+      <div className="metric-options">{available.map((metric) => (
+        <CheckCard key={metric.id} checked={false} title={metric.label}
+          onChange={() => onChange([...selected, metric.id])} />
+      ))}</div>
+    </>}
+  </section>;
+}
+
 function SettingsView({ settings, syncing, lastSyncAt, onSave, onFullSync, onDirtyChange }: {
   settings: DashboardSettings; syncing: boolean; lastSyncAt: string | null;
   onSave: (settings: DashboardSettings) => Promise<void>;
@@ -892,16 +963,9 @@ function SettingsView({ settings, syncing, lastSyncAt, onSave, onFullSync, onDir
       </section>
     </>}
 
-    {tab === "dashboard" && <section className="panel"><SectionHeader title="Dashboard ko‘rsatkichlari" subtitle="Asosiy sahifada qaysi kartalar ko‘rinishini tanlang. Hisoblash o‘zgarmaydi, faqat ko‘rinish." />
-      <div className="metric-options">{DASHBOARD_METRICS.map((metric) => {
-        const checked = resolveDashboardMetricIds(draft.dashboardMetricIds).includes(metric.id);
-        return <CheckCard key={metric.id} checked={checked} title={metric.label} onChange={(next) => {
-          const current = resolveDashboardMetricIds(draft.dashboardMetricIds);
-          const updated = next ? [...current, metric.id] : current.filter((id) => id !== metric.id);
-          setDraft({ ...draft, dashboardMetricIds: updated.length ? updated : [metric.id] });
-        }} />;
-      })}</div>
-    </section>}
+    {tab === "dashboard" && <DashboardMetricOrder
+      selected={resolveDashboardMetricIds(draft.dashboardMetricIds)}
+      onChange={(ids) => setDraft({ ...draft, dashboardMetricIds: ids })} />}
 
     {tab === "sla" && <>
       <section className="settings-grid">

@@ -332,6 +332,21 @@ aside nav button i { margin-left: auto; width: 7px; height: 7px; border-radius: 
    truncated stage names to "ОБ..." — unusable for an admin screen that decides
    what a metric means. Both are now readable card grids. */
 .sql-stage-options { margin-top: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 8px; }
+/* Dashboard card order. The row is the running order, so the handle and the
+   index are part of the information, not decoration. */
+.metric-order { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 6px; }
+.metric-order-row { display: grid; grid-template-columns: auto auto auto minmax(0, 1fr) auto; align-items: center; gap: 10px;
+  padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fafbfc; cursor: grab; }
+.metric-order-row.dragging { opacity: .45; cursor: grabbing; }
+.metric-order-row.over { border-color: #246bfd; box-shadow: inset 0 0 0 1px #246bfd; }
+.metric-order-handle { color: #98a2b3; display: inline-flex; }
+.metric-order-index { color: #7c8798; font-size: 10px; min-width: 16px; }
+.metric-order-label { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.metric-order-actions { display: inline-flex; gap: 4px; }
+.metric-order-actions button { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
+  border: 1px solid var(--line); border-radius: 7px; background: #fff; color: #445; cursor: pointer; }
+.metric-order-actions button:disabled { opacity: .35; cursor: default; }
+.metric-order-actions button:not(:disabled):hover { border-color: #246bfd; color: #246bfd; }
 .metric-options { margin-top: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr)); gap: 8px; }
 .wide-field { margin-top: 12px; display: grid; gap: 7px; color: #667389; font-size: 9px; font-weight: 700; }
 .wide-field textarea { width: 100%; min-height: 74px; padding: 9px 10px; resize: vertical; border: 1px solid #d8dee8; border-radius: 9px; color: var(--ink); background: white; font: inherit; font-weight: 500; line-height: 1.5; }
