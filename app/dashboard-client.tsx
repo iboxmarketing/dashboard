@@ -339,7 +339,11 @@ function buildManagers(records: DashboardRecord[], wonRecords: DashboardRecord[]
     .sort((a, b) => b.periodSales - a.periodSales || b.cohortSales - a.cohortSales);
 }
 
-function ManagerTable({ rows, onSelect }: { rows: ManagerRow[]; onSelect: (manager: ManagerRow) => void }) {
+/**
+ * @param limit shows only the first N rows *after* sorting. The Dashboard uses
+ * it for a top-8 summary; the Managers page passes nothing and shows everyone.
+ */
+function ManagerTable({ rows, onSelect, limit }: { rows: ManagerRow[]; onSelect: (manager: ManagerRow) => void; limit?: number }) {
   const [sort, setSort] = useState<keyof ManagerRow>("periodSales");
   const [direction, setDirection] = useState<"asc" | "desc">("desc");
   const sorted = useMemo(() => [...rows].sort((a, b) => {
@@ -347,6 +351,10 @@ function ManagerTable({ rows, onSelect }: { rows: ManagerRow[]; onSelect: (manag
     const compared = typeof aValue === "string" ? aValue.localeCompare(String(bValue)) : Number(aValue ?? Infinity) - Number(bValue ?? Infinity);
     return direction === "asc" ? compared : -compared;
   }), [rows, sort, direction]);
+  // Sort every manager first, then cut. Slicing before sorting would rank the
+  // eight best sellers by Davr sotuv against each other on whatever column the
+  // user picked, which reads as a top-8 for that column but is not one.
+  const visibleRows = useMemo(() => (limit ? sorted.slice(0, limit) : sorted), [sorted, limit]);
   function setColumn(column: keyof ManagerRow) {
     if (sort === column) setDirection(direction === "asc" ? "desc" : "asc");
     else { setSort(column); setDirection("asc"); }
@@ -381,7 +389,7 @@ function ManagerTable({ rows, onSelect }: { rows: ManagerRow[]; onSelect: (manag
         <th title="OVERDUE_UNPROCESSED — SLA foizi emas">{header("Ishlov muddati o‘tgan", "overdueUnprocessed")}</th>
       </tr>
     </thead>
-    <tbody>{sorted.map((row) => <tr key={row.id} onClick={() => onSelect(row)}>
+    <tbody>{visibleRows.map((row) => <tr key={row.id} onClick={() => onSelect(row)}>
       <td className="sticky-col"><div className="manager-cell"><span>{row.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span><strong>{row.name}</strong></div></td>
       <td><strong>{row.leads}</strong><small>{row.leadShare}% jamidan</small></td>
       <td><strong>{row.classified} / {row.leads}</strong><small>{row.classificationCoverage}%</small></td>
@@ -508,7 +516,7 @@ function DashboardView({ records, salesRecords, previousRecords, previousSalesRe
         return <KpiCard key={id} label={headlineCardLabel(id)} value={card.value} detail={card.detail} tone={card.tone} icon={card.icon} />;
       })}
     </section>
-    <section className="panel"><SectionHeader title="Menejerlar performance" subtitle="Qatorni bossangiz dashboard shu menejer bo‘yicha filtrlanadi" /><ManagerTable rows={managers.slice(0, 8)} onSelect={onManager} /></section>
+    <section className="panel"><SectionHeader title="Menejerlar performance" subtitle="Qatorni bossangiz dashboard shu menejer bo‘yicha filtrlanadi" /><ManagerTable rows={managers} limit={8} onSelect={onManager} /></section>
   </>;
 }
 

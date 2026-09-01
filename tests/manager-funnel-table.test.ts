@@ -86,7 +86,10 @@ test("B/C: lead share divides by ALL manager rows, never a displayed slice", () 
   // The source computes the denominator before any slicing, and the Dashboard
   // slices only at render.
   assert.match(client, /const totalLeads = built\.reduce/);
-  assert.match(client, /managers\.slice\(0, 8\)/, "slicing happens at render only");
+  // The Dashboard now hands over every row and lets the table sort before it
+  // cuts, so the share denominator is never a displayed subset.
+  assert.match(client, /rows=\{managers\} limit=\{8\}/, "the limit is applied inside the table, after sorting");
+  assert.doesNotMatch(client, /managers\.slice\(0, 8\)/, "no pre-sort slice");
 });
 
 test("D/E/F: classification and quality columns are the canonical values", () => {
@@ -197,4 +200,97 @@ test("ManagerDetailView was not redesigned in this sprint", () => {
   assert.match(client, /INDIVIDUAL PERFORMANCE/);
   assert.match(client, /Yangi lead/);
   assert.match(client, /Saralash qamrovi/, "its own cards are untouched");
+});
+
+// ---------------------------------------------- sorting before the limit ---
+
+/** The ordering ManagerTable applies: sort every row, then cut to `limit`. */
+function visibleRows<T extends Record<string, unknown>>(rows: T[], sort: keyof T, direction: "asc" | "desc", limit?: number) {
+  const sorted = [...rows].sort((a, b) => {
+    const aValue = a[sort]; const bValue = b[sort];
+    const compared = typeof aValue === "string" ? aValue.localeCompare(String(bValue)) : Number(aValue ?? Infinity) - Number(bValue ?? Infinity);
+    return direction === "asc" ? compared : -compared;
+  });
+  return limit ? sorted.slice(0, limit) : sorted;
+}
+
+/**
+ * Twelve managers. `sleeper` is deliberately last on periodSales and first on
+ * SQL — the exact shape that made the old slice-then-sort ordering lie.
+ */
+const MANY = [
+  ...Array.from({ length: 11 }, (_, i) => ({
+    id: `m${i}`, name: `M${i}`,
+    periodSales: 20 - i,       // m0 highest … m10 lowest
+    sql: i,                    // m0 lowest … m10 second-highest
+    leads: 100 - i, leadShare: 0, sqlToSale: i * 2, overdueUnprocessed: i,
+  })),
+  { id: "sleeper", name: "Sleeper", periodSales: 0, sql: 999, leads: 5, leadShare: 0, sqlToSale: 99, overdueUnprocessed: 99 },
+];
+
+test("A/B: the Dashboard limit shows the real top 8 by the default column", () => {
+  assert.equal(MANY.length, 12, "more managers than the Dashboard shows");
+  const top = visibleRows(MANY, "periodSales", "desc", 8);
+  assert.equal(top.length, 8);
+  assert.deepEqual(top.map((r) => r.id), ["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7"]);
+  assert.equal(top.some((r) => r.id === "sleeper"), false, "lowest periodSales is not in the top 8");
+});
+
+test("C/D: sorting happens before slicing, so a hidden manager can enter the top 8", () => {
+  // The bug: slicing first, then sorting, keeps the periodSales top-8 forever.
+  const buggy = visibleRows(visibleRows(MANY, "periodSales", "desc", 8), "sql", "desc");
+  assert.equal(buggy.some((r) => r.id === "sleeper"), false, "the old order could never surface it");
+  assert.equal(buggy[0].id, "m7", "it would have called m7 the SQL leader");
+
+  // Fixed: sort all twelve, then cut.
+  const fixed = visibleRows(MANY, "sql", "desc", 8);
+  assert.equal(fixed[0].id, "sleeper", "the actual SQL leader is shown");
+  assert.equal(fixed.length, 8);
+  assert.deepEqual(fixed.map((r) => r.id), ["sleeper", "m10", "m9", "m8", "m7", "m6", "m5", "m4"]);
+  // And m0, top by periodSales, correctly drops out of an SQL ranking.
+  assert.equal(fixed.some((r) => r.id === "m0"), false);
+
+  // Ascending selects the genuine lowest 8.
+  const lowest = visibleRows(MANY, "sql", "asc", 8);
+  assert.deepEqual(lowest.map((r) => r.id), ["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7"]);
+  assert.equal(lowest.some((r) => r.id === "sleeper"), false);
+
+  // Same for the other columns the Dashboard offers.
+  assert.equal(visibleRows(MANY, "sqlToSale", "desc", 8)[0].id, "sleeper");
+  assert.equal(visibleRows(MANY, "overdueUnprocessed", "desc", 8)[0].id, "sleeper");
+  assert.equal(visibleRows(MANY, "leads", "desc", 8)[0].id, "m0");
+});
+
+test("E/F: lead shares are computed over all managers and never re-derived after slicing", () => {
+  const rows = buildRows(COHORT, WON);
+  const shown = visibleRows(rows, "periodSales", "desc", 8);
+  for (const row of shown) {
+    const full = rows.find((r) => r.id === row.id)!;
+    assert.equal(row.leadShare, full.leadShare, `${row.id} share unchanged by the limit`);
+  }
+  // The denominator is every row, so shares still reconcile to the whole team.
+  assert.equal(rows.reduce((sum, r) => sum + r.leads, 0), TOTAL.counts.leads);
+  // The component slices rendered rows only; it does not touch leadShare.
+  const table = client.slice(client.indexOf("function ManagerTable("), client.indexOf("function FiltersBar("));
+  assert.doesNotMatch(table, /leadShare\s*[:=]/, "ManagerTable must not recompute shares");
+  assert.match(client, /const totalLeads = built\.reduce/, "the denominator still comes from buildManagers");
+});
+
+test("G: the Managers page passes no limit and shows every manager", () => {
+  assert.equal(visibleRows(MANY, "periodSales", "desc").length, MANY.length);
+  assert.equal(visibleRows(MANY, "periodSales", "desc", undefined).length, 12);
+  assert.match(client, /<ManagerTable rows=\{managers\} limit=\{8\} onSelect=\{onManager\} \/>/, "Dashboard limits to 8");
+  assert.match(client, /<ManagerTable rows=\{buildManagers\(cohortFiltered, wonFiltered\)\} onSelect=/, "Managers page has no limit");
+  assert.doesNotMatch(client, /managers\.slice\(0, 8\)/, "the pre-sort slice is gone");
+});
+
+test("D: the component sorts, then slices, then renders", () => {
+  const table = client.slice(client.indexOf("function ManagerTable("), client.indexOf("function FiltersBar("));
+  const sortAt = table.indexOf("const sorted = useMemo");
+  const sliceAt = table.indexOf("const visibleRows = useMemo");
+  const renderAt = table.indexOf("visibleRows.map");
+  assert.ok(sortAt > -1 && sliceAt > sortAt, "the slice derives from the sorted list");
+  assert.ok(renderAt > sliceAt, "and the body renders the sliced list");
+  assert.match(table, /limit \? sorted\.slice\(0, limit\) : sorted/);
+  assert.doesNotMatch(table, /\{sorted\.map/, "the unsliced list must not be rendered");
 });
