@@ -199,10 +199,10 @@ test("S: sales metrics are absent from the created-cohort trend", () => {
   assert.equal(TREND_METRICS.length, 11);
   assert.deepEqual([...new Set(TREND_METRICS.map((entry) => entry.group))], ["LEAD OQIMI", "LEAD SIFATI", "OPERATSIYA"]);
   // The reason is written down where the next person will look.
-  const module = readFileSync(new URL("../lib/trend-series.ts", import.meta.url), "utf8");
-  assert.match(module, /average sales cycle is 5–6 days/i);
-  assert.match(module, /`createdAt`/);
-  assert.match(module, /`wonAt`/);
+  const source = readFileSync(new URL("../lib/trend-series.ts", import.meta.url), "utf8");
+  assert.match(source, /average sales cycle is 5–6 days/i);
+  assert.match(source, /`createdAt`/);
+  assert.match(source, /`wonAt`/);
 });
 
 test("the selector groups metrics and the chart draws all three layers", () => {
