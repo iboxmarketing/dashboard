@@ -332,6 +332,21 @@ aside nav button i { margin-left: auto; width: 7px; height: 7px; border-radius: 
 .sql-stage-options { margin-top: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 8px; }
 /* Dashboard card order. The row is the running order, so the handle and the
    index are part of the information, not decoration. */
+/* Trend chart. The bar is the day's value; the average and previous-period
+   markers must stay quieter than it. */
+.trend-column { position: relative; }
+.trend-column .trend-average, .trend-column .trend-previous { position: absolute; left: 8%; right: 8%; height: 2px; border-radius: 2px; pointer-events: none; }
+.trend-column .trend-average { background: #246bfd; opacity: .55; }
+.trend-column .trend-previous { background: #9aa4b2; opacity: .45; height: 1px; }
+.trend-column.immature > span { background-image: repeating-linear-gradient(45deg, transparent 0 3px, rgba(255,255,255,.55) 3px 6px); }
+.trend-column > span.trend-empty { background: transparent; border-top: 1px dashed #cbd3df; }
+.trend-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 9px; color: #7c8798; font-size: 9px; }
+.trend-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.trend-legend .swatch { width: 10px; height: 3px; border-radius: 2px; display: inline-block; }
+.trend-legend .swatch.bar { background: var(--blue); height: 8px; width: 6px; }
+.trend-legend .swatch.avg { background: #246bfd; opacity: .55; }
+.trend-legend .swatch.prev { background: #9aa4b2; opacity: .45; }
+.trend-legend .swatch.immature { background: repeating-linear-gradient(45deg, var(--blue) 0 3px, #fff 3px 6px); height: 8px; width: 6px; }
 /* Manager funnel table. The group row names the funnel stages and must stay
    quiet — the table should still read as one table, not five. */
 .funnel-table thead .group-row th { font-size: 8px; letter-spacing: .09em; color: #9aa4b2; font-weight: 600;

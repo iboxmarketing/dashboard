@@ -10,6 +10,7 @@ import { Component, useCallback, useEffect, useMemo, useRef, useState } from "re
 import type { ErrorInfo, ReactNode } from "react";
 import type { DashboardRecord, StageFunnelRecord } from "@/lib/dashboard-record";
 import { DASHBOARD_HEADLINE_CARD_IDS, headlineCardLabel, resolveHeadlineCardIds, type HeadlineCardId } from "@/lib/dashboard-cards";
+import { DEFAULT_TREND_METRIC, TREND_METRICS, buildTrendSeries, supportsMovingAverage, trendMetric, type TrendMetricId, type TrendPoint } from "@/lib/trend-series";
 import { initialStageFunnelState, stageFunnelNext, type StageFunnelAction, type StageFunnelState, type StageFunnelStatus } from "@/lib/stage-funnel-cache";
 import type { CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, StageReconciliation, SyncProgressState } from "@/lib/types";
 import { ANALYTICS_VERSION } from "@/lib/analytics";
@@ -520,22 +521,72 @@ function DashboardView({ records, salesRecords, previousRecords, previousSalesRe
   </>;
 }
 
-function TrendChart({ records }: { records: DashboardRecord[] }) {
-  const [metric, setMetric] = useState("avg");
-  const days = useMemo(() => {
-    const map = new Map<string, DashboardRecord[]>();
-    for (const row of records) { const key = localDateKey(new Date(row.createdAt)); map.set(key, [...(map.get(key) ?? []), row]); }
-    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b)).slice(-30).map(([date, rows]) => ({
-      date, avg: average(rows.map((row) => row.processingBusinessMinutes)) ?? 0,
-      median: median(rows.map((row) => row.processingBusinessMinutes)) ?? 0,
-      sla: summarizeSla(rows).rate,
-      count: rows.length,
-    }));
-  }, [records]);
-  const max = Math.max(1, ...days.map((row) => Number(row[metric as keyof typeof row])));
-  return <section className="panel"><SectionHeader title="Trend" subtitle="Kunlik dinamikasi" action={<Select label="Trend metrikasi" value={metric} onChange={setMetric}><option value="avg">Avg ishlov</option><option value="median">Median</option><option value="sla">SLA %</option><option value="count">Deal soni</option></Select>} />
-    <div className="trend-chart">{days.map((row) => { const current = row as unknown as Record<string, string | number>; const value = Number(current[metric]); return <div className="trend-column" key={row.date} title={`${row.date}: ${Math.round(value)}`}><span style={{ height: `${Math.max(4, (value / max) * 100)}%` }} /><small>{row.date.slice(8)}</small></div>; })}</div>
-    {!days.length && <div className="empty-chart">Trend uchun ma’lumot yo‘q.</div>}
+/** Tooltip date labels, e.g. "18-avgust". */
+const MONTHS_UZ = ["yanvar", "fevral", "mart", "aprel", "may", "iyun", "iyul", "avgust", "sentabr", "oktabr", "noyabr", "dekabr"];
+
+/**
+ * Created-cohort trend. Bars are the selected metric per Tashkent day, the
+ * faint line is a trailing 7-day average, and the small markers are the same
+ * metric one period earlier aligned by relative day.
+ *
+ * Sales metrics are intentionally not offered here — see `lib/trend-series.ts`.
+ */
+function TrendChart({ records, previousRecords }: { records: DashboardRecord[]; previousRecords: DashboardRecord[] }) {
+  const [metric, setMetric] = useState<TrendMetricId>(DEFAULT_TREND_METRIC);
+  const definition = trendMetric(metric);
+  const { points, hasPrevious } = useMemo(
+    () => buildTrendSeries(records, previousRecords, metric),
+    [records, previousRecords, metric],
+  );
+  const format = (value: number | null) => {
+    if (value === null) return "—";
+    if (definition.unit === "minutes") return fmtMinutes(value);
+    if (definition.unit === "percent") return `${Math.round(value)}%`;
+    return `${Math.round(value)} ta`;
+  };
+  const max = Math.max(1, ...points.map((point) => Math.max(point.value ?? 0, point.average ?? 0, point.previous ?? 0)));
+  const height = (value: number | null) => (value === null ? 0 : Math.max(3, (value / max) * 100));
+  /** Only the figures that explain the selected metric — nothing unrelated. */
+  const tooltip = (point: TrendPoint) => {
+    const day = `${Number(point.date.slice(8))}-${MONTHS_UZ[Number(point.date.slice(5, 7)) - 1]}`;
+    const lines = [day, `${definition.label}: ${format(point.value)}`];
+    if (definition.needsCoverage) {
+      lines.push(`Saralangan: ${point.classified} / ${point.leads}`);
+      lines.push(`Saralash qamrovi: ${point.coverage === null ? "—" : `${point.coverage}%`}`);
+      if (point.immature) lines.push("Cohort hali to‘liq saralanmagan");
+    }
+    if (metric === "coverage") lines.push(`Saralangan: ${point.classified} / ${point.leads}`);
+    if (metric === "sla") lines.push(`${point.slaOnTime} / ${point.slaDenominator}`);
+    if (metric === "overdue") lines.push(`${point.overdueRate === null ? "—" : `${point.overdueRate}%`} leadlardan`);
+    if (definition.unit === "minutes") lines.push(`${point.leads} ta lead`);
+    if (point.value === null) lines.push("Ma’lumot yo‘q");
+    if (point.previous !== null) lines.push(`Oldingi davr: ${format(point.previous)}`);
+    return lines.join("\n");
+  };
+  const groups = [...new Set(TREND_METRICS.map((entry) => entry.group))];
+  return <section className="panel"><SectionHeader
+      title="Trend"
+      subtitle={`Kunlik cohort — yaratilgan sana bo‘yicha · ${definition.label}${definition.unit === "percent" ? " (%)" : definition.unit === "minutes" ? " (vaqt)" : " (ta)"}`}
+      action={<Select label="Trend metrikasi" value={metric} onChange={(value) => setMetric(value as TrendMetricId)}>
+        {groups.map((group) => <optgroup key={group} label={group}>
+          {TREND_METRICS.filter((entry) => entry.group === group).map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+        </optgroup>)}
+      </Select>} />
+    <div className="trend-chart">{points.map((point) => (
+      <div className={`trend-column${point.immature ? " immature" : ""}`} key={point.date} title={tooltip(point)}>
+        {point.average !== null && <i className="trend-average" style={{ bottom: `${height(point.average)}%` }} />}
+        {point.previous !== null && <i className="trend-previous" style={{ bottom: `${height(point.previous)}%` }} />}
+        <span style={{ height: `${height(point.value)}%` }} className={point.value === null ? "trend-empty" : undefined} />
+        <small>{point.date.slice(8)}</small>
+      </div>
+    ))}</div>
+    <div className="trend-legend">
+      <span><i className="swatch bar" />{definition.label}</span>
+      {supportsMovingAverage(metric) && <span><i className="swatch avg" />7 kunlik o‘rtacha</span>}
+      {hasPrevious && <span><i className="swatch prev" />Oldingi davr</span>}
+      {definition.needsCoverage && <span><i className="swatch immature" />Cohort hali to‘liq saralanmagan</span>}
+    </div>
+    {!points.length && <div className="empty-chart">Trend uchun ma’lumot yo‘q.</div>}
   </section>;
 }
 
@@ -1976,7 +2027,7 @@ export default function DashboardClient() {
         {isSalesView(view) && <FiltersBar filters={filters} setFilters={setFilters} records={records} currentStages={effectiveCurrentStages} mode={view === "stages" ? "current" : "cohort"} />}
         {isSalesView(view) && <CoverageNotice records={records} filters={filters} />}
         <ViewErrorBoundary onBack={() => setView("dashboard")}>
-        {view === "dashboard" && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{cohortFiltered.filter(isEligibleCohortDeal).length} Leadlar</strong></div></div><DashboardView records={cohortFiltered} salesRecords={wonFiltered} previousRecords={previousCohortFiltered} previousSalesRecords={previousWonFiltered} metricIds={settings.dashboardMetricIds} onManager={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /><TrendChart records={cohortFiltered} /></>}
+        {view === "dashboard" && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{cohortFiltered.filter(isEligibleCohortDeal).length} Leadlar</strong></div></div><DashboardView records={cohortFiltered} salesRecords={wonFiltered} previousRecords={previousCohortFiltered} previousSalesRecords={previousWonFiltered} metricIds={settings.dashboardMetricIds} onManager={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /><TrendChart records={cohortFiltered} previousRecords={previousCohortFiltered} /></>}
         {view === "managers" && <><div className="page-title"><div><p className="eyebrow">TEAM PERFORMANCE</p><h1>Menejerlar</h1><p>Lead, sifatsizlik, sales loss, sotuv soni va Opportunity kesimida.</p></div></div><section className="panel"><SectionHeader title="Menejerlar reytingi" subtitle="Lead va cohort konversiya — yaratilgan sana; davr sotuv — Oplata sanasi bo‘yicha" /><ManagerTable rows={buildManagers(cohortFiltered, wonFiltered)} onSelect={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /></section></>}
         {view === "managerDetail" && selectedManager && <ManagerDetailView manager={selectedManager} cohortRecords={cohortFiltered} salesRecords={wonFiltered} currentStages={currentStageRecords} onBack={() => setView("managers")} />}
         {view === "leadFlow" && <LeadFlowView records={cohortFiltered} />}
