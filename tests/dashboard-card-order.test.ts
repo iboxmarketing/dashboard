@@ -87,8 +87,8 @@ test("I: the dashboard renders cards in the saved order", () => {
   const client = code("../app/dashboard-client.tsx");
   assert.doesNotMatch(client, /DASHBOARD_METRICS\.filter\(\(metric\) => selected\.includes/, "registry order must not drive rendering");
   assert.match(client, /selected\.map\(\(id\) =>/, "rendering follows the resolved saved order");
-  // The registry stays the single source for labels.
-  assert.match(client, /DASHBOARD_METRICS\.find\(\(metric\) => metric\.id === id\)\?\.label/);
+  // Labels come from one shared helper, not from a second copy of the registry.
+  assert.match(client, /headlineCardLabel\(id\)/);
 });
 
 test("J: loading and saving settings does not reorder or drop a selection", () => {
@@ -110,5 +110,5 @@ test("the Settings list offers a handle, keyboard controls and cannot empty the 
   assert.match(client, /yuqoriga/, "an Up control");
   assert.match(client, /pastga/, "a Down control");
   assert.match(client, /if \(selected\.length > 1\) onChange/, "the last card cannot be removed");
-  assert.match(client, /onChange\(\[\.\.\.selected, metric\.id\]\)/, "re-checking appends to the end");
+  assert.match(client, /onChange\(\[\.\.\.selected, id\]\)/, "re-checking appends to the end");
 });

@@ -178,6 +178,12 @@ export function buildDashboardMetrics(cohortRecords: MetricRecord[], periodSales
     },
     money: {
       revenue: periodSales.reduce((sum, row) => sum + row.opportunity, 0),
+      // The money the *cohort* produced: exactly the deals created in the
+      // selected period that were later won, whenever that happened. Summed
+      // over `cohortSales`, never over `periodSales` — the two populations are
+      // deliberately different and an August lead sold in September belongs to
+      // August's cohort revenue and September's revenue.
+      cohort_revenue: cohortSales.reduce((sum, row) => sum + row.opportunity, 0),
       avg_check: average(periodSales.map((row) => row.opportunity)),
       median_check: median(periodSales.map((row) => row.opportunity)),
       currency: periodSales[0]?.currencyId ?? "",

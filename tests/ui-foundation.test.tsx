@@ -241,8 +241,10 @@ test("dashboard metrics render full labels on their own grid", () => {
   assert.match(picker, /<ol className="metric-order"/, "selected metrics render as an ordered list");
   assert.match(picker, /<div className="metric-options">\{available\.map/, "unselected metrics keep the wider grid");
   // Every canonical label must be renderable in full — no abbreviation step.
-  assert.match(picker, /title=\{metric\.label\}/, "the full metric label is passed through");
-  assert.match(picker, /\{label\(id\)\}/, "selected rows show the full registry label");
+  // Labels now come from headlineCardLabel, which falls back to the registry
+  // label for every card that does not rename itself.
+  assert.match(picker, /title=\{headlineCardLabel\(id\)\}/, "the full card label is passed through");
+  assert.match(picker, /\{label\(id\)\}/, "selected rows show the full label");
   assert.doesNotMatch(picker, /slice\(0,|substring\(|truncate/, "no label shortening");
 });
 

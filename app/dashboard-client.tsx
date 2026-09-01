@@ -9,6 +9,7 @@ import {
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ErrorInfo, ReactNode } from "react";
 import type { DashboardRecord, StageFunnelRecord } from "@/lib/dashboard-record";
+import { DASHBOARD_HEADLINE_CARD_IDS, headlineCardLabel, resolveHeadlineCardIds, type HeadlineCardId } from "@/lib/dashboard-cards";
 import { initialStageFunnelState, stageFunnelNext, type StageFunnelAction, type StageFunnelState, type StageFunnelStatus } from "@/lib/stage-funnel-cache";
 import type { CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, StageReconciliation, SyncProgressState } from "@/lib/types";
 import { ANALYTICS_VERSION } from "@/lib/analytics";
@@ -31,7 +32,7 @@ import {
 import { countClassificationConflicts, countSalesLost, dealOutcomeLabel, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isSalesLost, isUnclassifiedLead, salesLostRate, salesManagerKey } from "@/lib/sales-logic";
 import { countDuplicates, markDuplicates } from "@/lib/duplicates";
 import { stageConfigConflicts } from "@/lib/stage-config";
-import { DASHBOARD_METRICS, buildDashboardMetrics, resolveDashboardMetric, resolveDashboardMetricIds, selectPeriodPopulations, type DashboardMetricId, type DashboardMetrics } from "@/lib/dashboard-metrics";
+import { DASHBOARD_METRICS, buildDashboardMetrics, resolveDashboardMetric, selectPeriodPopulations, type DashboardMetricId } from "@/lib/dashboard-metrics";
 import { SLA_LABELS, SLA_TONES, resolveSlaState, summarizeSla } from "@/lib/sla";
 import { stageConfigReadiness, summarizeDataQuality } from "@/lib/diagnostics";
 import {
@@ -363,78 +364,74 @@ function DashboardView({ records, salesRecords, previousRecords, previousSalesRe
   const previousMetrics = buildDashboardMetrics(previousRecords, previousSalesRecords);
   const managers = buildManagers(records, salesRecords);
   const metrics = buildDashboardMetrics(records, salesRecords);
-  const selected = resolveDashboardMetricIds(metricIds);
-  const cards: Record<DashboardMetricId, { value: string; detail: React.ReactNode; tone: string; icon: typeof Activity }> = {
-    leads: { value: String(metrics.counts.leads), detail: <><MetricDelta current={metrics.counts.leads} previous={previousMetrics.counts.leads} /> · routing chiqarilgan</>, tone: "blue", icon: Database },
-    sql: { value: String(metrics.counts.sql), detail: `Lead → SQL ${metrics.rates.lead_to_sql}% · Sifatli ${metrics.rates.quality_accepted_rate}%`, tone: "green", icon: Check },
-    not_relevant: { value: String(metrics.counts.not_relevant), detail: `Sifatsiz lead ${metrics.rates.low_quality_rate}% = Not Relevant / Saralangan`, tone: "amber", icon: AlertTriangle },
-    sales_lost: { value: String(metrics.counts.sales_lost), detail: `${metrics.rates.sales_lost}% SQL'dan sotilmagan`, tone: "red", icon: XCircle },
-    cohort_sales: { value: String(metrics.counts.cohort_sales), detail: `Lead → Sotuv ${metrics.rates.lead_to_sale}% · SQL → Sotuv ${metrics.rates.sql_to_sale}%`, tone: "green", icon: CircleDollarSign },
-    period_sales: { value: String(metrics.counts.period_sales), detail: <><MetricDelta current={metrics.counts.period_sales} previous={previousMetrics.counts.period_sales} /> · sotuv sanasi bo‘yicha</>, tone: "cyan", icon: CircleDollarSign },
-    revenue: { value: metrics.money.revenue.toLocaleString("uz-UZ"), detail: `Shu davrdagi sotuvlar · ${metrics.money.currency || "Bitrix valyutasi"}`, tone: "indigo", icon: CircleDollarSign },
-    avg_processing: { value: fmtMinutes(metrics.timing.avg_processing), detail: "Lead kelganidan SQL yoki Not Relevant bo‘lguncha", tone: "indigo", icon: Clock3 },
-    sla: { value: `${metrics.rates.sla}%`, detail: `${metrics.sla.onTime} / ${metrics.sla.denominator} · muddati aniqlangan lead`, tone: "green", icon: Gauge },
-    lead_to_sql: { value: `${metrics.rates.lead_to_sql}%`, detail: "Leadlardan SQL bo‘lgani", tone: "green", icon: Check },
-    lead_to_sale: { value: `${metrics.rates.lead_to_sale}%`, detail: "Leadlardan sotuvga yetgani", tone: "cyan", icon: CircleDollarSign },
-    sql_to_sale: { value: `${metrics.rates.sql_to_sale}%`, detail: "SQL'dan sotuvga yetgani", tone: "green", icon: CircleDollarSign },
-    avg_check: { value: (metrics.money.avg_check ?? 0).toLocaleString("uz-UZ", { maximumFractionDigits: 0 }), detail: "Shu davrdagi sotuvlar", tone: "green", icon: CircleDollarSign },
-    median_check: { value: (metrics.money.median_check ?? 0).toLocaleString("uz-UZ", { maximumFractionDigits: 0 }), detail: "Katta cheklar ta'sirisiz", tone: "indigo", icon: Gauge },
-    sales_cycle: { value: fmtHours(metrics.timing.sales_cycle), detail: "Lead kelganidan sotuvgacha", tone: "violet", icon: TimerReset },
-    duplicates: { value: String(metrics.counts.duplicates), detail: "Contact ID, keyin Company ID", tone: "amber", icon: Database },
-    active_cohort: { value: String(metrics.counts.active_cohort), detail: "Tanlangan davrda kelib, hali yopilmagan", tone: "violet", icon: Layers3 },
-    classified_leads: { value: String(metrics.counts.classified_leads), detail: "Sifati aniqlangan: SQL yoki Not Relevant", tone: "green", icon: ClipboardList },
-    unclassified_leads: { value: String(metrics.counts.unclassified_leads), detail: `Sifat natijasi aniqlanmagan · ${metrics.counts.pre_sql_closed} tasi SQLgacha yopilgan`, tone: "slate", icon: Clock3 },
-    classification_coverage: { value: `${metrics.rates.classification_coverage}%`, detail: "Saralash qamrovi = Saralangan / Leadlar", tone: "blue", icon: Gauge },
-    quality_accepted_rate: { value: `${metrics.rates.quality_accepted_rate}%`, detail: "Sifatli lead % = SQL / Saralangan leadlar", tone: "green", icon: Check },
-    low_quality_rate: { value: `${metrics.rates.low_quality_rate}%`, detail: "Sifatsiz lead % = Not Relevant / Saralangan leadlar", tone: "amber", icon: AlertTriangle },
-    not_relevant_of_leads: { value: `${metrics.rates.not_relevant_of_leads}%`, detail: "Not Relevant / barcha Leadlar — sifat foizi emas", tone: "slate", icon: AlertTriangle },
-    duplicates_eligible: { value: String(metrics.counts.duplicates_eligible), detail: "Routingsiz cohort ichidagi takrorlar", tone: "amber", icon: Database },
-    unique_ish_leads: { value: String(metrics.counts.unique_ish_leads), detail: "Diagnostik taxmin — kanonik Leadlar emas", tone: "slate", icon: Database },
-    pre_sql_closed: { value: String(metrics.counts.pre_sql_closed), detail: "SQL dalilisiz yopilgan · Sotilmadi'ga kirmaydi", tone: "amber", icon: ClipboardList },
+  const selected = resolveHeadlineCardIds(metricIds);
+  const money = (value: number) => `${Math.round(value).toLocaleString("uz-UZ")} ${metrics.money.currency || "UZS"}`;
+  const number = (value: number | null) => (value === null ? "—" : Math.round(value).toLocaleString("uz-UZ"));
+  /**
+   * One business question per card. Where a figure used to have a card of its
+   * own it is now the secondary line of the card that answers the same
+   * question — no formula changed, only where the number is shown.
+   */
+  const cards: Record<HeadlineCardId, { value: string; detail: React.ReactNode; tone: string; icon: typeof Activity }> = {
+    leads: {
+      value: String(metrics.counts.leads),
+      detail: <><MetricDelta current={metrics.counts.leads} previous={previousMetrics.counts.leads} /> · routing chiqarilgan</>,
+      tone: "blue", icon: Database },
+    classified_leads: {
+      value: String(metrics.counts.classified_leads),
+      detail: <>{metrics.rates.classification_coverage}% Leadlardan<small className="card-note">{metrics.counts.unclassified_leads} ta saralanmagan</small></>,
+      tone: "green", icon: ClipboardList },
+    sql: {
+      value: String(metrics.counts.sql),
+      detail: <>{metrics.rates.quality_accepted_rate}% saralanganlardan<small className="card-note">Sifatli lead</small></>,
+      tone: "green", icon: Check },
+    not_relevant: {
+      value: String(metrics.counts.not_relevant),
+      detail: <>{metrics.rates.low_quality_rate}% saralanganlardan<small className="card-note">Sifatsiz lead</small></>,
+      tone: "amber", icon: AlertTriangle },
+    sales_lost: {
+      value: String(metrics.counts.sales_lost),
+      detail: `${metrics.rates.sales_lost}% SQL'dan`,
+      tone: "red", icon: XCircle },
+    cohort_sales: {
+      value: `${metrics.counts.cohort_sales} ta`,
+      detail: <>{money(metrics.money.cohort_revenue)}<small className="card-note">Tanlangan davrda kelgan leadlardan sotilganlari</small></>,
+      tone: "green", icon: CircleDollarSign },
+    period_sales: {
+      value: `${metrics.counts.period_sales} ta`,
+      detail: <>{money(metrics.money.revenue)}<small className="card-note"><MetricDelta current={metrics.counts.period_sales} previous={previousMetrics.counts.period_sales} /> · sotuv sanasi bo‘yicha</small></>,
+      tone: "cyan", icon: CircleDollarSign },
+    avg_check: {
+      value: number(metrics.money.avg_check),
+      detail: `Median: ${number(metrics.money.median_check)}`,
+      tone: "indigo", icon: Gauge },
+    lead_to_sql: {
+      value: `${metrics.rates.lead_to_sql}%`,
+      detail: <>Lead → SQL<small className="card-note">Lead → Sotuv {metrics.rates.lead_to_sale}% · SQL → Sotuv {metrics.rates.sql_to_sale}%</small></>,
+      tone: "green", icon: Check },
+    avg_processing: {
+      value: fmtMinutes(metrics.timing.avg_processing),
+      detail: <>SLA {metrics.rates.sla}%<small className="card-note">{metrics.sla.onTime} / {metrics.sla.denominator} · muddati aniqlangan lead</small></>,
+      tone: "indigo", icon: Clock3 },
+    sales_cycle: {
+      value: fmtHours(metrics.timing.sales_cycle),
+      detail: "Lead kelganidan sotuvgacha",
+      tone: "violet", icon: TimerReset },
+    active_cohort: {
+      value: String(metrics.counts.active_cohort),
+      detail: "Tanlangan davrda kelib, hali yopilmagan",
+      tone: "violet", icon: Layers3 },
   };
   return <>
     <section className="kpi-grid sales-kpis">
-      {/* Driven by the saved order, not the registry order; the registry is
-          still the single source for each card's label. */}
+      {/* Driven by the saved order, not the registry order. */}
       {selected.map((id) => {
         const card = cards[id];
-        const label = DASHBOARD_METRICS.find((metric) => metric.id === id)?.label ?? id;
-        return <KpiCard key={id} label={label} value={card.value} detail={card.detail} tone={card.tone} icon={card.icon} />;
+        return <KpiCard key={id} label={headlineCardLabel(id)} value={card.value} detail={card.detail} tone={card.tone} icon={card.icon} />;
       })}
     </section>
-    <QualityVsFunnel metrics={metrics} />
     <section className="panel"><SectionHeader title="Menejerlar performance" subtitle="Qatorni bossangiz dashboard shu menejer bo‘yicha filtrlanadi" /><ManagerTable rows={managers.slice(0, 8)} onSelect={onManager} /></section>
   </>;
-}
-
-/**
- * Quality and funnel side by side, each with its formula printed under the
- * number. The two answer different questions off different denominators, and
- * the previous layout left the reader to infer which was which.
- */
-function QualityVsFunnel({ metrics }: { metrics: DashboardMetrics }) {
-  const cell = (label: string, value: string, formula: string) =>
-    <div key={label} title={formula}><span>{label}</span><strong>{value}</strong><small className="formula-note">{formula}</small></div>;
-  return <section className="dashboard-grid split">
-    <article className="panel compact-kpis">
-      <SectionHeader title="Lead sifati" subtitle="Maxraj — sifati aniqlangan leadlar" />
-      {cell("Leadlar", String(metrics.counts.leads), "Routingsiz kelgan barcha leadlar")}
-      {cell("Saralangan", String(metrics.counts.classified_leads), "SQL yoki Not Relevant")}
-      {cell("Saralanmagan", String(metrics.counts.unclassified_leads), "Canonical sifat natijasi aniqlanmagan leadlar. Bunga hali ishlanayotgan pre-SQL leadlar va SQLgacha yopilgan deal’lar kirishi mumkin.")}
-      {cell("Saralash qamrovi", `${metrics.rates.classification_coverage}%`, "Saralangan / Leadlar")}
-      {cell("Sifatli lead %", `${metrics.rates.quality_accepted_rate}%`, "SQL / Saralangan")}
-      {cell("Sifatsiz lead %", `${metrics.rates.low_quality_rate}%`, "Not Relevant / Saralangan")}
-    </article>
-    <article className="panel compact-kpis">
-      <SectionHeader title="Funnel konversiyasi" subtitle="Maxraj — barcha kelgan leadlar" />
-      {cell("Lead → SQL", `${metrics.rates.lead_to_sql}%`, "SQL / Leadlar")}
-      {cell("Lead → Sotuv", `${metrics.rates.lead_to_sale}%`, "Cohort sotuv / Leadlar")}
-      {cell("SQL → Sotuv", `${metrics.rates.sql_to_sale}%`, "Cohort sotuv / SQL")}
-      {cell("Umumiy leadlardan Not Relevant %", `${metrics.rates.not_relevant_of_leads}%`, "Not Relevant / Leadlar — sifat foizi emas")}
-      {cell("Takroriy lead", String(metrics.counts.duplicates_eligible), "Diagnostika — Leadlardan chiqarilmaydi")}
-      {cell("Takrorsiz lead (taxminiy)", String(metrics.counts.unique_ish_leads), "Leadlar − takrorlar · taxmin")}
-    </article>
-  </section>;
 }
 
 function TrendChart({ records }: { records: DashboardRecord[] }) {
@@ -736,13 +733,15 @@ function ReadinessBar({ readiness, lastSyncAt }: { readiness: SettingsReadiness;
  * would buy nothing — and every move is also available from the Up/Down
  * buttons, which is what makes it usable without a pointer.
  */
-function DashboardMetricOrder({ selected, onChange }: { selected: DashboardMetricId[]; onChange: (ids: DashboardMetricId[]) => void }) {
-  const [dragging, setDragging] = useState<DashboardMetricId | null>(null);
-  const [over, setOver] = useState<DashboardMetricId | null>(null);
-  const label = (id: DashboardMetricId) => DASHBOARD_METRICS.find((metric) => metric.id === id)?.label ?? id;
-  const available = DASHBOARD_METRICS.filter((metric) => !selected.includes(metric.id));
+function DashboardMetricOrder({ selected, onChange }: { selected: HeadlineCardId[]; onChange: (ids: HeadlineCardId[]) => void }) {
+  const [dragging, setDragging] = useState<HeadlineCardId | null>(null);
+  const [over, setOver] = useState<HeadlineCardId | null>(null);
+  const label = (id: HeadlineCardId) => headlineCardLabel(id);
+  // Only the curated headline cards are offered here; the diagnostics that were
+  // folded into them keep their formulas and stay available elsewhere.
+  const available = DASHBOARD_HEADLINE_CARD_IDS.filter((id) => !selected.includes(id));
 
-  const move = (id: DashboardMetricId, offset: number) => {
+  const move = (id: HeadlineCardId, offset: number) => {
     const from = selected.indexOf(id);
     const to = from + offset;
     if (from < 0 || to < 0 || to >= selected.length) return;
@@ -750,14 +749,14 @@ function DashboardMetricOrder({ selected, onChange }: { selected: DashboardMetri
     next.splice(to, 0, ...next.splice(from, 1));
     onChange(next);
   };
-  const dropOn = (target: DashboardMetricId) => {
+  const dropOn = (target: HeadlineCardId) => {
     if (!dragging || dragging === target) return;
     const next = selected.filter((id) => id !== dragging);
     next.splice(next.indexOf(target), 0, dragging);
     onChange(next);
   };
   // Never leave the dashboard with no cards at all: the last one stays.
-  const remove = (id: DashboardMetricId) => { if (selected.length > 1) onChange(selected.filter((entry) => entry !== id)); };
+  const remove = (id: HeadlineCardId) => { if (selected.length > 1) onChange(selected.filter((entry) => entry !== id)); };
 
   return <section className="panel">
     <SectionHeader title="Dashboard ko‘rsatkichlari" subtitle="Kartalarni tanlang va tartibini o‘zgartiring. Ro‘yxatdagi tartib — dashboarddagi tartib. Hisoblash o‘zgarmaydi." />
@@ -787,9 +786,9 @@ function DashboardMetricOrder({ selected, onChange }: { selected: DashboardMetri
     </ol>
     {Boolean(available.length) && <>
       <SectionHeader title="Ko‘rsatilmayotgan kartalar" subtitle="Belgilansa, ro‘yxat oxiriga qo‘shiladi" />
-      <div className="metric-options">{available.map((metric) => (
-        <CheckCard key={metric.id} checked={false} title={metric.label}
-          onChange={() => onChange([...selected, metric.id])} />
+      <div className="metric-options">{available.map((id) => (
+        <CheckCard key={id} checked={false} title={headlineCardLabel(id)}
+          onChange={() => onChange([...selected, id])} />
       ))}</div>
     </>}
   </section>;
@@ -964,7 +963,7 @@ function SettingsView({ settings, syncing, lastSyncAt, onSave, onFullSync, onDir
     </>}
 
     {tab === "dashboard" && <DashboardMetricOrder
-      selected={resolveDashboardMetricIds(draft.dashboardMetricIds)}
+      selected={resolveHeadlineCardIds(draft.dashboardMetricIds)}
       onChange={(ids) => setDraft({ ...draft, dashboardMetricIds: ids })} />}
 
     {tab === "sla" && <>
