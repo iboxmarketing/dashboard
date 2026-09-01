@@ -12,6 +12,7 @@ import type { DashboardRecord, StageFunnelRecord } from "@/lib/dashboard-record"
 import { DASHBOARD_HEADLINE_CARD_IDS, headlineCardLabel, resolveHeadlineCardIds, type HeadlineCardId } from "@/lib/dashboard-cards";
 import { BUCKET_COUNT, DEFAULT_LEAD_FLOW_METRIC, LEAD_FLOW_METRICS, WEEKDAY_LABELS, bucketLabel, buildLeadFlow, higherIsHealthier, leadFlowValue, type LeadFlowMetricId } from "@/lib/lead-flow-analytics";
 import { buildManagerProfile, notRelevantRecords, reasonBreakdown, salesLostRecords, sourceFunnelRows, stageWorkloadRows, teamMedian } from "@/lib/manager-profile";
+import { buildQualityAnalytics, type MarketingManagerDiagnostic, type SalesManagerDiagnostic } from "@/lib/quality-analytics";
 import { DEFAULT_TREND_METRIC, TREND_METRICS, buildTrendSeries, supportsMovingAverage, trendMetric, type TrendBounds, type TrendMetricId, type TrendPoint } from "@/lib/trend-series";
 import { initialStageFunnelState, stageFunnelNext, type StageFunnelAction, type StageFunnelState, type StageFunnelStatus } from "@/lib/stage-funnel-cache";
 import type { CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, StageReconciliation, SyncProgressState } from "@/lib/types";
@@ -32,7 +33,7 @@ import {
   DEFAULT_SHARED_WIDGET_TYPES, SHARE_STATUS_LABELS, defaultVisibleWidgetIds, shareStatus,
   type PageShare,
 } from "@/lib/share-tokens";
-import { countClassificationConflicts, dealOutcomeLabel, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isSalesLost, isUnclassifiedLead, salesLostRate, salesManagerKey } from "@/lib/sales-logic";
+import { countClassificationConflicts, dealOutcomeLabel, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isUnclassifiedLead, salesManagerKey } from "@/lib/sales-logic";
 import { countDuplicates, markDuplicates } from "@/lib/duplicates";
 import { stageConfigConflicts } from "@/lib/stage-config";
 import { DASHBOARD_METRICS, buildDashboardMetrics, resolveDashboardMetric, selectPeriodPopulations, type DashboardMetricId } from "@/lib/dashboard-metrics";
@@ -234,8 +235,8 @@ function SetupScreen({ configured, sync, syncing, externalError, onStart, onPaus
   </main>;
 }
 
-function KpiCard({ label, value, detail, tone = "blue", icon: Icon }: { label: string; value: string; detail: React.ReactNode; tone?: string; icon: typeof Activity }) {
-  return <article className={`kpi-card ${tone}`}><div className="kpi-top"><span>{label}</span><div className="kpi-icon"><Icon size={18} /></div></div><strong>{value}</strong><small>{detail}</small></article>;
+function KpiCard({ label, value, detail, tone = "blue", icon: Icon, valueClassName = "" }: { label: string; value: string; detail: React.ReactNode; tone?: string; icon: typeof Activity; valueClassName?: string }) {
+  return <article className={`kpi-card ${tone}`}><div className="kpi-top"><span>{label}</span><div className="kpi-icon"><Icon size={18} /></div></div><strong className={valueClassName}>{value}</strong><small>{detail}</small></article>;
 }
 function MetricDelta({ current, previous }: { current: number; previous: number }) {
   if (!previous && !current) return <span className="delta-inline neutral">o‘tgan davr bilan teng</span>;
@@ -840,24 +841,111 @@ function groupedCount<T>(records: T[], key: (row: T) => string) {
   return [...counts.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value);
 }
 
-function QualityView({ records }: { records: DashboardRecord[] }) {
-  const eligible = records.filter(isEligibleCohortDeal);
-  const low = records.filter((row) => row.lossReasonGroup === "MARKETING");
-  const lost = records.filter(isSalesLost);
-  const routing = records.filter((row) => row.lossReasonGroup === "ROUTING");
-  const classified = eligible.filter(isClassifiedLead);
-  const lowReasons = groupedCount(low, (row) => row.lossReason); const lostReasons = groupedCount(lost, (row) => row.lossReason);
-  const routingReasons = groupedCount(routing, (row) => row.lossReason);
-  const managerReasons = groupedCount([...low, ...lost], (row) => `${row.salesManager ?? "Aniqlanmagan"} · ${row.lossReason}`);
-  // Built from the eligible cohort so the Lead column matches Leadlar, and the
-  // quality column divides by that source's classified leads rather than by
-  // everything that ever arrived under it.
-  const sources = groupedCount(eligible, (row) => row.source).map((source) => ({ ...source, low: low.filter((row) => row.source === source.label).length, lost: lost.filter((row) => row.source === source.label).length, routing: routing.filter((row) => row.source === source.label).length, classified: classified.filter((row) => row.source === source.label).length }));
-  return <><div className="page-title"><div><p className="eyebrow">LEAD QUALITY</p><h1>Lead sifati va yo‘qotish sabablari</h1><p>Marketing sifatsizligi va sotuvda yo‘qotilgan sifatli leadlar aralashtirilmaydi.</p></div></div>
-    <section className="kpi-grid"><KpiCard label="Not Relevant" value={String(low.length)} detail={`Sifatsiz lead ${pct(low.length, classified.length)}% = Not Relevant / Saralangan`} icon={AlertTriangle} tone="amber" /><KpiCard label="Saralash qamrovi" value={`${pct(classified.length, eligible.length)}%`} detail={`${classified.length} / ${eligible.length} · Saralangan / Leadlar`} icon={Gauge} tone="blue" /><KpiCard label="Sotilmadi" value={String(lost.length)} detail={`${salesLostRate(records)}% · SQL’dan sotilmagan`} icon={XCircle} tone="red" /><KpiCard label="Routing" value={String(routing.length)} detail="IDOKO / SD va boshqa yo‘naltirish" icon={RefreshCw} tone="violet" /><KpiCard label="Sababsiz yopilgan" value={String([...low, ...lost].filter((row) => row.lossReason === "Sabab ko‘rsatilmagan").length)} detail="Причина провала to‘ldirilmagan" icon={ClipboardList} tone="slate" /></section>
-    <section className="quality-three"><article className="panel"><SectionHeader title="Marketing sifatsizligi sabablari" subtitle="Faqat haqiqiy Not Relevant" /><BarList rows={lowReasons.map((row) => ({ ...row, total: low.length, color: "#f59e0b" }))} /></article><article className="panel"><SectionHeader title="Sales’da sotilmagan sabablar" subtitle="SQL bo‘lgan, lekin sotilmagan" /><BarList rows={lostReasons.map((row) => ({ ...row, total: lost.length, color: "#ef5962" }))} /></article><article className="panel"><SectionHeader title="Routing sabablari" subtitle="Marketing sifatsizligiga qo‘shilmaydi" /><BarList rows={routingReasons.map((row) => ({ ...row, total: routing.length, color: "#8a5dd1" }))} /></article></section>
-    <section className="panel"><SectionHeader title="Qaysi sabab qaysi menejerda ko‘p" subtitle="Menejer + Причина провала kombinatsiyasi" /><BarList rows={managerReasons.slice(0, 15).map((row) => ({ ...row, total: low.length + lost.length, color: "#8a5dd1" }))} /></section>
-    <section className="panel"><SectionHeader title="Source bo‘yicha sifat" subtitle="Lead — routingsiz cohort · Sifatsiz lead % = Not Relevant / Saralangan" /><div className="table-wrap"><table className="data-table"><thead><tr><th>Source</th><th>Lead</th><th>Saralangan</th><th>Not Relevant</th><th title="Not Relevant / Saralangan">Sifatsiz lead %</th><th>Sotilmadi</th><th>Routing</th></tr></thead><tbody>{sources.map((row) => <tr key={row.label}><td><strong>{row.label}</strong></td><td>{row.value}</td><td>{row.classified}</td><td>{row.low}</td><td><span className="pill warning">{pct(row.low, row.classified)}%</span></td><td>{row.lost}</td><td>{row.routing}</td></tr>)}</tbody></table></div></section>
+type QualitySortDirection = "asc" | "desc";
+type MarketingQualitySort = "default" | "name" | "classified" | "notRelevant" | "notRelevantRate" | "topReasonShare" | "missingReasons" | "reasonFillRate";
+type SalesQualitySort = "default" | "name" | "sql" | "salesLost" | "salesLostRate" | "sqlToSale" | "topReasonShare" | "missingReasons";
+
+function qualityRate(value: number | null) { return value === null ? "—" : `${value}%`; }
+function topReasonTitle(rows: { reason: string; count: number }[]) {
+  return rows.length ? rows.map((row) => `${row.reason} — ${row.count}`).join(" · ") : "Sabab yo‘q";
+}
+function compareDiagnosticValues(a: string | number | null, b: string | number | null, direction: QualitySortDirection) {
+  if (a === null && b === null) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  const compared = typeof a === "string" ? a.localeCompare(String(b)) : a - Number(b);
+  return direction === "asc" ? compared : -compared;
+}
+function QualitySortButton({ label, active, direction, onClick, title }: { label: string; active: boolean; direction: QualitySortDirection; onClick: () => void; title?: string }) {
+  return <button onClick={onClick} title={title}>{label}{active ? direction === "asc" ? " ↑" : " ↓" : ""}</button>;
+}
+function QualityManagerName({ row, onSelect }: { row: { id: string; name: string; isUnknown: boolean; smallSample: boolean }; onSelect: (id: string) => void }) {
+  return <button className="quality-manager-name" onClick={(event) => { event.stopPropagation(); onSelect(row.id); }} title={`${row.name} profilini ochish`}>
+    <strong>{row.name}</strong>
+    {row.isUnknown ? <small>Atributsiya diagnostikasi</small> : row.smallSample ? <small className="sample-note">kam sample</small> : null}
+  </button>;
+}
+function ReasonPanels({ marketing, sales }: { marketing: ReturnType<typeof buildQualityAnalytics>["marketingReasons"]; sales: ReturnType<typeof buildQualityAnalytics>["salesReasons"] }) {
+  return <section className="quality-reasons">
+    <article className="panel"><SectionHeader title="Marketing sifatsizligi sabablari" subtitle="Faqat canonical Not Relevant · ulush Not Relevant’dan" />{marketing.length ? <BarList rows={marketing.map((row) => ({ label: row.reason, value: row.count, total: marketing.reduce((sum, entry) => sum + entry.count, 0), color: "#f59e0b" }))} /> : <div className="empty-table">Not Relevant sababi yo‘q.</div>}</article>
+    <article className="panel"><SectionHeader title="Sales’da sotilmagan sabablar" subtitle="Faqat canonical Sales Lost · ulush Sotilmadi’dan" />{sales.length ? <BarList rows={sales.map((row) => ({ label: row.reason, value: row.count, total: sales.reduce((sum, entry) => sum + entry.count, 0), color: "#ef5962" }))} /> : <div className="empty-table">Sales Lost sababi yo‘q.</div>}</article>
+  </section>;
+}
+
+function MarketingQualityTable({ rows, onSelect }: { rows: MarketingManagerDiagnostic[]; onSelect: (id: string) => void }) {
+  const [sort, setSort] = useState<MarketingQualitySort>("default");
+  const [direction, setDirection] = useState<QualitySortDirection>("desc");
+  const sorted = useMemo(() => {
+    if (sort === "default") return rows;
+    const value = (row: MarketingManagerDiagnostic): string | number | null => sort === "topReasonShare" ? row.topReason?.share ?? null : row[sort];
+    return [...rows].sort((a, b) => compareDiagnosticValues(value(a), value(b), direction));
+  }, [rows, sort, direction]);
+  function setColumn(column: Exclude<MarketingQualitySort, "default">) {
+    if (sort === column) setDirection((current) => current === "asc" ? "desc" : "asc");
+    else { setSort(column); setDirection(column === "name" ? "asc" : "desc"); }
+  }
+  const header = (label: string, column: Exclude<MarketingQualitySort, "default">, title?: string) =>
+    <QualitySortButton label={label} active={sort === column} direction={direction} onClick={() => setColumn(column)} title={title} />;
+  return <section className="panel"><SectionHeader title="Not Relevant — menejerlar kesimida" subtitle="Qaysi menejerda sifatsiz lead ulushi yuqori va eng asosiy sabab nima" />
+    <div className="table-wrap"><table className="data-table quality-manager-table marketing-quality-table"><thead><tr>
+      <th>{header("Menejer", "name")}</th><th>{header("Saralangan", "classified")}</th><th>{header("Not Relevant", "notRelevant")}</th>
+      <th>{header("NR %", "notRelevantRate", "Not Relevant / Saralangan")}</th><th>Top sabab</th><th>{header("Top sabab ulushi", "topReasonShare")}</th>
+      <th>{header("Sababsiz", "missingReasons")}</th><th>{header("Reason fill %", "reasonFillRate")}</th>
+    </tr></thead><tbody>{sorted.map((row) => <tr key={row.id} onClick={() => onSelect(row.id)} title={`${row.name} profilini ochish`}>
+      <td><QualityManagerName row={row} onSelect={onSelect} /></td><td>{row.classified}</td><td><strong className={row.notRelevant ? "warning-text" : ""}>{row.notRelevant}</strong></td>
+      <td>{qualityRate(row.notRelevantRate)}</td><td title={topReasonTitle(row.topReasons)}>{row.topReason ? <><strong>{row.topReason.reason} · {row.topReason.count}</strong></> : "—"}</td>
+      <td>{row.topReason ? `${row.topReason.share}%` : "—"}</td><td>{row.missingReasons}</td><td>{qualityRate(row.reasonFillRate)}</td>
+    </tr>)}</tbody></table>{!rows.length && <div className="empty-table">Menejer diagnostikasi uchun lead yo‘q.</div>}</div>
+  </section>;
+}
+
+function SalesQualityTable({ rows, onSelect }: { rows: SalesManagerDiagnostic[]; onSelect: (id: string) => void }) {
+  const [sort, setSort] = useState<SalesQualitySort>("default");
+  const [direction, setDirection] = useState<QualitySortDirection>("desc");
+  const sorted = useMemo(() => {
+    if (sort === "default") return rows;
+    const value = (row: SalesManagerDiagnostic): string | number | null => sort === "topReasonShare" ? row.topReason?.share ?? null : row[sort];
+    return [...rows].sort((a, b) => compareDiagnosticValues(value(a), value(b), direction));
+  }, [rows, sort, direction]);
+  function setColumn(column: Exclude<SalesQualitySort, "default">) {
+    if (sort === column) setDirection((current) => current === "asc" ? "desc" : "asc");
+    else { setSort(column); setDirection(column === "name" ? "asc" : "desc"); }
+  }
+  const header = (label: string, column: Exclude<SalesQualitySort, "default">, title?: string) =>
+    <QualitySortButton label={label} active={sort === column} direction={direction} onClick={() => setColumn(column)} title={title} />;
+  return <section className="panel"><SectionHeader title="Sotilmadi — menejerlar kesimida" subtitle="Qaysi sotuvchida SQL yo‘qotish ko‘p va eng asosiy sabab nima" />
+    <div className="table-wrap"><table className="data-table quality-manager-table sales-quality-table"><thead><tr>
+      <th>{header("Menejer", "name")}</th><th>{header("SQL", "sql")}</th><th>{header("Sotilmadi", "salesLost")}</th>
+      <th>{header("Lost rate", "salesLostRate", "Sotilmadi / SQL")}</th><th>{header("SQL → Sotuv", "sqlToSale")}</th><th>Top sabab</th>
+      <th>{header("Top sabab ulushi", "topReasonShare")}</th><th>{header("Sababsiz", "missingReasons")}</th>
+    </tr></thead><tbody>{sorted.map((row) => <tr key={row.id} onClick={() => onSelect(row.id)} title={`${row.name} profilini ochish`}>
+      <td><QualityManagerName row={row} onSelect={onSelect} /></td><td>{row.sql}</td><td><strong className={row.salesLost ? "danger-text" : ""}>{row.salesLost}</strong></td>
+      <td>{qualityRate(row.salesLostRate)}</td><td>{qualityRate(row.sqlToSale)}</td><td title={topReasonTitle(row.topReasons)}>{row.topReason ? <strong>{row.topReason.reason} · {row.topReason.count}</strong> : "—"}</td>
+      <td>{row.topReason ? `${row.topReason.share}%` : "—"}</td><td>{row.missingReasons}</td>
+    </tr>)}</tbody></table>{!rows.length && <div className="empty-table">Menejer diagnostikasi uchun lead yo‘q.</div>}</div>
+  </section>;
+}
+
+function QualityView({ records, onManager }: { records: DashboardRecord[]; onManager: (managerId: string) => void }) {
+  const analytics = useMemo(() => buildQualityAnalytics(records), [records]);
+  const { summary } = analytics;
+  const topMarketing = summary.topMarketingReason;
+  const topSales = summary.topSalesReason;
+  return <><div className="page-title"><div><p className="eyebrow">LEAD QUALITY</p><h1>Lead sifati va yo‘qotish sabablari</h1><p>Marketing/manba sifati, seller closing va sabab intizomi alohida diagnostika qilinadi.</p></div></div>
+    <section className="kpi-grid quality-kpis">
+      <KpiCard label="Not Relevant" value={String(summary.notRelevant)} detail={<>{qualityRate(summary.notRelevantRate)} saralanganlardan<small className="card-note">Marketing / manba sifati</small></>} icon={AlertTriangle} tone="amber" />
+      <KpiCard label="Saralash qamrovi" value={qualityRate(summary.classificationCoverage)} detail={<>{summary.classified} / {summary.leads} · Saralangan / Leadlar<small className="card-note">Saralanmagan: {summary.unclassified}</small></>} icon={Gauge} tone="blue" />
+      <KpiCard label="Sotilmadi" value={String(summary.salesLost)} detail={<>{qualityRate(summary.salesLostRate)} SQL’dan<small className="card-note">Faqat canonical Sales Lost</small></>} icon={XCircle} tone="red" />
+      <KpiCard label="Sababsiz yopilgan" value={String(summary.missingReasons)} detail={<>{qualityRate(summary.missingReasonRate)} · {summary.missingReasons} / {summary.missingReasonPopulation}<small className="card-note">NR + Sales Lost · sabab intizomi</small></>} icon={ClipboardList} tone="slate" />
+      <KpiCard label="Top marketing muammo" value={topMarketing?.reason ?? "—"} valueClassName="reason-value" detail={topMarketing ? `${topMarketing.count} ta · ${topMarketing.share}% Not Relevant’dan` : "Not Relevant yo‘q"} icon={AlertTriangle} tone="amber" />
+      <KpiCard label="Top sales yo‘qotish sababi" value={topSales?.reason ?? "—"} valueClassName="reason-value" detail={topSales ? `${topSales.count} ta · ${topSales.share}% Sotilmadi’dan` : "Sales Lost yo‘q"} icon={XCircle} tone="red" />
+    </section>
+    <ReasonPanels marketing={analytics.marketingReasons} sales={analytics.salesReasons} />
+    <MarketingQualityTable rows={analytics.marketingManagers} onSelect={onManager} />
+    <SalesQualityTable rows={analytics.salesManagers} onSelect={onManager} />
+    <section className="panel routing-panel"><SectionHeader title="Routing" subtitle="Lead sifati va seller performance hisobiga kirmaydi" />
+      <div className="routing-summary"><strong>{summary.routing} ta yo‘naltirilgan</strong>{analytics.routingReasons.length ? <BarList rows={analytics.routingReasons.map((row) => ({ label: row.reason, value: row.count, total: summary.routing, color: "#8a5dd1" }))} /> : <small>Routing yozuvi yo‘q.</small>}</div>
+    </section>
   </>;
 }
 
@@ -2062,6 +2150,10 @@ export default function DashboardClient() {
     return { cohortFiltered: cohort, wonFiltered: won, previousCohortFiltered: previousCohort, previousWonFiltered: previousWon, trendBounds, previousTrendBounds, detailFiltered: [...new Map([...cohort, ...won].map((row) => [row.dealId, row])).values()] };
   }, [records, filters]);
 
+  // The Managers page and Quality drill-down open the same canonical row
+  // object; Quality does not build a parallel manager/profile model.
+  const managerRows = useMemo(() => buildManagers(cohortFiltered, wonFiltered), [cohortFiltered, wonFiltered]);
+
   const cachedCurrentStages = useMemo<CurrentStageRecord[]>(() => records.filter((row) => row.salesStatus === "ACTIVE" && row.operationalPipeline).map((row) => ({
     dealId: row.dealId, title: row.title, createdAt: row.createdAt,
     assignedManagerId: row.assignedManagerId, assignedManager: row.assignedManager,
@@ -2198,10 +2290,13 @@ export default function DashboardClient() {
         {isSalesView(view) && <CoverageNotice records={records} filters={filters} />}
         <ViewErrorBoundary onBack={() => setView("dashboard")}>
         {view === "dashboard" && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{cohortFiltered.filter(isEligibleCohortDeal).length} Leadlar</strong></div></div><DashboardView records={cohortFiltered} salesRecords={wonFiltered} previousRecords={previousCohortFiltered} previousSalesRecords={previousWonFiltered} metricIds={settings.dashboardMetricIds} onManager={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /><TrendChart records={cohortFiltered} previousRecords={previousCohortFiltered} bounds={trendBounds} previousBounds={previousTrendBounds} /></>}
-        {view === "managers" && <><div className="page-title"><div><p className="eyebrow">TEAM PERFORMANCE</p><h1>Menejerlar</h1><p>Lead, sifatsizlik, sales loss, sotuv soni va Opportunity kesimida.</p></div></div><section className="panel"><SectionHeader title="Menejerlar reytingi" subtitle="Lead va cohort konversiya — yaratilgan sana; davr sotuv — Oplata sanasi bo‘yicha" /><ManagerTable rows={buildManagers(cohortFiltered, wonFiltered)} onSelect={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /></section></>}
+        {view === "managers" && <><div className="page-title"><div><p className="eyebrow">TEAM PERFORMANCE</p><h1>Menejerlar</h1><p>Lead, sifatsizlik, sales loss, sotuv soni va Opportunity kesimida.</p></div></div><section className="panel"><SectionHeader title="Menejerlar reytingi" subtitle="Lead va cohort konversiya — yaratilgan sana; davr sotuv — Oplata sanasi bo‘yicha" /><ManagerTable rows={managerRows} onSelect={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /></section></>}
         {view === "managerDetail" && selectedManager && <ManagerDetailView manager={selectedManager} cohortRecords={cohortFiltered} salesRecords={wonFiltered} currentStages={currentStageRecords} onBack={() => setView("managers")} />}
         {view === "leadFlow" && <LeadFlowView records={cohortFiltered} />}
-        {view === "quality" && <QualityView records={cohortFiltered} />}
+        {view === "quality" && <QualityView records={cohortFiltered} onManager={(managerId) => {
+          const manager = managerRows.find((row) => row.id === managerId);
+          if (manager) { setSelectedManager(manager); setView("managerDetail"); }
+        }} />}
         {view === "stages" && <StageControlView records={filteredCurrentStages} historicalRecords={stageHistoricalRecords} reconciliation={stageReconciliation} loading={currentStageLoading} error={currentStageError} onRefresh={() => void loadCurrentStages()} funnelStatus={stageFunnelStatus} onRetryFunnel={() => dispatchStageFunnel({ type: "RETRY" })} />}
         {view === "projects" && <ProjectsView projects={projects} updates={projectUpdateRows} filters={projectFilters} setFilters={setProjectFilters} busy={projectBusy}
           onOpen={(project) => { setOpenProjectId(project.id); setView("projectDetail"); }}

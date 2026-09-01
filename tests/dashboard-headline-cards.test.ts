@@ -211,10 +211,11 @@ test("the main Dashboard renders cards and no duplicate summary panels", () => {
 
 test("5: the detailed consumers of those metrics are untouched", () => {
   const client = code("../app/dashboard-client.tsx");
-  // Lead sifati remains its own page with its own quality breakdown.
+  // Lead sifati remains its own page, now with the approved split manager diagnostics.
   assert.match(client, /function QualityView\(/);
   assert.match(client, /Lead sifati va yo‘qotish sabablari/);
-  assert.match(client, /Source bo‘yicha sifat/);
+  assert.match(client, /Not Relevant — menejerlar kesimida/);
+  assert.match(client, /Sotilmadi — menejerlar kesimida/);
   // Diagnostics keeps the classification equations.
   assert.match(client, /function ClassificationDiagnostics\(/);
   assert.match(client, /Lead saralash diagnostikasi/);

@@ -116,7 +116,7 @@ test("Q/R: selector exposes exactly four capacity metrics and no sales metric", 
 });
 
 const client = readFileSync(new URL("../app/dashboard-client.tsx", import.meta.url), "utf8");
-const view = client.slice(client.indexOf("function LeadFlowView("), client.indexOf("function QualityView("));
+const view = client.slice(client.indexOf("function LeadFlowView("), client.indexOf("function DealsTable("));
 
 test("S/T/U: Lead Flow removes the daily, hourly and duplicate weekday charts", () => {
   assert.doesNotMatch(view, /Kunlik Deal dinamikasi/);

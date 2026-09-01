@@ -283,7 +283,8 @@ test("G: the Managers page passes no limit and shows every manager", () => {
   assert.equal(visibleRows(MANY, "periodSales", "desc").length, MANY.length);
   assert.equal(visibleRows(MANY, "periodSales", "desc", undefined).length, 12);
   assert.match(client, /<ManagerTable rows=\{managers\} limit=\{8\} onSelect=\{onManager\} \/>/, "Dashboard limits to 8");
-  assert.match(client, /<ManagerTable rows=\{buildManagers\(cohortFiltered, wonFiltered\)\} onSelect=/, "Managers page has no limit");
+  assert.match(client, /<ManagerTable rows=\{managerRows\} onSelect=/, "Managers page has no limit");
+  assert.match(client, /const managerRows = useMemo\(\(\) => buildManagers\(cohortFiltered, wonFiltered\)/, "shared rows remain canonical");
   assert.doesNotMatch(client, /managers\.slice\(0, 8\)/, "the pre-sort slice is gone");
 });
 
