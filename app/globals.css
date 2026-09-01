@@ -838,5 +838,4 @@ button:focus-visible, a:focus-visible, summary:focus-visible,
 
 @media (max-width: 720px) {
   .overdue-controls .select-wrap, .overdue-controls .search-box { min-width: 0; flex: 1 1 100%; }
-  .stage-matrix .sticky-col { position: static; }
 }
