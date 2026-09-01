@@ -172,7 +172,9 @@ test("N: Custom Pages and the metric resolver still reach every underlying metri
 test("the duplicated quality/funnel panel is gone from the main dashboard", () => {
   const client = code("../app/dashboard-client.tsx");
   assert.doesNotMatch(client, /QualityVsFunnel/, "the dead presentation component is removed");
-  assert.doesNotMatch(code("../app/globals.css"), /dashboard-grid\.split/, "and its layout rule with it");
+  // The exact old rule, not any class that starts with "split": the manager
+  // profile legitimately uses a two-equal-column grid of its own.
+  assert.doesNotMatch(code("../app/globals.css"), /\.dashboard-grid\.split \{/, "and its layout rule with it");
 });
 
 /**

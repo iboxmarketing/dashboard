@@ -160,6 +160,7 @@ aside nav button i { margin-left: auto; width: 7px; height: 7px; border-radius: 
 .kpi-card.slate .kpi-icon { color: #657188; background: #eef0f4; }
 
 .dashboard-grid { display: grid; gap: 11px; margin-top: 11px; }
+.dashboard-grid.split-even { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .dashboard-grid.two-one { grid-template-columns: minmax(0, 1.7fr) minmax(min(320px, 100%), 1fr); }
 /* Secondary line inside a KPI card: readable, but it must not compete with the
    primary number. */
@@ -438,7 +439,7 @@ footer { margin-top: 22px; padding-top: 14px; display: flex; justify-content: sp
   .sync-time, .avatar { display: none; }
   .content-inner { padding: 16px; }
   .filters-shell { top: 66px; margin-left: -16px; margin-right: -16px; padding-left: 16px; padding-right: 16px; }
-  .dashboard-grid.two-one, .settings-grid { grid-template-columns: 1fr; }
+  .dashboard-grid.two-one, .dashboard-grid.split-even, .settings-grid { grid-template-columns: 1fr; }
   .config-fields { grid-template-columns: 1fr; }
   .segment-grid { grid-template-columns: 1fr; }
   .page-title { align-items: flex-start; }

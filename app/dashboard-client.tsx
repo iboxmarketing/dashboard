@@ -10,6 +10,7 @@ import { Component, useCallback, useEffect, useMemo, useRef, useState } from "re
 import type { ErrorInfo, ReactNode } from "react";
 import type { DashboardRecord, StageFunnelRecord } from "@/lib/dashboard-record";
 import { DASHBOARD_HEADLINE_CARD_IDS, headlineCardLabel, resolveHeadlineCardIds, type HeadlineCardId } from "@/lib/dashboard-cards";
+import { buildManagerProfile, notRelevantRecords, reasonBreakdown, salesLostRecords, sourceFunnelRows, stageWorkloadRows, teamMedian } from "@/lib/manager-profile";
 import { DEFAULT_TREND_METRIC, TREND_METRICS, buildTrendSeries, supportsMovingAverage, trendMetric, type TrendBounds, type TrendMetricId, type TrendPoint } from "@/lib/trend-series";
 import { initialStageFunnelState, stageFunnelNext, type StageFunnelAction, type StageFunnelState, type StageFunnelStatus } from "@/lib/stage-funnel-cache";
 import type { CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, StageReconciliation, SyncProgressState } from "@/lib/types";
@@ -275,6 +276,8 @@ type ManagerRow = {
   active: number;
   avgProcessing: number | null;
   overdueUnprocessed: number; overdueRate: number;
+  // Carried for the profile's team benchmarks; the table does not show them.
+  slaRate: number | null; slaDenominator: number; salesCycleHours: number | null;
   currency: string;
 };
 
@@ -328,6 +331,9 @@ function buildManagers(records: DashboardRecord[], wonRecords: DashboardRecord[]
       // Canonical OVERDUE_UNPROCESSED, not the SLA rate — different metrics.
       overdueUnprocessed: metrics.sla.overdue,
       overdueRate: pct(metrics.sla.overdue, metrics.counts.leads),
+      slaRate: metrics.sla.denominator ? metrics.rates.sla : null,
+      slaDenominator: metrics.sla.denominator,
+      salesCycleHours: metrics.timing.sales_cycle,
       currency: metrics.money.currency,
     } satisfies ManagerRow;
   });
@@ -590,30 +596,117 @@ function TrendChart({ records, previousRecords, bounds, previousBounds }: { reco
   </section>;
 }
 
+/**
+ * Individual seller profile.
+ *
+ * Reads INPUT → QUALITY → COHORT RESULT → PERIOD RESULT → WORKLOAD → CAUSES.
+ * Every KPI comes from `buildManagerProfile`, which runs the same canonical
+ * metric helper as the Dashboard and the manager table, so the numbers here
+ * reconcile with the row that was clicked. The lower sections explain the top
+ * rather than repeating it.
+ */
 function ManagerDetailView({ manager, cohortRecords, salesRecords, currentStages, onBack }: { manager: ManagerRow; cohortRecords: DashboardRecord[]; salesRecords: DashboardRecord[]; currentStages: CurrentStageRecord[] | null; onBack: () => void }) {
-  const belongs = (row: DashboardRecord) => salesManagerKey(row) === manager.id;
-  const rawLeads = cohortRecords.filter(belongs); const sales = salesRecords.filter(belongs);
-  // `leads` is the canonical routing-free cohort, so every card on this page
-  // divides by the same population the main dashboard calls Leadlar.
-  const leads = rawLeads.filter(isEligibleCohortDeal);
-  const eligibleLeads = leads;
-  const classified = leads.filter(isClassifiedLead);
-  const qualified = eligibleLeads.filter((row) => row.qualified); const active = currentStages?.filter((row) => (row.assignedManagerId || "unknown") === manager.id) ?? leads.filter((row) => row.salesStatus === "ACTIVE");
-  const marketing = leads.filter((row) => row.lossReasonGroup === "MARKETING"); const lost = leads.filter(isSalesLost);
-  const amount = sales.reduce((sum, row) => sum + row.opportunity, 0);
-  const sources = groupedCount(leads, (row) => row.source).map((source) => ({
-    ...source,
-    sql: qualified.filter((row) => row.source === source.label).length,
-    low: marketing.filter((row) => row.source === source.label).length,
-    lost: lost.filter((row) => row.source === source.label).length,
-    sales: sales.filter((row) => row.source === source.label).length,
-  }));
-  const reasons = groupedCount(leads.filter((row) => row.lossReasonGroup !== "NONE"), (row) => `${row.lossReasonGroup === "MARKETING" ? "Marketing" : row.lossReasonGroup === "ROUTING" ? "Routing" : "Sales"} · ${row.lossReason}`);
-  const stageRows = groupedCount(active, (row) => row.stage).map((stage) => ({ ...stage, overdue: active.filter((row) => row.stage === stage.label && row.stageOverdue).length }));
-  return <><div className="page-title manager-detail-title"><div><button className="back-button" onClick={onBack}><ArrowLeft size={16} />Menejerlarga qaytish</button><p className="eyebrow">INDIVIDUAL PERFORMANCE</p><h1>{manager.name}</h1><p>Lead manbasi, SQL, sotuv, yo‘qotish, stage yuklamasi va tezlik bitta profilga jamlandi.</p></div><div className="manager-identity"><span>{manager.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span><div><strong>{manager.name}</strong><small>{manager.id === "unknown" ? "Sotuvchi aniqlanmagan" : `Bitrix user #${manager.id}`}</small></div></div></div>
-    <section className="kpi-grid sales-kpis"><KpiCard label="Yangi lead" value={String(leads.length)} detail="Tanlangan cohort · routingsiz" icon={Database} /><KpiCard label="SQL" value={String(qualified.length)} detail={`Lead → SQL ${pct(qualified.length, eligibleLeads.length)}% · Sifatli ${pct(qualified.length, classified.length)}%`} icon={Check} tone="green" /><KpiCard label="Saralash qamrovi" value={`${pct(classified.length, leads.length)}%`} detail={`${classified.length} / ${leads.length} · Saralangan / Leadlar`} icon={Gauge} tone="blue" /><KpiCard label="Davr sotuv" value={String(sales.length)} detail={`${pct(eligibleLeads.filter((row) => row.salesStatus === "WON").length, eligibleLeads.length)}% cohort konversiya`} icon={CircleDollarSign} tone="cyan" /><KpiCard label="Sotuv summasi" value={amount.toLocaleString("uz-UZ")} detail={sales[0]?.currencyId || "Bitrix valyutasi"} icon={CircleDollarSign} tone="indigo" /><KpiCard label="Marketing sifatsiz" value={String(marketing.length)} detail={`Sifatsiz lead ${pct(marketing.length, classified.length)}% = Not Relevant / Saralangan`} icon={AlertTriangle} tone="amber" /><KpiCard label="Sotilmadi" value={String(lost.length)} detail={`${salesLostRate(leads)}% SQL’dan sotilmagan`} icon={XCircle} tone="red" /><KpiCard label="Savdo sikli" value={fmtHours(average(sales.map((row) => row.salesCycleHours)))} detail="Yaratilishdan Oplata’gacha" icon={TimerReset} tone="violet" /><KpiCard label="Birinchi ishlov vaqti" value={fmtMinutes(average(leads.map((row) => row.processingBusinessMinutes)))} detail={`${summarizeSla(leads).overdue} ta muddati o‘tgan lead`} icon={Clock3} tone="slate" /></section>
-    <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Qaysi source’dan nechta lead" subtitle="Sotuv — Oplata sanasi, qolganlari lead yaratilgan sanasi" /><div className="table-wrap"><table className="data-table"><thead><tr><th>Source</th><th>Lead</th><th>SQL</th><th>Sifatsiz</th><th>Sotilmadi</th><th>Sotuv</th></tr></thead><tbody>{sources.map((row) => <tr key={row.label}><td><strong>{row.label}</strong></td><td>{row.value}</td><td>{row.sql}</td><td>{row.low}</td><td>{row.lost}</td><td><strong className="success-text">{row.sales}</strong></td></tr>)}</tbody></table></div></article><article className="panel"><SectionHeader title="Joriy stage yuklamasi" subtitle={currentStages ? "Bitrix live · Assigned by ID" : "Sync bazasi · qizil raqam limitdan oshgan"} /><div className="stage-load-list">{stageRows.map((row) => <div key={row.label}><span>{row.label}</span><strong>{row.value}</strong><small className={row.overdue ? "danger-text" : ""}>{row.overdue} overdue</small></div>)}{!stageRows.length && <div className="empty-table">Aktiv lead yo‘q.</div>}</div></article></section>
-    <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Sabablar profili" subtitle="Marketing / Sales / Routing alohida" /><BarList rows={reasons.slice(0, 15).map((row) => ({ ...row, total: reasons.reduce((sum, item) => sum + item.value, 0), color: row.label.startsWith("Marketing") ? "#f59e0b" : row.label.startsWith("Routing") ? "#8a5dd1" : "#ef5962" }))} /></article><article className="panel compact-kpis"><SectionHeader title="Chek va ishlov sifati" /><div><span>O‘rtacha chek</span><strong>{(average(sales.map((row) => row.opportunity)) ?? 0).toLocaleString("uz-UZ", { maximumFractionDigits: 0 })}</strong></div><div><span>Median chek</span><strong>{(median(sales.map((row) => row.opportunity)) ?? 0).toLocaleString("uz-UZ", { maximumFractionDigits: 0 })}</strong></div><div><span>Ishlov qayd etilgan</span><strong>{pct(leads.filter((row) => row.processingBusinessMinutes !== null).length, leads.length)}%</strong></div><div><span>SLA ichida</span><strong>{summarizeSla(leads).rate}%</strong></div></article></section>
+  const { cohort, metrics } = buildManagerProfile(cohortRecords, salesRecords, manager.id);
+  // The whole team under the same filters — the lead-share denominator and the
+  // benchmark medians must never come from a displayed subset.
+  const team = useMemo(() => buildManagers(cohortRecords, salesRecords), [cohortRecords, salesRecords]);
+  const teamLeads = team.reduce((sum, row) => sum + row.leads, 0);
+
+  const money = (value: number) => `${Math.round(value).toLocaleString("uz-UZ")} ${metrics.money.currency || "UZS"}`;
+  const number = (value: number | null) => (value === null ? "—" : Math.round(value).toLocaleString("uz-UZ"));
+  /** Subtle team context. No score, no ranking — just where the median sits. */
+  const benchmark = (value: number | null, median: number | null, unit: "pp" | "time", betterIsHigher: boolean) => {
+    if (value === null || median === null) return null;
+    if (unit === "time") {
+      const label = value <= median ? "tezroq" : "sekinroq";
+      return `Jamoa medianasi ${fmtMinutes(median)} · ${label}`;
+    }
+    const delta = Math.round(value - median);
+    const sign = delta > 0 ? "+" : "";
+    const good = betterIsHigher ? delta >= 0 : delta <= 0;
+    return `Jamoa medianasi ${Math.round(median)}% · ${sign}${delta} p.p.${good ? "" : ""}`;
+  };
+  const withSql = (row: ManagerRow) => row.sql > 0;
+  const medianSqlToSale = teamMedian(team, (row) => row.sqlToSale, withSql);
+  const medianSalesLostRate = teamMedian(team, (row) => row.salesLostRate, withSql);
+  const medianProcessing = teamMedian(team, (row) => row.avgProcessing, (row) => row.avgProcessing !== null);
+  const medianSla = teamMedian(team, (row) => row.slaRate, (row) => row.slaDenominator > 0);
+  const medianCycle = teamMedian(team, (row) => row.salesCycleHours, (row) => row.salesCycleHours !== null);
+
+  const active = currentStages?.filter((row) => (row.assignedManagerId || "unknown") === manager.id) ?? [];
+  const stageRows = stageWorkloadRows(active);
+  const notRelevant = notRelevantRecords(cohort);
+  const salesLost = salesLostRecords(cohort);
+  const notRelevantReasons = reasonBreakdown(notRelevant);
+  const salesLostReasons = reasonBreakdown(salesLost);
+  const sources = sourceFunnelRows(cohort);
+
+  return <><div className="page-title manager-detail-title"><div><button className="back-button" onClick={onBack}><ArrowLeft size={16} />Menejerlarga qaytish</button><p className="eyebrow">INDIVIDUAL PERFORMANCE</p><h1>{manager.name}</h1><p>Nima berildi → qanday saralandi → qanday natija berdi → nima ochiq qoldi.</p></div><div className="manager-identity"><span>{manager.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span><div><strong>{manager.name}</strong><small>{manager.id === "unknown" ? "Sotuvchi aniqlanmagan" : `Bitrix user #${manager.id}`}</small></div></div></div>
+
+    <section className="kpi-grid sales-kpis">
+      <KpiCard label="Leadlar" icon={Database} value={String(metrics.counts.leads)}
+        detail={`${pct(metrics.counts.leads, teamLeads)}% jamoa leadlaridan`} />
+      <KpiCard label="Saralangan" icon={ClipboardList} tone="green" value={String(metrics.counts.classified_leads)}
+        detail={<>{metrics.counts.classified_leads} / {metrics.counts.leads} · {metrics.rates.classification_coverage}%<small className="card-note">{metrics.counts.unclassified_leads} ta saralanmagan</small></>} />
+      <KpiCard label="SQL" icon={Check} tone="green" value={String(metrics.counts.sql)}
+        detail={<>{metrics.rates.quality_accepted_rate}% saralanganlardan<small className="card-note">Sifatli lead</small></>} />
+      <KpiCard label="Not Relevant" icon={AlertTriangle} tone="amber" value={String(metrics.counts.not_relevant)}
+        detail={<>{metrics.rates.low_quality_rate}% saralanganlardan<small className="card-note">Sifatsiz lead · manba sifati</small></>} />
+      <KpiCard label="Kelgan leadlardan sotuv" icon={CircleDollarSign} tone="green" value={`${metrics.counts.cohort_sales} ta`}
+        detail={<>{metrics.rates.lead_to_sale}% Leadlardan<small className="card-note">{money(metrics.money.cohort_revenue)}</small></>} />
+      <KpiCard label="SQL → Sotuv" icon={Check} tone="green" value={`${metrics.rates.sql_to_sale}%`}
+        detail={<>{metrics.counts.cohort_sales} / {metrics.counts.sql} SQL<small className="card-note">{benchmark(metrics.rates.sql_to_sale, medianSqlToSale, "pp", true)}</small></>} />
+      <KpiCard label="Sotilmadi" icon={XCircle} tone="red" value={String(metrics.counts.sales_lost)}
+        detail={<>{metrics.rates.sales_lost}% SQL’dan<small className="card-note">{benchmark(metrics.rates.sales_lost, medianSalesLostRate, "pp", false)}</small></>} />
+      <KpiCard label="Shu davrdagi sotuv" icon={CircleDollarSign} tone="cyan" value={`${metrics.counts.period_sales} ta`}
+        detail={<>{money(metrics.money.revenue)}<small className="card-note">Sotuv sanasi bo‘yicha</small></>} />
+      <KpiCard label="Aktiv leadlar" icon={Layers3} tone="violet" value={String(metrics.counts.active_cohort)}
+        detail="Tanlangan davrda kelib, hali yopilmagan" />
+      <KpiCard label="Saralash tezligi" icon={Clock3} tone="indigo" value={fmtMinutes(metrics.timing.avg_processing)}
+        detail={<>SLA {metrics.rates.sla}% · {metrics.sla.onTime} / {metrics.sla.denominator}<small className="card-note">{metrics.sla.overdue} ta ishlov muddati o‘tgan · {benchmark(metrics.timing.avg_processing, medianProcessing, "time", false)}{medianSla === null ? "" : ` · jamoa SLA medianasi ${Math.round(medianSla)}%`}</small></>} />
+      <KpiCard label="Savdo sikli" icon={TimerReset} tone="violet" value={fmtHours(metrics.timing.sales_cycle)}
+        detail={<>Lead kelganidan sotuvgacha<small className="card-note">{medianCycle === null ? "" : `Jamoa medianasi ${fmtHours(medianCycle)}`}</small></>} />
+    </section>
+
+    <section className="panel"><SectionHeader title="Source funnel" subtitle="Tanlangan davrda kelgan leadlar bo‘yicha — davr sotuvi bu yerda ko‘rsatilmaydi" />
+      <div className="table-wrap"><table className="data-table funnel-table"><thead><tr>
+        <th className="sticky-col">Source</th><th>Leadlar</th><th>Saralangan</th><th>SQL</th><th>Not Relevant</th><th>Cohort sotuv</th><th title="Cohort sotuv / SQL">SQL → Sotuv</th><th title="Sotilmadi / SQL">Sotilmadi</th>
+      </tr></thead><tbody>{sources.map((row) => <tr key={row.source}>
+        <td className="sticky-col"><strong>{row.source}</strong></td>
+        <td><strong>{row.leads}</strong></td>
+        <td><strong>{row.classified}</strong><small>{row.coverage}%</small></td>
+        <td><strong>{row.sql}</strong><small>{row.qualityAcceptedRate}% saralanganlardan</small></td>
+        <td><strong className={row.notRelevant ? "warning-text" : ""}>{row.notRelevant}</strong><small>{row.lowQualityRate}%</small></td>
+        <td><strong className="success-text">{row.cohortSales} · {row.leadToSale}%</strong><small>{money(row.cohortRevenue)}</small></td>
+        <td><span className="pill success">{row.sqlToSale}%</span></td>
+        <td><strong className={row.salesLost ? "danger-text" : ""}>{row.salesLost}</strong><small>{row.salesLostRate}% SQL’dan</small></td>
+      </tr>)}</tbody></table>{!sources.length && <div className="empty-table">Source ma’lumoti yo‘q.</div>}</div>
+    </section>
+
+    <section className="dashboard-grid two-one">
+      <article className="panel"><SectionHeader title="Joriy stage yuklamasi" subtitle="Bitrix’dagi joriy ochiq deal’lar" />
+        <div className="stage-load-list">{stageRows.map((row) => <div key={row.stage}>
+          <span>{row.stage}</span><strong>{row.active} ta</strong>
+          <small className={row.overdue ? "danger-text" : ""}>{row.overdue} ta muddati o‘tgan · {row.overdueRate}%</small>
+        </div>)}{!stageRows.length && <div className="empty-table">Aktiv lead yo‘q.</div>}</div>
+      </article>
+      <article className="panel compact-kpis"><SectionHeader title="Chek" />
+        <div><span>O‘rtacha chek</span><strong>{number(metrics.money.avg_check)}</strong></div>
+        <div><span>Median chek</span><strong>{number(metrics.money.median_check)}</strong></div>
+        <div><span>Asos</span><strong>{metrics.counts.period_sales} ta davr sotuv</strong></div>
+      </article>
+    </section>
+
+    <section className="dashboard-grid split-even">
+      <article className="panel"><SectionHeader title="Not Relevant sabablari" subtitle={`${notRelevant.length} ta Not Relevant · foizlar shu sondan`} />
+        <BarList rows={notRelevantReasons.slice(0, 12).map((row) => ({ label: row.reason, value: row.count, total: notRelevant.length, color: "#f59e0b" }))} />
+        {!notRelevantReasons.length && <div className="empty-table">Not Relevant yo‘q.</div>}
+      </article>
+      <article className="panel"><SectionHeader title="Sotilmadi sabablari" subtitle={`${salesLost.length} ta Sotilmadi · SQLgacha yopilganlar kirmaydi`} />
+        <BarList rows={salesLostReasons.slice(0, 12).map((row) => ({ label: row.reason, value: row.count, total: salesLost.length, color: "#ef5962" }))} />
+        {!salesLostReasons.length && <div className="empty-table">Sotilmadi yo‘q.</div>}
+      </article>
+    </section>
   </>;
 }
 

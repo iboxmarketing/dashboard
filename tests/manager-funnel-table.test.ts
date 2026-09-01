@@ -181,7 +181,8 @@ test("T/U: row click still opens the detail, and both tables share one row model
   assert.match(client, /<tr key=\{row\.id\} onClick=\{\(\) => onSelect\(row\)\}/);
   assert.match(client, /onSelect=\{\(manager\) => \{ setSelectedManager\(manager\); setView\("managerDetail"\); \}\}/);
   // Dashboard top-8 and the Managers page build rows from the same inputs.
-  assert.equal((client.match(/buildManagers\(/g) ?? []).length, 3, "definition + two call sites");
+  // definition + Dashboard + Managers page + the profile's team benchmark
+  assert.equal((client.match(/buildManagers\(/g) ?? []).length, 4);
   assert.match(client, /buildManagers\(records, salesRecords\)/);
   assert.match(client, /buildManagers\(cohortFiltered, wonFiltered\)/);
 });
@@ -195,11 +196,13 @@ test("the manager row reuses canonical metrics rather than re-deriving them", ()
   }
 });
 
-test("ManagerDetailView was not redesigned in this sprint", () => {
+test("ManagerDetailView still exists and reads from the canonical profile", () => {
   assert.match(client, /function ManagerDetailView\(/);
   assert.match(client, /INDIVIDUAL PERFORMANCE/);
-  assert.match(client, /Yangi lead/);
-  assert.match(client, /Saralash qamrovi/, "its own cards are untouched");
+  // Redesigned in its own sprint: it now builds from buildManagerProfile
+  // rather than deriving its own populations.
+  assert.match(client, /buildManagerProfile\(cohortRecords, salesRecords, manager\.id\)/);
+  assert.doesNotMatch(client, /Yangi lead/, "the old ambiguous card label is gone");
 });
 
 // ---------------------------------------------- sorting before the limit ---
