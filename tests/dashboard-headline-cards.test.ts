@@ -175,6 +175,57 @@ test("the duplicated quality/funnel panel is gone from the main dashboard", () =
   assert.doesNotMatch(code("../app/globals.css"), /dashboard-grid\.split/, "and its layout rule with it");
 });
 
+/**
+ * Pins what the main Dashboard is allowed to contain.
+ *
+ * The Lead sifati / Funnel konversiyasi summary panels repeated what the
+ * headline cards already say, so the main view is cards plus the sections that
+ * were never duplicates. Asserting the composition — not just the absence of
+ * one component name — is what stops an equivalent panel reappearing later
+ * under a different name.
+ */
+test("the main Dashboard renders cards and no duplicate summary panels", () => {
+  const client = code("../app/dashboard-client.tsx");
+  const view = client.slice(client.indexOf("function DashboardView("), client.indexOf("function TrendChart("));
+  const body = view.slice(view.indexOf("return <>"));
+
+  // 1-2. No summary panel repeats the quality or funnel story.
+  assert.doesNotMatch(body, /Lead sifati/, "no Lead sifati summary block on the main Dashboard");
+  assert.doesNotMatch(body, /className="dashboard-grid split"/, "no side-by-side quality/funnel panel");
+  assert.doesNotMatch(body, /compact-kpis/, "no compact metric panel duplicating the cards");
+  // "Funnel konversiyasi" survives only as a headline card label, never a panel.
+  assert.doesNotMatch(body, /SectionHeader title="Funnel konversiyasi"/);
+  assert.doesNotMatch(body, /SectionHeader title="Lead sifati"/);
+
+  // 3. The headline cards still render, driven by the saved order.
+  assert.match(body, /<section className="kpi-grid sales-kpis">/);
+  assert.match(body, /selected\.map\(\(id\) =>/);
+  assert.match(body, /<KpiCard key=\{id\}/);
+
+  // Exactly two panels remain, and neither is a metric summary.
+  const panels = [...body.matchAll(/SectionHeader title="([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(panels, ["Menejerlar performance"], "only the manager table remains as a panel");
+});
+
+test("5: the detailed consumers of those metrics are untouched", () => {
+  const client = code("../app/dashboard-client.tsx");
+  // Lead sifati remains its own page with its own quality breakdown.
+  assert.match(client, /function QualityView\(/);
+  assert.match(client, /Lead sifati va yo‘qotish sabablari/);
+  assert.match(client, /Source bo‘yicha sifat/);
+  // Diagnostics keeps the classification equations.
+  assert.match(client, /function ClassificationDiagnostics\(/);
+  assert.match(client, /Lead saralash diagnostikasi/);
+  // Lead oqimi keeps its own view.
+  assert.match(client, /function LeadFlowView\(/);
+  // And every metric they read is still produced.
+  const metrics = buildDashboardMetrics(COHORT, WON);
+  for (const key of ["classification_coverage", "quality_accepted_rate", "low_quality_rate", "not_relevant_of_leads", "lead_to_sql", "lead_to_sale", "sql_to_sale"] as const)
+    assert.equal(typeof metrics.rates[key], "number", `rates.${key} must survive`);
+  for (const key of ["classified_leads", "unclassified_leads", "duplicates", "unique_ish_leads"] as const)
+    assert.equal(typeof metrics.counts[key], "number", `counts.${key} must survive`);
+});
+
 test("headline labels read as decisions, not raw metric names", () => {
   assert.equal(headlineCardLabel("classified_leads"), "Saralangan");
   assert.equal(headlineCardLabel("avg_check"), "Chek");
