@@ -126,8 +126,22 @@ export const FALLBACK_STAGE_ORDER = [
   "получение данных/оплата", "оплата получена",
 ];
 
+/**
+ * Cyrillic stage names in Bitrix routinely contain Latin look-alike letters —
+ * the live IBOX funnel spells `Первое касаниe` with a Latin `e` (U+0065). A
+ * plain lowercase compare silently fails on those, so the fallback folds the
+ * homoglyph pairs onto their Cyrillic form before matching.
+ */
+const HOMOGLYPHS: Record<string, string> = {
+  a: "а", c: "с", e: "е", o: "о", p: "р", x: "х", y: "у", b: "ь", h: "н", k: "к", m: "м", t: "т",
+};
+
+function foldName(name: string) {
+  return name.trim().toLowerCase().replace(/[acepxybhkmot]/g, (char) => HOMOGLYPHS[char] ?? char);
+}
+
 function fallbackRank(name: string) {
-  const index = FALLBACK_STAGE_ORDER.indexOf(name.trim().toLowerCase());
+  const index = FALLBACK_STAGE_ORDER.findIndex((entry) => foldName(entry) === foldName(name));
   return index === -1 ? Number.MAX_SAFE_INTEGER : index;
 }
 

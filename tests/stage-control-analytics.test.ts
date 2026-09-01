@@ -498,3 +498,18 @@ test("a process stage keeps its place even when its NAME looks terminal", () => 
   assert.equal(keys.has("1:S_NRLIKE"), false, "not classified by display text");
   assert.equal(keys.has("1:S_LOSE"), true);
 });
+
+test("the fallback order survives Latin look-alike letters in Cyrillic names", () => {
+  // Bitrix spells this stage with a Latin "e" (U+0065) as its last character.
+  const bitrixName = "Первое касаниe";
+  assert.equal(bitrixName.endsWith("е"), false, "the fixture really does carry the Latin homoglyph");
+  const catalog = buildStageCatalog({
+    live: [
+      live({ dealId: "1", stageId: "S_DATA", stage: "ПОЛУЧЕНИЕ ДАННЫХ/ОПЛАТА" }),
+      live({ dealId: "2", stageId: "S_TOUCH", stage: bitrixName }),
+      live({ dealId: "3", stageId: "S_NEW", stage: "РАСПРЕДЕЛЁННЫЕ СДЕЛКИ" }),
+    ],
+  });
+  assert.deepEqual(catalog.map((stage) => stage.stageId), ["S_NEW", "S_TOUCH", "S_DATA"],
+    "Первое касание keeps its funnel position instead of falling to the end");
+});
