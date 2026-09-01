@@ -341,6 +341,10 @@ aside nav button i { margin-left: auto; width: 7px; height: 7px; border-radius: 
 .trend-column .trend-previous { background: #9aa4b2; opacity: .45; height: 1px; }
 .trend-column.immature > span { background-image: repeating-linear-gradient(45deg, transparent 0 3px, rgba(255,255,255,.55) 3px 6px); }
 .trend-column > span.trend-empty { background: transparent; border-top: 1px dashed #cbd3df; }
+.signal-list { display: grid; gap: 8px; margin-top: 10px; }
+.signal-list > div { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fafbfc; }
+.signal-list strong { display: block; font-size: 12px; }
+.signal-list small { display: block; color: #7c8798; font-size: 9px; margin-top: 2px; }
 .trend-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 9px; color: #7c8798; font-size: 9px; }
 .trend-legend span { display: inline-flex; align-items: center; gap: 5px; }
 .trend-legend .swatch { width: 10px; height: 3px; border-radius: 2px; display: inline-block; }

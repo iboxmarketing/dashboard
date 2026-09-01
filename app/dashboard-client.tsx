@@ -10,6 +10,7 @@ import { Component, useCallback, useEffect, useMemo, useRef, useState } from "re
 import type { ErrorInfo, ReactNode } from "react";
 import type { DashboardRecord, StageFunnelRecord } from "@/lib/dashboard-record";
 import { DASHBOARD_HEADLINE_CARD_IDS, headlineCardLabel, resolveHeadlineCardIds, type HeadlineCardId } from "@/lib/dashboard-cards";
+import { BUCKET_COUNT, DEFAULT_LEAD_FLOW_METRIC, LEAD_FLOW_METRICS, WEEKDAY_LABELS, bucketLabel, buildLeadFlow, higherIsHealthier, leadFlowValue, type LeadFlowMetricId } from "@/lib/lead-flow-analytics";
 import { buildManagerProfile, notRelevantRecords, reasonBreakdown, salesLostRecords, sourceFunnelRows, stageWorkloadRows, teamMedian } from "@/lib/manager-profile";
 import { DEFAULT_TREND_METRIC, TREND_METRICS, buildTrendSeries, supportsMovingAverage, trendMetric, type TrendBounds, type TrendMetricId, type TrendPoint } from "@/lib/trend-series";
 import { initialStageFunnelState, stageFunnelNext, type StageFunnelAction, type StageFunnelState, type StageFunnelStatus } from "@/lib/stage-funnel-cache";
@@ -35,7 +36,7 @@ import { countClassificationConflicts, dealOutcomeLabel, isClassifiedLead, isEli
 import { countDuplicates, markDuplicates } from "@/lib/duplicates";
 import { stageConfigConflicts } from "@/lib/stage-config";
 import { DASHBOARD_METRICS, buildDashboardMetrics, resolveDashboardMetric, selectPeriodPopulations, type DashboardMetricId } from "@/lib/dashboard-metrics";
-import { SLA_LABELS, SLA_TONES, resolveSlaState, summarizeSla } from "@/lib/sla";
+import { SLA_LABELS, SLA_TONES, resolveSlaState } from "@/lib/sla";
 import { stageConfigReadiness, summarizeDataQuality } from "@/lib/diagnostics";
 import {
   canFullSync, fullSyncBlockers, fullSyncConfirmation, isSettingsDirty, settingsReadiness,
@@ -155,11 +156,6 @@ function hydrateRecord(row: DashboardRecord): DashboardRecord {
 }
 function localDateKey(date: Date) {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tashkent", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
-}
-function zonedCreationParts(value: string) {
-  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Tashkent", weekday: "short", hour: "2-digit", hourCycle: "h23" }).formatToParts(new Date(value)).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
-  const weekdays: Record<string, number> = { Mon: 0, Tue: 1, Wed: 2, Thu: 3, Fri: 4, Sat: 5, Sun: 6 };
-  return { weekday: weekdays[parts.weekday] ?? 0, hour: Number(parts.hour) };
 }
 function rangeBounds(filters: Filters) {
   const now = new Date(); const today = localDateKey(now);
@@ -710,26 +706,100 @@ function ManagerDetailView({ manager, cohortRecords, salesRecords, currentStages
   </>;
 }
 
+/**
+ * Incoming-load analytics.
+ *
+ * One heatmap, four modes. The point is not "when do leads arrive" but "when
+ * do leads arrive AND processing quality drops", so volume and processing
+ * quality share one grid the user can switch between. The daily created-cohort
+ * trend lives on the Main Dashboard and is deliberately not repeated here.
+ */
 function LeadFlowView({ records }: { records: DashboardRecord[] }) {
-  const weekdays = ["Dushanba", "Seshanba", "Chorshanba", "Payshanba", "Juma", "Shanba", "Yakshanba"];
-  const hours = Array.from({ length: 24 }, (_, hour) => ({ hour, rows: records.filter((row) => zonedCreationParts(row.createdAt).hour === hour) }));
-  const dayRows = weekdays.map((label, weekday) => ({ label, rows: records.filter((row) => zonedCreationParts(row.createdAt).weekday === weekday) }));
-  const maxHour = Math.max(1, ...hours.map((row) => row.rows.length));
-  const peakHours = [...hours].sort((a, b) => b.rows.length - a.rows.length).slice(0, 3);
-  const busiestDay = [...dayRows].sort((a, b) => b.rows.length - a.rows.length)[0];
-  const afterHours = records.filter((row) => row.creationPeriod === "AFTER_HOURS");
-  const noProcessingAtPeak = summarizeSla(peakHours.flatMap((row) => row.rows)).overdue;
-  const heat = weekdays.map((label, weekday) => ({ label, cells: Array.from({ length: 12 }, (_, bucket) => records.filter((row) => { const part = zonedCreationParts(row.createdAt); return part.weekday === weekday && Math.floor(part.hour / 2) === bucket; })) }));
-  const heatMax = Math.max(1, ...heat.flatMap((row) => row.cells.map((cell) => cell.length)));
-  const dailyMap = new Map<string, number>();
-  for (const row of records) { const key = localDateKey(new Date(row.createdAt)); dailyMap.set(key, (dailyMap.get(key) ?? 0) + 1); }
-  const daily = [...dailyMap.entries()].sort(([a], [b]) => a.localeCompare(b)).slice(-45).map(([date, count]) => ({ date, count }));
-  const dailyMax = Math.max(1, ...daily.map((row) => row.count));
-  return <><div className="page-title"><div><p className="eyebrow">STAFFING ANALYTICS</p><h1>Deal yaratilish dinamikasi</h1><p>Qaysi kun va soatda lead oqimi oshishini ko‘rib, sotuvchilar smenasini talabga moslang.</p></div></div>
-    <section className="kpi-grid"><KpiCard label="Peak soat" value={peakHours[0] ? `${String(peakHours[0].hour).padStart(2, "0")}:00` : "—"} detail={`${peakHours[0]?.rows.length ?? 0} ta lead`} icon={Clock3} tone="indigo" /><KpiCard label="Eng band kun" value={busiestDay?.label ?? "—"} detail={`${busiestDay?.rows.length ?? 0} ta lead`} icon={CalendarDays} tone="blue" /><KpiCard label="After-hours" value={`${pct(afterHours.length, records.length)}%`} detail={`${afterHours.length} ta lead ish vaqtidan tashqari`} icon={TimerReset} tone="amber" /><KpiCard label="Peak’da muddati o‘tgan" value={String(noProcessingAtPeak)} detail="Top-3 soatda ishlov berilmagan" icon={AlertTriangle} tone="red" /></section>
-    <section className="panel"><SectionHeader title="Hafta kuni × 2 soat heatmap" subtitle="To‘q rang — lead hajmi yuqori. Vaqt Asia/Tashkent bo‘yicha." /><div className="heatmap-wrap"><div className="heatmap-head"><span />{Array.from({ length: 12 }, (_, bucket) => <small key={bucket}>{String(bucket * 2).padStart(2, "0")}:00</small>)}</div>{heat.map((row) => <div className="heatmap-row" key={row.label}><strong>{row.label.slice(0, 3)}</strong>{row.cells.map((cell, bucket) => { const alpha = cell.length ? 0.14 + (cell.length / heatMax) * 0.78 : 0.04; return <span key={bucket} title={`${row.label}, ${String(bucket * 2).padStart(2, "0")}:00–${String(bucket * 2 + 2).padStart(2, "0")}:00 · ${cell.length} lead`} style={{ backgroundColor: `rgba(36, 107, 253, ${alpha})`, color: alpha > .55 ? "white" : "#526078" }}>{cell.length || ""}</span>; })}</div>)}</div></section>
-    <section className="panel"><SectionHeader title="Kunlik Deal dinamikasi" subtitle="Oxirgi 45 kalendar kun; ustun ustiga borsangiz aniq son ko‘rinadi" /><div className="daily-flow-chart">{daily.map((row) => <div key={row.date} title={`${row.date} · ${row.count} lead`}><span style={{ height: `${Math.max(5, (row.count / dailyMax) * 100)}%` }} /><small>{row.date.slice(5)}</small></div>)}</div>{!daily.length && <div className="empty-chart">Kunlik dinamika uchun ma’lumot yo‘q.</div>}</section>
-    <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Soatlik lead hajmi" subtitle="24 soatlik taqsimot" /><div className="hour-chart">{hours.map((row) => <div key={row.hour} title={`${String(row.hour).padStart(2, "0")}:00 · ${row.rows.length} lead`}><span style={{ height: `${Math.max(row.rows.length ? 8 : 2, (row.rows.length / maxHour) * 100)}%` }} /><small>{row.hour % 2 === 0 ? String(row.hour).padStart(2, "0") : ""}</small></div>)}</div></article><article className="panel"><SectionHeader title="Smena uchun tavsiya" subtitle="Tanlangan davrdagi real oqimdan hisoblandi" /><div className="staffing-callout"><BarChart3 size={24} /><div><strong>{peakHours.map((row) => `${String(row.hour).padStart(2, "0")}:00`).join(", ")} oralig‘ini kuchaytiring</strong><p>Top-3 soatda jami {peakHours.reduce((sum, row) => sum + row.rows.length, 0)} ta lead tushgan. {afterHours.length ? `Ish vaqtidan tashqari ${afterHours.length} ta lead bor — navbatchi yoki kechki smenani sinab ko‘ring.` : "After-hours oqimi past, asosiy smenani peak soatlarga jamlash mumkin."}</p></div></div><BarList rows={dayRows.map((row) => ({ label: row.label, value: row.rows.length, total: records.length, color: "#246bfd" }))} /></article></section>
+  const [metric, setMetric] = useState<LeadFlowMetricId>(DEFAULT_LEAD_FLOW_METRIC);
+  const flow = useMemo(() => buildLeadFlow(records), [records]);
+  const definition = LEAD_FLOW_METRICS.find((entry) => entry.id === metric) ?? LEAD_FLOW_METRICS[0];
+  const format = (value: number | null) => {
+    if (value === null) return "—";
+    if (definition.unit === "minutes") return fmtMinutes(value);
+    if (definition.unit === "percent") return `${Math.round(value)}%`;
+    return String(Math.round(value));
+  };
+  const values = flow.cells.map((cell) => leadFlowValue(cell, metric)).filter((value): value is number => value !== null);
+  const max = Math.max(1, ...values);
+  const min = Math.min(0, ...values);
+  /** Intensity always means "more pressure", so SLA is inverted: low SLA burns. */
+  const intensity = (value: number | null) => {
+    if (value === null) return 0;
+    const span = Math.max(1, max - min);
+    const ratio = (value - min) / span;
+    return higherIsHealthier(metric) ? 1 - ratio : ratio;
+  };
+  const palette = metric === "volume" ? "36, 107, 253" : metric === "sla" ? "239, 89, 98" : metric === "avg_processing" ? "245, 158, 11" : "239, 89, 98";
+  const groups = [...new Set(LEAD_FLOW_METRICS.map((entry) => entry.group))];
+  const cellTooltip = (cell: (typeof flow.cells)[number]) => {
+    const head = `${WEEKDAY_LABELS[cell.weekday]} · ${bucketLabel(cell.bucket)}`;
+    const lines = [head, `Leadlar: ${cell.leads} ta`, `Jami oqimdan: ${cell.share}%`];
+    if (metric === "overdue_rate") lines.push(`Muddati o‘tgan: ${cell.overdue}`, `Overdue rate: ${cell.overdueRate === null ? "—" : `${cell.overdueRate}%`}`);
+    if (metric === "sla") lines.push(`SLA: ${cell.slaRate === null ? "—" : `${cell.slaRate}%`}`, `${cell.slaOnTime} / ${cell.slaDenominator} SLA ichida`);
+    if (metric === "avg_processing") lines.push(`Avg saralash: ${fmtMinutes(cell.avgProcessing)}`, `Ishlov ma’lum: ${cell.processingKnown} ta`);
+    return lines.join("\n");
+  };
+  const rateOf = (value: number | null) => (value === null ? "—" : `${value}%`);
+
+  return <><div className="page-title"><div><p className="eyebrow">STAFFING ANALYTICS</p><h1>Lead oqimi va capacity</h1><p>Qachon oqim ko‘payadi va aynan o‘sha paytda ishlov sifati tushadimi — bitta jadvalda.</p></div></div>
+
+    <section className="kpi-grid">
+      <KpiCard label="Peak vaqt" icon={Clock3} tone="indigo" value={flow.peakBucket?.label ?? "—"}
+        detail={flow.peakBucket ? `${flow.peakBucket.leads} ta lead · jami leadlarning ${Math.round(flow.peakBucket.share)}%` : "Ma’lumot yo‘q"} />
+      <KpiCard label="Eng band kun" icon={CalendarDays} tone="blue" value={flow.busiestWeekday?.label ?? "—"}
+        detail={flow.busiestWeekday ? `${flow.busiestWeekday.leads} ta lead · jami oqimning ${Math.round(flow.busiestWeekday.share)}%` : "Ma’lumot yo‘q"} />
+      <KpiCard label="After-hours" icon={TimerReset} tone="amber" value={`${Math.round(flow.afterHours.share)}%`}
+        detail={`${flow.afterHours.leads} ta lead · sozlangan ish vaqti bo‘yicha`} />
+      <KpiCard label="Peak workload riski" icon={AlertTriangle} tone="red"
+        value={`${flow.peakRisk.overdue} ta · ${rateOf(flow.peakRisk.overdueRate)}`}
+        detail={<>Muddati o‘tgan / Leadlar<small className="card-note">Top-3 peak vaqt oralig‘ida · {flow.peakRisk.leads} ta lead</small></>} />
+    </section>
+
+    <section className="panel"><SectionHeader
+        title="Hafta kuni × 2 soat heatmap"
+        subtitle={`${definition.label}${definition.unit === "percent" ? " (%)" : definition.unit === "minutes" ? " (vaqt)" : " (ta)"} · vaqt Asia/Tashkent · routing hisobga olinmaydi`}
+        action={<Select label="Ko‘rsatkich" value={metric} onChange={(value) => setMetric(value as LeadFlowMetricId)}>
+          {groups.map((group) => <optgroup key={group} label={group}>
+            {LEAD_FLOW_METRICS.filter((entry) => entry.group === group).map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+          </optgroup>)}
+        </Select>} />
+      <div className="heatmap-wrap">
+        <div className="heatmap-head"><span />{Array.from({ length: BUCKET_COUNT }, (_, bucket) => <small key={bucket}>{String(bucket * 2).padStart(2, "0")}:00</small>)}</div>
+        {WEEKDAY_LABELS.map((label, weekday) => <div className="heatmap-row" key={label}>
+          <strong>{label.slice(0, 3)}</strong>
+          {flow.cells.filter((cell) => cell.weekday === weekday).map((cell) => {
+            const value = leadFlowValue(cell, metric);
+            const alpha = value === null ? 0.04 : 0.12 + intensity(value) * 0.8;
+            return <span key={cell.bucket} title={cellTooltip(cell)}
+              style={{ backgroundColor: `rgba(${palette}, ${alpha})`, color: alpha > 0.55 ? "white" : "#526078" }}>
+              {format(value)}
+            </span>;
+          })}
+        </div>)}
+      </div>
+      <div className="trend-legend">
+        <span><i className="swatch bar" style={{ background: `rgba(${palette}, .85)` }} />{definition.label} — {higherIsHealthier(metric) ? "och rang = SLA past" : "to‘q rang = yuklama/bosim yuqori"}</span>
+        <span><i className="swatch prev" />— · ma’lumot yo‘q</span>
+      </div>
+    </section>
+
+    <section className="panel"><SectionHeader title="Staffing signallari" subtitle="Tanlangan davrdagi real oqimdan hisoblandi · tavsiya emas, signal" />
+      <div className="signal-list">
+        {flow.staffingSignals.map((signal) => <div key={signal.id}>
+          <strong>{signal.id === "peak_bucket" ? `${signal.label} — eng katta oqim`
+            : signal.id === "busiest_weekday" ? `${signal.label} — eng band kun`
+              : `After-hours: ${Math.round(signal.stats.share)}%`}</strong>
+          <small>{signal.stats.leads} ta lead · {signal.id === "after_hours" ? "sozlangan ish vaqtidan tashqari" : `jami oqimning ${Math.round(signal.stats.share)}%`}
+            {` · muddati o‘tgan ${signal.stats.overdue} ta / ${rateOf(signal.stats.overdueRate)}`}</small>
+        </div>)}
+      </div>
+      {!flow.total && <div className="empty-table">Tanlangan filtr bo‘yicha lead yo‘q.</div>}
+    </section>
   </>;
 }
 
