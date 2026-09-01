@@ -117,10 +117,14 @@ test("filters and drilldowns still work on the compact payload", () => {
 });
 
 test("the funnel's minimal record carries exactly what that view reads", () => {
-  // Its own filters (manager, pipeline, search) plus the funnel inputs.
-  for (const field of ["dealId", "title", "assignedManagerId", "salesManagerId", "originPipeline", "originCategoryId", "salesStatus", "stageTimeline"])
+  // Its own filters (manager, pipeline, search), the funnel inputs, and the two
+  // scalars the historical outcome summary needs so it can reuse the canonical
+  // predicates instead of classifying by stage or reason text.
+  for (const field of ["dealId", "title", "assignedManagerId", "salesManagerId", "originPipeline", "originCategoryId", "salesStatus", "qualified", "lossReasonGroup", "stageTimeline"])
     assert.ok((STAGE_FUNNEL_FIELDS as readonly string[]).includes(field), `${field} missing from the funnel projection`);
-  assert.equal(STAGE_FUNNEL_FIELDS.length, 8, "nothing extra is shipped to the funnel");
+  assert.equal(STAGE_FUNNEL_FIELDS.length, 10, "nothing extra is shipped to the funnel");
+  // Still a projection: the full record is far larger than what the funnel gets.
+  assert.ok(STAGE_FUNNEL_FIELDS.length < Object.keys(COHORT[0]).length / 2, "the funnel stays a projection, not a record dump");
 });
 
 test("the dashboard route projects in SQL and never parses the records", () => {

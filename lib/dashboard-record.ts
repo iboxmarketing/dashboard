@@ -44,11 +44,18 @@ export type DashboardRecord =
 
 /** Minimal row the Stage Control funnel needs: its own filters plus the timeline. */
 export type StageFunnelRecord = Pick<AnalyticsRecord,
-  "dealId" | "title" | "assignedManagerId" | "salesManagerId" | "originPipeline" | "originCategoryId" | "salesStatus" | "stageTimeline">;
+  "dealId" | "title" | "assignedManagerId" | "salesManagerId" | "originPipeline" | "originCategoryId"
+  | "salesStatus" | "qualified" | "lossReasonGroup" | "stageTimeline">;
 
+/**
+ * `qualified` and `lossReasonGroup` are carried so the historical outcome
+ * summary can reuse the canonical predicates (isSalesLost / isPreSqlClosed)
+ * instead of classifying by stage or reason text. Two scalars per row: the
+ * endpoint stays lazy and the payload stays a projection, not a full record.
+ */
 export const STAGE_FUNNEL_FIELDS = [
   "dealId", "title", "assignedManagerId", "salesManagerId",
-  "originPipeline", "originCategoryId", "salesStatus", "stageTimeline",
+  "originPipeline", "originCategoryId", "salesStatus", "qualified", "lossReasonGroup", "stageTimeline",
 ] as const;
 
 /** SQLite JSON path list for the fields the dashboard response drops. */

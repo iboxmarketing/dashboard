@@ -9,6 +9,11 @@ import {
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ErrorInfo, ReactNode } from "react";
 import type { DashboardRecord, StageFunnelRecord } from "@/lib/dashboard-record";
+import {
+  buildHistorical, buildManagerMatrix, buildOverdueRows, buildReconciliationView, buildStageCatalog,
+  buildStageHealth, buildSummary, humanDuration, stageKey,
+  type MatrixCell, type OverdueSort, type ReconciliationView, type StageCatalogEntry,
+} from "@/lib/stage-control-analytics";
 import { DASHBOARD_HEADLINE_CARD_IDS, headlineCardLabel, resolveHeadlineCardIds, type HeadlineCardId } from "@/lib/dashboard-cards";
 import { BUCKET_COUNT, DEFAULT_LEAD_FLOW_METRIC, LEAD_FLOW_METRICS, WEEKDAY_LABELS, bucketLabel, buildLeadFlow, higherIsHealthier, leadFlowValue, type LeadFlowMetricId } from "@/lib/lead-flow-analytics";
 import { buildManagerProfile, notRelevantRecords, reasonBreakdown, salesLostRecords, sourceFunnelRows, stageWorkloadRows, teamMedian } from "@/lib/manager-profile";
@@ -89,16 +94,6 @@ const navItems: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
 ];
 
 function pct(value: number, total: number) { return total ? Math.round((value / total) * 100) : 0; }
-function average(values: (number | null)[]) {
-  const clean = values.filter((value): value is number => value !== null && Number.isFinite(value));
-  return clean.length ? clean.reduce((sum, value) => sum + value, 0) / clean.length : null;
-}
-function median(values: (number | null)[]) {
-  const clean = values.filter((value): value is number => value !== null && Number.isFinite(value)).sort((a, b) => a - b);
-  if (!clean.length) return null;
-  const middle = Math.floor(clean.length / 2);
-  return clean.length % 2 ? clean[middle] : (clean[middle - 1] + clean[middle]) / 2;
-}
 function fmtMinutes(value: number | null) {
   if (value === null || !Number.isFinite(value)) return "—";
   if (value < 60) return `${Math.round(value)} min`;
@@ -949,50 +944,188 @@ function QualityView({ records, onManager }: { records: DashboardRecord[]; onMan
   </>;
 }
 
-function StageControlView({ records, historicalRecords, reconciliation, loading, error, onRefresh, funnelStatus, onRetryFunnel }: { records: CurrentStageRecord[]; historicalRecords: StageFunnelRecord[]; reconciliation: StageReconciliation | null; loading: boolean; error: string | null; onRefresh: () => void; funnelStatus: StageFunnelStatus; onRetryFunnel: () => void }) {
-  const active = records;
-  const overdue = active.filter((row) => row.stageOverdue);
-  const stages = [...new Set(active.map((row) => row.stage))].sort(); const managers = [...new Set(active.map((row) => row.assignedManager || "Aniqlanmagan"))].sort();
-  const stageStats = groupedCount(active, (row) => row.stage);
-  const funnelMap = new Map<string, { pipeline: string; stage: string; entered: number; advanced: number; dropOff: number; durations: number[]; order: number[] }>();
-  for (const row of historicalRecords) {
-    const timeline = row.stageTimeline.filter((entry) => entry.categoryId === row.originCategoryId);
-    timeline.forEach((entry, index) => {
-      const key = `${entry.categoryId}:${entry.stageId}`; const current = funnelMap.get(key) ?? { pipeline: entry.pipeline, stage: entry.stage, entered: 0, advanced: 0, dropOff: 0, durations: [], order: [] };
-      current.entered += 1; current.durations.push(entry.durationHours); current.order.push(index);
-      const hasNext = Boolean(timeline[index + 1]);
-      if (hasNext || (!hasNext && row.salesStatus === "WON")) current.advanced += 1;
-      if (!hasNext && ["LOW_QUALITY", "LOST"].includes(row.salesStatus)) current.dropOff += 1;
-      funnelMap.set(key, current);
-    });
-  }
-  const funnelRows = [...funnelMap.values()].sort((a, b) => a.pipeline.localeCompare(b.pipeline) || (average(a.order) ?? 0) - (average(b.order) ?? 0));
-  return <><div className="page-title"><div><p className="eyebrow">PIPELINE CONTROL</p><h1>Stage nazorati</h1><p>Bitrix’dagi joriy ochiq deal’lar. Yaratilgan sanaga cheklanmaydi va og‘ir activity/history sync talab qilmaydi.</p></div><button className="button secondary" onClick={onRefresh} disabled={loading}>{loading ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}Joriy holatni yangilash</button></div>
-    {loading && !reconciliation && <div className="notice page-notice"><Loader2 size={17} className="spin" />Bitrix’dagi joriy stage’lar olinmoqda…</div>}
-    {error && <div className="notice warning page-notice"><AlertTriangle size={17} /><span>Bitrix live snapshot olinmadi: {error}. Vaqtincha oxirgi sync bazasi ko‘rsatilmoqda.</span></div>}
-    {reconciliation && <div className={`reconciliation-banner ${reconciliation.missingCount || reconciliation.staleCount || reconciliation.stageMismatchCount ? "warning" : "ok"}`}><div><ShieldCheck size={18} /><span><strong>Bitrix joriy: {reconciliation.liveCount}</strong><small>Analytics bazasi: {reconciliation.cachedCount} · yetishmaydi: {reconciliation.missingCount} · eskirgan: {reconciliation.staleCount} · stage farqi: {reconciliation.stageMismatchCount}</small></span></div>{(reconciliation.missingCount > 0 || reconciliation.staleCount > 0) && <details><summary>Farqli Deal ID’larni ko‘rish</summary><p>{reconciliation.missingDealIds.length ? `Bitrix’da bor, analytics’da yo‘q: ${reconciliation.missingDealIds.join(", ")}` : ""}{reconciliation.missingDealIds.length && reconciliation.staleDealIds.length ? " · " : ""}{reconciliation.staleDealIds.length ? `Analytics’da bor, Bitrix joriy holatida yo‘q: ${reconciliation.staleDealIds.join(", ")}` : ""}</p></details>}</div>}
-    <section className="kpi-grid"><KpiCard label="Joriy aktiv lead" value={String(active.length)} detail={reconciliation ? "Bitrix live snapshot" : "Oxirgi sync bazasi"} icon={Layers3} /><KpiCard label="Limitdan oshgan" value={String(overdue.length)} detail={`${pct(overdue.length, active.length)}% aktiv lead`} icon={AlertTriangle} tone="red" /><KpiCard label="Eng eski lead" value={active.length ? `${Math.round(Math.max(...active.map((row) => row.stageAgeHours)))} soat` : "—"} detail="Joriy stage’da" icon={Clock3} tone="amber" /></section>
-    <section className="panel"><SectionHeader title="Sotuvchi × joriy stage" subtitle="Bitrix ASSIGNED_BY_ID bo‘yicha" /><div className="table-wrap"><table className="data-table stage-matrix"><thead><tr><th>Sotuvchi</th>{stages.map((stage) => <th key={stage}>{stage}</th>)}<th>Jami</th></tr></thead><tbody>{managers.map((manager) => { const rows = active.filter((row) => (row.assignedManager || "Aniqlanmagan") === manager); return <tr key={manager}><td><strong>{manager}</strong></td>{stages.map((stage) => { const cell = rows.filter((row) => row.stage === stage); return <td key={stage}><span className={cell.some((row) => row.stageOverdue) ? "pill danger" : "pill neutral"}>{cell.length}</span></td>; })}<td><strong>{rows.length}</strong></td></tr>; })}</tbody></table></div></section>
-    <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Stage bo‘yicha yuklama" /><BarList rows={stageStats.map((row) => ({ ...row, total: active.length, color: "#246bfd" }))} /></article><article className="panel"><SectionHeader title="Limitdan oshgan Deal’lar" subtitle="Sozlamadagi har bir stage limiti bo‘yicha" /><div className="stuck-list">{overdue.sort((a, b) => b.stageAgeHours - a.stageAgeHours).slice(0, 20).map((row) => <a key={row.dealId} href={row.bitrixUrl ?? undefined} target="_blank" rel="noreferrer"><span><strong>{row.title}</strong><small>{row.assignedManager} · {row.stage}</small></span><b>{Math.round(row.stageAgeHours)} / {row.stageLimitHours} soat</b></a>)}{!overdue.length && <div className="empty-table">Limitdan oshgan aktiv Deal yo‘q.</div>}</div></article></section>
-    <section className="panel"><SectionHeader title="Tarixiy stage funnel" subtitle="Tanlangan import oralig‘idagi history: bosqichga kirgan, keyingisiga o‘tgan, drop-off va sarflangan vaqt" /><div className="table-wrap"><table className="data-table"><thead><tr><th>Pipeline</th><th>Stage</th><th>Kirgan</th><th>Keyingi / sotuv</th><th>Konversiya</th><th>Drop-off</th><th>Avg vaqt</th><th>Median vaqt</th></tr></thead><tbody>{funnelRows.map((row) => <tr key={`${row.pipeline}:${row.stage}`}><td>{row.pipeline}</td><td><strong>{row.stage}</strong></td><td>{row.entered}</td><td>{row.advanced}</td><td><span className="pill success">{pct(row.advanced, row.entered)}%</span></td><td><span className={row.dropOff ? "pill danger" : "pill neutral"}>{row.dropOff}</span></td><td>{fmtHours(average(row.durations))}</td><td>{fmtHours(median(row.durations))}</td></tr>)}</tbody></table>{funnelStatus === "loading" && !funnelRows.length && <div className="empty-table"><Loader2 size={16} className="spin" /> Stage tarixi yuklanmoqda…</div>}
-{funnelStatus === "error" && <div className="notice warning page-notice"><AlertTriangle size={17} /><span>Stage tarixi yuklanmadi. Bu — tarix yo‘q degani emas.</span><button className="button secondary" onClick={onRetryFunnel}><RefreshCw size={15} />Qayta urinish</button></div>}
-{funnelStatus !== "loading" && funnelStatus !== "error" && !funnelRows.length && <div className="empty-table">Stage history sync qilingandan keyin funnel ko‘rinadi.</div>}</div></section>
-  </>;
+function ReconciliationBanner({ view }: { view: ReconciliationView }) {
+  const [open, setOpen] = useState(false);
+  const idList = (label: string, ids: string[], total: number) => ids.length
+    ? <p><strong>{label}:</strong> {ids.slice(0, 40).join(", ")}{total > ids.length ? ` … (${total} tadan ${Math.min(40, ids.length)} tasi)` : ""}</p>
+    : null;
+  return <div className={`reconciliation-banner ${view.severity}`}>
+    <div className="recon-head">
+      {view.severity === "ok" ? <ShieldCheck size={18} /> : <AlertTriangle size={18} />}
+      <div className="recon-primary">
+        <strong>Bitrix joriy: {view.liveCount} ta ochiq deal</strong>
+        <span className="recon-coverage">Analytics coverage: {view.matchedCount} / {view.liveCount}{view.coverage === null ? "" : ` · ${view.coverage}%`}</span>
+        <small>Analytics tarix cache: {view.cachedCount} ta record — bu live hisob-kitobning maxraji emas.</small>
+      </div>
+    </div>
+    <p className="recon-note">Joriy Stage nazorati Bitrix live snapshot’dan olinadi. Analytics cache farqi live Deal’larni bu sahifadan olib tashlamaydi.</p>
+    {view.truncated && <p className="recon-alert"><AlertTriangle size={15} />Bitrix live snapshot to‘liq yuklanmadi — joriy sonlar ham to‘liq bo‘lmasligi mumkin.</p>}
+    <div className="recon-chips">
+      {view.expectedGap > 0 && <span className="pill neutral" title="Analytics tarix oynasidan oldin yaratilgan — kutilgan holat">{view.expectedGap} ta eski ochiq deal {view.historyDays ?? "—"} kunlik analytics tarixidan oldin yaratilgan</span>}
+      {view.unexpectedGap > 0 && <span className="pill danger">{view.unexpectedGap} ta joriy deal history oynasi ichida, lekin analytics cache’da yo‘q</span>}
+      {view.staleCount > 0 && <span className="pill danger">{view.staleCount} ta eskirgan cache yozuvi</span>}
+      {view.stageMismatchCount > 0 && <span className="pill danger">{view.stageMismatchCount} ta stage farqi</span>}
+      {view.severity === "ok" && <span className="pill success">Live snapshot ishonchli</span>}
+    </div>
+    {(view.missingCount || view.staleCount || view.stageMismatchCount) > 0 && <details open={open} onToggle={(event) => setOpen((event.target as HTMLDetailsElement).open)}>
+      <summary>Farqli Deal ID’lar</summary>
+      <div className="recon-details">
+        {idList("History oynasidan eski", view.expectedGapDealIds, view.expectedGap)}
+        {idList("History oynasi ichida yo‘q", view.unexpectedGapDealIds, view.unexpectedGap)}
+        {idList("Eskirgan cache", view.staleDealIds, view.staleCount)}
+        {idList("Stage farqi", view.stageMismatchDealIds, view.stageMismatchCount)}
+      </div>
+    </details>}
+  </div>;
 }
 
-/**
- * Publishes the cohort equations rather than asserting them. If a record ever
- * claims both quality verdicts at once the count is shown instead of being
- * absorbed silently by `Saralangan = Sifatli + Sifatsiz`, and the two duplicate
- * populations are printed side by side because the historical metric counts the
- * raw cohort while Leadlar does not.
- */
-/**
- * Warns when the selected range reaches back further than the data that has
- * actually been synchronised. Those days are absent, not empty, so the rates
- * computed over them are incomplete rather than bad. The import window is never
- * widened automatically — that is a settings decision and a full re-sync.
- */
+function StageMatrixCell({ cell }: { cell: MatrixCell }) {
+  if (!cell.active) return <td className="matrix-cell empty">—</td>;
+  const tone = cell.overdue ? (cell.overdueRate !== null && cell.overdueRate >= 50 ? "danger" : "warning") : "neutral";
+  return <td className={`matrix-cell ${tone}`}>
+    <strong>{cell.active}</strong>
+    {cell.overdue > 0 && <small>{cell.overdue} overdue · {cell.overdueRate}%</small>}
+  </td>;
+}
+
+function OverdueList({ rows, catalog, managers }: { rows: CurrentStageRecord[]; catalog: StageCatalogEntry[]; managers: { id: string; name: string }[] }) {
+  const [manager, setManager] = useState(""); const [stage, setStage] = useState(""); const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<OverdueSort>("overrun"); const [page, setPage] = useState(0);
+  const filtered = useMemo(() => buildOverdueRows(rows, { manager, stage, search }, sort), [rows, manager, stage, search, sort]);
+  const total = rows.filter((row) => row.stageOverdue).length;
+  const perPage = 20;
+  const pages = Math.max(1, Math.ceil(filtered.length / perPage));
+  const current = Math.min(page, pages - 1);
+  const shown = filtered.slice(current * perPage, current * perPage + perPage);
+  return <section className="panel">
+    <SectionHeader title="Limitdan oshgan Deal’lar" subtitle={`${total} ta overdue · filtrdan keyin ${filtered.length} ta · ${pages} sahifa`} />
+    <div className="overdue-controls">
+      <Select label="Menejer" value={manager} onChange={(value) => { setManager(value); setPage(0); }}>
+        <option value="">Barcha menejerlar</option>
+        {managers.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
+      </Select>
+      <Select label="Stage" value={stage} onChange={(value) => { setStage(value); setPage(0); }}>
+        <option value="">Barcha stage’lar</option>
+        {catalog.map((row) => <option key={row.key} value={row.key}>{row.name}</option>)}
+      </Select>
+      <Select label="Tartib" value={sort} onChange={(value) => { setSort(value as OverdueSort); setPage(0); }}>
+        <option value="overrun">Limitdan eng ko‘p oshgan</option>
+        <option value="age">Eng eski stage</option>
+        <option value="ratio">Limitga nisbatan</option>
+      </Select>
+      <label className="search-box"><Search size={14} aria-hidden="true" />
+        <input placeholder="Deal ID, nom yoki menejer" value={search} onChange={(event) => { setSearch(event.target.value); setPage(0); }} />
+      </label>
+    </div>
+    <div className="table-wrap">
+      <table className="data-table overdue-table">
+        <thead><tr><th>Deal</th><th>Menejer</th><th>Stage</th><th>Stage’da</th><th>Limit</th><th>Limitdan</th><th>Nisbat</th></tr></thead>
+        <tbody>{shown.map((row) => <tr key={row.dealId}>
+          <td><a href={row.bitrixUrl ?? undefined} target="_blank" rel="noreferrer" className="deal-link"><strong>{row.title}</strong><small>#{row.dealId}</small></a></td>
+          <td>{row.assignedManager || "Aniqlanmagan"}</td>
+          <td>{row.stage}</td>
+          <td title={`${Math.round(row.stageAgeHours)} soat`}>{humanDuration(row.stageAgeHours)}</td>
+          <td title={`${row.stageLimitHours} soat`}>{humanDuration(row.stageLimitHours)}</td>
+          <td className="overrun" title={`${Math.round(row.overrunHours)} soat`}>+{humanDuration(row.overrunHours)}</td>
+          <td>{row.ratio === null ? "—" : `${row.ratio.toFixed(1)}×`}</td>
+        </tr>)}</tbody>
+      </table>
+      {!filtered.length && <div className="empty-table">{total ? "Filtrga mos overdue Deal yo‘q." : "Limitdan oshgan aktiv Deal yo‘q."}</div>}
+    </div>
+    {pages > 1 && <div className="pager">
+      <button className="button secondary" onClick={() => setPage(Math.max(0, current - 1))} disabled={current === 0}>Oldingi</button>
+      <span>{current + 1} / {pages} · {filtered.length} tadan {shown.length} tasi</span>
+      <button className="button secondary" onClick={() => setPage(Math.min(pages - 1, current + 1))} disabled={current >= pages - 1}>Keyingi</button>
+    </div>}
+  </section>;
+}
+
+function StageControlView({ records, historicalRecords, reconciliation, stageCatalog, truncated, settings, loading, error, onRefresh, funnelStatus, onRetryFunnel }: { records: CurrentStageRecord[]; historicalRecords: StageFunnelRecord[]; reconciliation: StageReconciliation | null; stageCatalog: PipelineStageOption[]; truncated: boolean; settings: DashboardSettings | null; loading: boolean; error: string | null; onRefresh: () => void; funnelStatus: StageFunnelStatus; onRetryFunnel: () => void }) {
+  const pipelineNames = useMemo(() => new Map((settings?.selectedPipelineIds ?? []).map((id, index) => [String(id), settings?.selectedPipelineNames?.[index] ?? `Pipeline #${id}`])), [settings]);
+  const liveCatalog = useMemo(() => buildStageCatalog({ catalog: stageCatalog, live: records, pipelineNames }), [stageCatalog, records, pipelineNames]);
+  const historyCatalog = useMemo(() => buildStageCatalog({ catalog: stageCatalog, historical: historicalRecords, pipelineNames }), [stageCatalog, historicalRecords, pipelineNames]);
+  const summary = useMemo(() => buildSummary(records, liveCatalog), [records, liveCatalog]);
+  const matrix = useMemo(() => buildManagerMatrix(records, liveCatalog), [records, liveCatalog]);
+  const health = useMemo(() => buildStageHealth(records, liveCatalog), [records, liveCatalog]);
+  const historical = useMemo(() => buildHistorical(historicalRecords, historyCatalog, settings ?? {}), [historicalRecords, historyCatalog, settings]);
+  const reconView = useMemo(() => buildReconciliationView(reconciliation, { truncated }), [reconciliation, truncated]);
+  // Only stages that actually carry live deals become matrix columns, so an
+  // untouched closed stage (Оплата получена is CLOSED=Y) cannot widen the grid.
+  const columns = useMemo(() => liveCatalog.filter((stage) => records.some((row) => stageKey(row.categoryId, row.stageId) === stage.key)), [liveCatalog, records]);
+  const managers = useMemo(() => matrix.map((row) => ({ id: row.managerId, name: row.manager })), [matrix]);
+
+  return <><div className="page-title"><div><p className="eyebrow">PIPELINE CONTROL</p><h1>Stage nazorati</h1><p>Bitrix’dagi joriy ochiq deal’lar. <strong>Joriy stage sana filtriga bog‘liq emas</strong> — 400 kun oldin ochilgan deal ham shu yerda qoladi.</p></div><button className="button secondary" onClick={onRefresh} disabled={loading}>{loading ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}Joriy holatni yangilash</button></div>
+    {loading && !reconciliation && <div className="notice page-notice"><Loader2 size={17} className="spin" />Bitrix’dagi joriy stage’lar olinmoqda…</div>}
+    {error && <div className="notice warning page-notice"><AlertTriangle size={17} /><span>Bitrix live snapshot olinmadi: {error}. Vaqtincha oxirgi sync bazasi ko‘rsatilmoqda.</span></div>}
+    {reconView && <ReconciliationBanner view={reconView} />}
+
+    <p className="scope-flag live">Bitrix live · hozir</p>
+    <section className="kpi-grid stage-kpis">
+      <KpiCard label="Joriy aktiv lead" value={String(summary.active)} detail={<>{reconciliation ? "Bitrix live snapshot" : "Oxirgi sync bazasi"}<small className="card-note">Yaratilgan sana bo‘yicha cheklanmagan</small></>} icon={Layers3} />
+      <KpiCard label="Limitdan oshgan" value={String(summary.overdue)} detail={<>{summary.overdue} / {summary.active}{summary.overdueRate === null ? "" : ` · ${summary.overdueRate}%`}<small className="card-note">Sozlangan stage limitlari bo‘yicha</small></>} icon={AlertTriangle} tone="red" />
+      <KpiCard label="Eng ko‘p yuklangan stage" value={summary.busiest?.name ?? "—"} valueClassName="reason-value" detail={summary.busiest ? <>{summary.busiest.active} ta · aktiv leadlarning {summary.busiest.share}%<small className="card-note">{summary.busiest.overdue} ta overdue{summary.busiest.overdueRate === null ? "" : ` · ${summary.busiest.overdueRate}%`}</small></> : "Aktiv lead yo‘q"} icon={Layers3} tone="blue" />
+      <KpiCard label="Eng uzoq turib qolgan" value={humanDuration(summary.oldest?.stageAgeHours ?? null)} detail={summary.oldest ? <span title={`${Math.round(summary.oldest.stageAgeHours)} soat · limit ${summary.oldest.stageLimitHours} soat`}>{summary.oldest.title}<small className="card-note">{summary.oldest.assignedManager || "Aniqlanmagan"} · {summary.oldest.stage}</small></span> : "—"} icon={Clock3} tone="amber" />
+    </section>
+
+    <section className="panel"><SectionHeader title="Sotuvchi × joriy stage" subtitle="Bitrix’dagi hozirgi ochiq Deal’lar · stage tartibi Bitrix funnel bo‘yicha" />
+      <div className="table-wrap"><table className="data-table stage-matrix">
+        <thead><tr><th className="sticky-col">Sotuvchi</th>{columns.map((stage) => <th key={stage.key}>{stage.name}{stage.legacy ? <small className="legacy-tag">legacy</small> : null}</th>)}<th>Jami</th><th>Overdue</th><th>Overdue %</th></tr></thead>
+        <tbody>{matrix.map((row) => <tr key={row.managerId}>
+          <td className="sticky-col"><strong>{row.manager}</strong>{row.isUnknown ? <small>Atributsiya diagnostikasi</small> : null}</td>
+          {columns.map((stage) => {
+            const cell = row.cells.find((entry) => entry.key === stage.key) ?? { key: stage.key, active: 0, overdue: 0, overdueRate: null };
+            return <td key={stage.key} className="matrix-slot" title={`${stage.name}\n${cell.active} ta aktiv\n${cell.overdue} ta limitdan oshgan\n${cell.overdueRate === null ? "—" : `${cell.overdueRate}%`}`}><StageMatrixCell cell={cell} /></td>;
+          })}
+          <td><strong>{row.total}</strong></td>
+          <td><span className={row.overdue ? "pill danger" : "pill neutral"}>{row.overdue}</span></td>
+          <td>{row.overdueRate === null ? "—" : `${row.overdueRate}%`}</td>
+        </tr>)}</tbody>
+      </table></div>
+      {!matrix.length && <div className="empty-table">Joriy ochiq Deal yo‘q.</div>}
+    </section>
+
+    <section className="panel"><SectionHeader title="Stage health" subtitle="Bitrix funnel tartibida · hajm emas, holat" />
+      <div className="table-wrap"><table className="data-table">
+        <thead><tr><th>Stage</th><th>Aktiv</th><th>Ulushi</th><th>Overdue</th><th>Overdue %</th><th>Median stage yoshi</th><th>Limit</th></tr></thead>
+        <tbody>{health.map((row) => <tr key={row.key} className={row.active ? "" : "muted-row"}>
+          <td><strong>{row.name}</strong>{row.legacy ? <small className="legacy-tag">legacy</small> : null}</td>
+          <td>{row.active}</td>
+          <td>{row.share === null ? "—" : `${row.share}%`}</td>
+          <td><span className={row.overdue ? "pill danger" : "pill neutral"}>{row.overdue}</span></td>
+          <td>{row.overdueRate === null ? "—" : `${row.overdueRate}%`}</td>
+          <td title={row.maxAgeHours === null ? undefined : `Eng eski: ${humanDuration(row.maxAgeHours)}`}>{humanDuration(row.medianAgeHours)}</td>
+          <td>{row.limitConflict ? <span className="pill warning" title={`Turli limitlar: ${row.limits.join(", ")} soat`}>{row.limits.map((value) => humanDuration(value)).join(" / ")}</span> : humanDuration(row.limitHours)}</td>
+        </tr>)}</tbody>
+      </table></div>
+    </section>
+
+    <OverdueList rows={records} catalog={columns} managers={managers} />
+
+    <p className="scope-flag history">Analytics stage history · import oralig‘i</p>
+    <section className="panel"><SectionHeader title="Tarixiy pipeline progression" subtitle="Faqat progression bosqichlari · terminal outcome’lar bu jadvalda emas" />
+      <div className="table-wrap"><table className="data-table">
+        <thead><tr><th>Stage</th><th>Kirgan</th><th>Keyingiga o‘tgan</th><th>Konversiya</th><th>Drop-off</th><th>Avg vaqt</th><th>Median vaqt</th></tr></thead>
+        <tbody>{historical.progression.map((row) => <tr key={row.key}>
+          <td><strong>{row.stage}</strong>{row.legacy ? <small className="legacy-tag">legacy</small> : null}</td>
+          <td>{row.entered}</td><td>{row.advanced}</td>
+          <td><span className="pill success">{row.conversion === null ? "—" : `${row.conversion}%`}</span></td>
+          <td><span className={row.dropOff ? "pill danger" : "pill neutral"}>{row.dropOff}</span></td>
+          <td>{fmtHours(row.avgHours)}</td><td>{fmtHours(row.medianHours)}</td>
+        </tr>)}</tbody>
+      </table>
+      {funnelStatus === "loading" && !historical.progression.length && <div className="empty-table"><Loader2 size={16} className="spin" /> Stage tarixi yuklanmoqda…</div>}
+      {funnelStatus === "error" && <div className="notice warning page-notice"><AlertTriangle size={17} /><span>Stage tarixi yuklanmadi. Bu — tarix yo‘q degani emas.</span><button className="button secondary" onClick={onRetryFunnel}><RefreshCw size={15} />Qayta urinish</button></div>}
+      {funnelStatus !== "loading" && funnelStatus !== "error" && !historical.progression.length && <div className="empty-table">Stage history sync qilingandan keyin funnel ko‘rinadi.</div>}</div>
+    </section>
+
+    {Boolean(historical.total) && <section className="panel"><SectionHeader title="Tarixiy outcome’lar" subtitle="Canonical semantика bo‘yicha — stage yoki sabab matni bo‘yicha emas" />
+      <div className="outcome-grid">{historical.outcomes.map((row) => <div key={row.key} className="outcome-cell">
+        <span>{row.label}</span><strong>{row.count}</strong><small>{row.share === null ? "—" : `${row.share}%`}</small>
+      </div>)}</div>
+      <p className="outcome-note">Jami {historical.total} ta tarixiy Deal. Outcome — progression konversiyasi emas, shuning uchun ular yuqoridagi jadvalda ko‘rsatilmaydi.</p>
+    </section>}
+  </>;
+}
 function CoverageNotice({ records, filters }: { records: DashboardRecord[]; filters: Filters }) {
   const bounds = rangeBounds(filters);
   if (!bounds.from || !records.length) return null;
@@ -1937,6 +2070,8 @@ export default function DashboardClient() {
   const viewRef = useRef<View>("dashboard");
   const [currentStageRecords, setCurrentStageRecords] = useState<CurrentStageRecord[] | null>(null);
   const [stageReconciliation, setStageReconciliation] = useState<StageReconciliation | null>(null);
+  const [stageCatalog, setStageCatalog] = useState<PipelineStageOption[]>([]);
+  const [stageSnapshotTruncated, setStageSnapshotTruncated] = useState(false);
   const [currentStageLoading, setCurrentStageLoading] = useState(false);
   const [currentStageError, setCurrentStageError] = useState<string | null>(null);
   const [settings, setSettings] = useState<DashboardSettings | null>(null);
@@ -1978,9 +2113,12 @@ export default function DashboardClient() {
     setCurrentStageLoading(true); setCurrentStageError(null);
     try {
       const response = await fetch("/api/current-stages", { cache: "no-store" });
-      const payload = await response.json() as { records?: CurrentStageRecord[]; reconciliation?: StageReconciliation | null; error?: string };
+      const payload = await response.json() as { records?: CurrentStageRecord[]; reconciliation?: StageReconciliation | null; stageCatalog?: PipelineStageOption[]; truncated?: boolean; error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Joriy stage’lar yuklanmadi");
       setCurrentStageRecords(payload.records ?? []); setStageReconciliation(payload.reconciliation ?? null);
+      // Bitrix pagination truncation makes the live counts themselves partial,
+      // so the signal must survive all the way into the trust banner.
+      setStageCatalog(payload.stageCatalog ?? []); setStageSnapshotTruncated(Boolean(payload.truncated));
     } catch (caught) {
       setCurrentStageError(caught instanceof Error ? caught.message : "Joriy stage’lar yuklanmadi");
     } finally { setCurrentStageLoading(false); }
@@ -2297,7 +2435,7 @@ export default function DashboardClient() {
           const manager = managerRows.find((row) => row.id === managerId);
           if (manager) { setSelectedManager(manager); setView("managerDetail"); }
         }} />}
-        {view === "stages" && <StageControlView records={filteredCurrentStages} historicalRecords={stageHistoricalRecords} reconciliation={stageReconciliation} loading={currentStageLoading} error={currentStageError} onRefresh={() => void loadCurrentStages()} funnelStatus={stageFunnelStatus} onRetryFunnel={() => dispatchStageFunnel({ type: "RETRY" })} />}
+        {view === "stages" && <StageControlView records={filteredCurrentStages} historicalRecords={stageHistoricalRecords} reconciliation={stageReconciliation} stageCatalog={stageCatalog} truncated={stageSnapshotTruncated} settings={settings} loading={currentStageLoading} error={currentStageError} onRefresh={() => void loadCurrentStages()} funnelStatus={stageFunnelStatus} onRetryFunnel={() => dispatchStageFunnel({ type: "RETRY" })} />}
         {view === "projects" && <ProjectsView projects={projects} updates={projectUpdateRows} filters={projectFilters} setFilters={setProjectFilters} busy={projectBusy}
           onOpen={(project) => { setOpenProjectId(project.id); setView("projectDetail"); }}
           onNew={() => setProjectDraft({ name: "", description: "", status: "", deadline: "" })} />}

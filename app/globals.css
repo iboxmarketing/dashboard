@@ -783,3 +783,60 @@ button:focus-visible, a:focus-visible, summary:focus-visible,
   .builder-palette { position: static; grid-auto-flow: column; grid-auto-columns: minmax(190px, 1fr); overflow-x: auto; }
   .builder-palette h3 { display: none; }
 }
+
+/* ---------------------------------------------------------------- Stage Control
+   The live snapshot and the analytics history are different populations, so
+   each block is prefixed by a scope flag rather than relying on the reader to
+   remember which is which. */
+.scope-flag { margin: 16px 0 8px; display: inline-flex; align-items: center; gap: 7px; font-size: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; }
+.scope-flag::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.scope-flag.live { color: #157253; }
+.scope-flag.history { color: #6b5bd1; }
+
+.recon-head { display: flex; align-items: flex-start; gap: 9px; }
+.recon-primary { display: grid; gap: 3px; }
+.recon-primary strong { font-size: 11px; }
+.recon-coverage { font-size: 10px; font-weight: 750; }
+.recon-note { margin-top: 8px; font-size: 8px; line-height: 1.6; opacity: .85; }
+.recon-alert { margin-top: 8px; display: flex; align-items: center; gap: 6px; font-size: 9px; font-weight: 800; }
+.recon-chips { margin-top: 9px; display: flex; flex-wrap: wrap; gap: 6px; }
+.recon-chips .pill { white-space: normal; text-align: left; }
+.recon-details p { margin-top: 6px; overflow-wrap: anywhere; }
+
+/* A cell states its own magnitude: a single overdue deal must never paint the
+   whole count red as though all of them were late. */
+.matrix-slot { padding: 0; }
+.matrix-cell { display: grid; gap: 1px; padding: 8px 10px; border-radius: 8px; }
+.matrix-cell strong { font-size: 11px; }
+.matrix-cell small { font-size: 7px; font-weight: 700; opacity: .85; }
+.matrix-cell.empty { color: #b6bfcd; }
+.matrix-cell.neutral strong { color: #445168; }
+.matrix-cell.warning { background: #fff8e9; }
+.matrix-cell.warning strong, .matrix-cell.warning small { color: #805412; }
+.matrix-cell.danger { background: #fdf1f2; }
+.matrix-cell.danger strong, .matrix-cell.danger small { color: #b3323d; }
+.stage-matrix .sticky-col { position: sticky; left: 0; z-index: 2; background: white; }
+.stage-matrix thead .sticky-col { z-index: 3; background: #fbfcfe; }
+.stage-matrix .sticky-col small { display: block; color: #8490a4; font-size: 7px; font-weight: 700; }
+.legacy-tag { margin-left: 6px; padding: 1px 5px; border-radius: 5px; background: #eef1f6; color: #77839a; font-size: 7px; font-weight: 800; }
+.muted-row td { color: #9aa5b6; }
+
+.overdue-controls { margin-bottom: 11px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.overdue-controls .select-wrap { min-width: 150px; }
+.overdue-table .deal-link { display: grid; gap: 2px; color: inherit; }
+.overdue-table .deal-link small { color: #8490a4; font-size: 8px; }
+.overdue-table .overrun { color: #b3323d; font-weight: 800; }
+.pager { margin-top: 11px; display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 9px; color: #6b7790; }
+.pager button:disabled { opacity: .45; }
+
+.outcome-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 9px; }
+.outcome-cell { padding: 11px 12px; display: grid; gap: 3px; border: 1px solid var(--line); border-radius: 10px; background: #fbfcfe; }
+.outcome-cell span { color: #6b7790; font-size: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.outcome-cell strong { font-size: 16px; }
+.outcome-cell small { color: #8490a4; font-size: 8px; }
+.outcome-note { margin-top: 10px; color: #77839a; font-size: 8px; line-height: 1.6; }
+
+@media (max-width: 720px) {
+  .overdue-controls .select-wrap, .overdue-controls .search-box { min-width: 0; flex: 1 1 100%; }
+  .stage-matrix .sticky-col { position: static; }
+}

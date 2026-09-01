@@ -13,7 +13,7 @@ export async function GET() {
   try {
     const settings = await getSettings();
     const categoryIds = [...new Set(settings.selectedPipelineIds.map(String).filter(Boolean))];
-    if (!categoryIds.length) return Response.json({ records: [], reconciliation: null });
+    if (!categoryIds.length) return Response.json({ records: [], reconciliation: null, stageCatalog: [], truncated: false });
 
     const [deals, stageOptions, userRows, cachedRecords] = await Promise.all([
       bitrixList<RawCurrentStageDeal>("crm.deal.list", {
@@ -46,8 +46,16 @@ export async function GET() {
     // The full cache is handed over scoped by funnel only. Sales status must not
     // gate membership, otherwise an open deal that reached payment (cached as
     // WON, still CLOSED=N in Bitrix) is falsely reported as missing.
-    const reconciliation = reconcileCurrentStages(records, cachedRecords, new Date().toISOString(), { operationalCategoryIds: categoryIds });
-    return Response.json({ records, reconciliation, truncated });
+    const reconciliation = reconcileCurrentStages(records, cachedRecords, new Date().toISOString(), {
+      operationalCategoryIds: categoryIds,
+      historyDays: settings.historyDays,
+    });
+    // The stage catalog travels beside the records so the client never has to
+    // re-derive Bitrix funnel order: SORT lives here, not in React.
+    const stageCatalog = stageOptions.map((stage) => ({
+      id: stage.id, name: stage.name, categoryId: stage.categoryId, sort: stage.sort, semantics: stage.semantics,
+    }));
+    return Response.json({ records, reconciliation, stageCatalog, truncated });
   } catch (error) {
     return Response.json({ error: safeBitrixMessage(error) }, { status: 500 });
   }

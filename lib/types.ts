@@ -60,11 +60,25 @@ export type CurrentStageRecord = {
 export type StageReconciliation = {
   liveCount: number;
   cachedCount: number;
+  /** Live deal ids also present in the analytics cache — the coverage numerator. */
+  matchedCount: number;
   missingCount: number;
+  /**
+   * Missing live deals split by the SAME window the sync bootstraps from
+   * (lib/sync-window.ts). Older-than-window is expected: those deals were never
+   * imported. Within-window is a real cache gap and must be investigated.
+   */
+  missingOlderThanHistoryCount: number;
+  missingWithinHistoryCount: number;
+  missingOlderThanHistoryDealIds: string[];
+  missingWithinHistoryDealIds: string[];
+  historyFrom: string | null;
+  historyDays: number | null;
   staleCount: number;
   stageMismatchCount: number;
   missingDealIds: string[];
   staleDealIds: string[];
+  stageMismatchDealIds: string[];
   fetchedAt: string;
 };
 

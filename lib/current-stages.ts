@@ -1,4 +1,5 @@
 import { countsAsOperational } from "./stale-resolution";
+import { resolveSyncWindow } from "./sync-window";
 import type { AnalyticsRecord, CurrentStageRecord, DashboardSettings, StageReconciliation } from "./types";
 
 export type RawCurrentStageDeal = Record<string, unknown>;
@@ -91,7 +92,7 @@ export function reconcileCurrentStages(
   live: CurrentStageRecord[],
   cached: AnalyticsRecord[],
   fetchedAt = new Date().toISOString(),
-  options: { operationalCategoryIds?: string[] } = {},
+  options: { operationalCategoryIds?: string[]; historyDays?: number; now?: Date } = {},
 ): StageReconciliation {
   const operationalIds = new Set((options.operationalCategoryIds ?? []).map(String).filter(Boolean));
   const scoped = operationalIds.size ? cached.filter((row) => operationalIds.has(String(row.categoryId))) : cached;
@@ -99,15 +100,45 @@ export function reconcileCurrentStages(
   const cachedById = new Map(scoped.map((row) => [row.dealId, row]));
   const missingDealIds = [...liveById.keys()].filter((id) => !cachedById.has(id));
   const staleDealIds = scoped.filter((row) => cachedIsOpen(row) && !liveById.has(row.dealId)).map((row) => row.dealId);
-  const stageMismatchCount = [...liveById].filter(([id, row]) => cachedById.has(id) && cachedById.get(id)?.stageId !== row.stageId).length;
+  const stageMismatchDealIds = [...liveById]
+    .filter(([id, row]) => cachedById.has(id) && cachedById.get(id)?.stageId !== row.stageId)
+    .map(([id]) => id);
+
+  // Split the missing ids by the sync's own bootstrap window rather than a
+  // second date interpretation. A deal created before it was never a candidate
+  // for import, so its absence is expected rather than a cache failure.
+  const historyFrom = options.historyDays === undefined
+    ? null
+    : resolveSyncWindow({
+      lastSuccessfulSyncAt: null,
+      now: options.now ?? new Date(fetchedAt),
+      bootstrapDays: options.historyDays,
+      full: true,
+    }).from;
+  const olderThanHistory: string[] = [];
+  const withinHistory: string[] = [];
+  for (const id of missingDealIds) {
+    if (!historyFrom) { withinHistory.push(id); continue; }
+    const created = Date.parse(liveById.get(id)?.createdAt ?? "");
+    (Number.isFinite(created) && created < historyFrom.getTime() ? olderThanHistory : withinHistory).push(id);
+  }
+
   return {
     liveCount: live.length,
     cachedCount: scoped.length,
+    matchedCount: live.length - missingDealIds.length,
     missingCount: missingDealIds.length,
+    missingOlderThanHistoryCount: olderThanHistory.length,
+    missingWithinHistoryCount: withinHistory.length,
+    missingOlderThanHistoryDealIds: olderThanHistory.slice(0, 200),
+    missingWithinHistoryDealIds: withinHistory.slice(0, 200),
+    historyFrom: historyFrom ? historyFrom.toISOString() : null,
+    historyDays: options.historyDays ?? null,
     staleCount: staleDealIds.length,
-    stageMismatchCount,
+    stageMismatchCount: stageMismatchDealIds.length,
     missingDealIds: missingDealIds.slice(0, 200),
     staleDealIds: staleDealIds.slice(0, 200),
+    stageMismatchDealIds: stageMismatchDealIds.slice(0, 200),
     fetchedAt,
   };
 }
