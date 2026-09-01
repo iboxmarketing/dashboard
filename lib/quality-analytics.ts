@@ -1,7 +1,7 @@
 import { buildDashboardMetrics } from "./dashboard-metrics";
 import type { MetricRecord } from "./dashboard-record";
 import { notRelevantRecords, reasonBreakdown, salesLostRecords, type ReasonRow } from "./manager-profile";
-import { salesManagerKey } from "./sales-logic";
+import { hasMissingLossReason, salesManagerKey } from "./sales-logic";
 
 /**
  * Lead Quality diagnostics over the selected created-at cohort.
@@ -14,8 +14,7 @@ import { salesManagerKey } from "./sales-logic";
 const percent = (value: number, total: number): number | null =>
   total ? Math.round((value / total) * 100) : null;
 
-const isMissingReason = (row: { lossReason?: string | null }) =>
-  !(row.lossReason ?? "").trim();
+const isMissingReason = hasMissingLossReason;
 
 export type MarketingManagerDiagnostic = {
   id: string;

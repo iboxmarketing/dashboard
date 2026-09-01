@@ -1,6 +1,6 @@
 import { buildDashboardMetrics } from "./dashboard-metrics";
 import type { MetricRecord } from "./dashboard-record";
-import { isSalesLost, salesManagerKey } from "./sales-logic";
+import { isSalesLost, MISSING_LOSS_REASON, salesManagerKey } from "./sales-logic";
 
 /**
  * Individual seller profile.
@@ -48,7 +48,7 @@ export type ReasonRow = { reason: string; count: number; share: number };
 export function reasonBreakdown(rows: { lossReason?: string | null }[]): ReasonRow[] {
   const counts = new Map<string, number>();
   for (const row of rows) {
-    const reason = (row.lossReason || "").trim() || "Sabab ko‘rsatilmagan";
+    const reason = (row.lossReason || "").trim() || MISSING_LOSS_REASON;
     counts.set(reason, (counts.get(reason) ?? 0) + 1);
   }
   const total = rows.length;

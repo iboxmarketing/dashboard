@@ -1,5 +1,6 @@
 import type { MetricRecord } from "./dashboard-record";
 import { countDuplicates } from "./duplicates";
+import { hasMissingLossReason } from "./sales-logic";
 import { STAGE_SEMANTIC_GROUPS, stageIdList, type StageSemantics } from "./stage-config";
 import type { AnalyticsRecord } from "./types";
 
@@ -56,7 +57,7 @@ export function summarizeDataQuality(records: MetricRecord[]) {
     // timeline, so read whichever the caller has. Both describe the same
     // stored history, so the count is identical either way.
     missingStageHistory: count((row) => !stageHistoryLength(row)),
-    missingFailureReason: count((row) => ["LOW_QUALITY", "LOST"].includes(row.salesStatus) && row.lossReason === "Sabab ko‘rsatilmagan"),
+    missingFailureReason: count((row) => ["LOW_QUALITY", "LOST"].includes(row.salesStatus) && hasMissingLossReason(row)),
     currentResponsibleFallback: count((row) => row.salesManagerAttribution === "CURRENT_RESPONSIBLE"),
     duplicateLeads: countDuplicates(records),
     dataUnavailable: count((row) => row.dataUnavailable),

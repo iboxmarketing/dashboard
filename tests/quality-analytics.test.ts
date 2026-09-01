@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { buildDashboardMetrics } from "../lib/dashboard-metrics";
 import { buildQualityAnalytics } from "../lib/quality-analytics";
-import { isPreSqlClosed, isSalesLost } from "../lib/sales-logic";
+import { isPreSqlClosed, isSalesLost, MISSING_LOSS_REASON } from "../lib/sales-logic";
 import type { AnalyticsRecord } from "../lib/types";
 
 function deal(over: Partial<AnalyticsRecord> = {}): AnalyticsRecord {
@@ -115,6 +115,12 @@ test("R/S/T: Routing and reason text cannot cross canonical boundaries", () => {
   assert.equal(analytics.salesManagers.at(-1)?.id, "unknown");
 });
 
+test("Y: Routing reasons stay out of both reason panels", () => {
+  assert.equal(analytics.routingReasons.some((row) => row.reason === "Idokon"), true, "Y: Routing keeps its own breakdown");
+  assert.equal(analytics.marketingReasons.some((row) => row.reason === "Idokon"), false, "Y: Routing absent from the Marketing panel");
+  assert.equal(analytics.salesReasons.some((row) => row.reason === "Idokon"), false, "Y: Routing absent from the Sales Lost panel");
+});
+
 test("zero and null presentation inputs stay distinct", () => {
   assert.equal(marketing("c").notRelevant, 0, "real count zero stays zero");
   assert.equal(marketing("c").reasonFillRate, null, "no NR denominator is unavailable");
@@ -132,4 +138,22 @@ test("W/X: old mixed ranking is gone and Routing is no longer a headline KPI", (
   const headline = view.slice(view.indexOf("quality-kpis"), view.indexOf("quality-reasons"));
   assert.doesNotMatch(headline, /label="Routing"/, "X");
   assert.match(view, /title="Routing"/);
+});
+
+test("missing-reason discipline counts the sentinel the sync actually stores", () => {
+  // Bitrix leaves the reason blank on many closed deals and lib/analytics.ts
+  // stamps MISSING_LOSS_REASON into lossReason before it is persisted, so a
+  // check that only tests for "" reports zero missing reasons on real data.
+  const cohort = [
+    deal({ dealId: "s-1", ...ALI, salesStatus: "LOW_QUALITY", lossReasonGroup: "MARKETING", lossReason: MISSING_LOSS_REASON }),
+    deal({ dealId: "s-2", ...ALI, qualified: true, salesStatus: "LOST", lossReasonGroup: "SALES", lossReason: MISSING_LOSS_REASON }),
+    deal({ dealId: "s-3", ...ALI, salesStatus: "LOW_QUALITY", lossReasonGroup: "MARKETING", lossReason: "Campaign" }),
+  ];
+  const out = buildQualityAnalytics(cohort);
+  assert.equal(out.summary.missingReasonPopulation, 3);
+  assert.equal(out.summary.missingReasons, 2, "stored sentinel counts as missing");
+  assert.equal(out.summary.missingReasonRate, 67);
+  assert.equal(out.marketingManagers[0].missingReasons, 1);
+  assert.equal(out.marketingManagers[0].reasonFillRate, 50, "fill rate must not read 100%");
+  assert.equal(out.salesManagers[0].missingReasons, 1);
 });

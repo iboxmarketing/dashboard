@@ -138,6 +138,20 @@ export function isPreSqlClosed(row: { salesStatus?: SalesStatus; lossReasonGroup
   return row.salesStatus === "LOST" && row.lossReasonGroup === "SALES" && row.qualified !== true;
 }
 
+/**
+ * Bitrix leaves the failure reason blank on plenty of closed deals, so the
+ * sync stamps this sentinel into `lossReason` at write time (lib/analytics.ts).
+ * It is therefore a STORED value, not a display fallback: a reason-discipline
+ * check that only tests for an empty string sees zero missing reasons on real
+ * data. Every missing-reason count must go through `hasMissingLossReason`.
+ */
+export const MISSING_LOSS_REASON = "Sabab ko‘rsatilmagan";
+
+export function hasMissingLossReason(row: { lossReason?: string | null }) {
+  const reason = (row.lossReason ?? "").trim();
+  return !reason || reason === MISSING_LOSS_REASON;
+}
+
 export function countPreSqlClosed(rows: { salesStatus?: SalesStatus; lossReasonGroup?: LossReasonGroup | null; qualified?: boolean }[]) {
   return rows.filter(isPreSqlClosed).length;
 }

@@ -1,6 +1,6 @@
 import { calculateBusinessMinutes, getSlaStart, isInsideWorkingTime } from "./business-time";
 import { resolveSlaState } from "./sla";
-import { canInferQualificationFromOutcome, classifyLossReasonGroup, classifySalesStatus, fieldDisplayValue, isLowQualityStage, isPaymentStage, isSqlOrDownstreamStage } from "./sales-logic";
+import { canInferQualificationFromOutcome, classifyLossReasonGroup, MISSING_LOSS_REASON, classifySalesStatus, fieldDisplayValue, isLowQualityStage, isPaymentStage, isSqlOrDownstreamStage } from "./sales-logic";
 import { sqlThresholdsByCategory, type StageMeta, type StageSemantics } from "./stage-config";
 import { canonicalDealFieldKey } from "./crm-fields";
 import type { SalesSnapshot } from "./storage";
@@ -230,7 +230,7 @@ export function buildAnalyticsRecords(input: {
     const salesCycleHours = effectiveWonAt ? Math.max(0, (new Date(effectiveWonAt).getTime() - created.getTime()) / 3_600_000) : null;
     const contactId = string(deal.CONTACT_ID) || (Array.isArray(deal.CONTACT_IDS) ? string(deal.CONTACT_IDS[0]) : "");
     const companyId = string(deal.COMPANY_ID);
-    const effectiveLossReason = lossReason || ((salesStatus === "LOST" || salesStatus === "LOW_QUALITY") ? "Sabab ko‘rsatilmagan" : "");
+    const effectiveLossReason = lossReason || ((salesStatus === "LOST" || salesStatus === "LOW_QUALITY") ? MISSING_LOSS_REASON : "");
     const lossReasonGroup = classifyLossReasonGroup({ status: salesStatus, reason: effectiveLossReason, routingPatterns: input.settings.routingReasonPatterns });
 
     return [{
