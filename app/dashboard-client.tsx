@@ -20,6 +20,10 @@ import { buildManagerProfile, notRelevantRecords, reasonBreakdown, salesLostReco
 import { buildQualityAnalytics, type MarketingManagerDiagnostic, type SalesManagerDiagnostic } from "@/lib/quality-analytics";
 import { DEFAULT_TREND_METRIC, TREND_METRICS, buildTrendSeries, supportsMovingAverage, trendBarHeight, trendMetric, type TrendBounds, type TrendMetricId, type TrendPoint } from "@/lib/trend-series";
 import { initialStageFunnelState, stageFunnelNext, type StageFunnelAction, type StageFunnelState, type StageFunnelStatus } from "@/lib/stage-funnel-cache";
+import {
+  classifySyncResponse, retryDelayMs, shouldRetry, SYNC_EXHAUSTED_MESSAGE, SYNC_STEP_DELAY_MS,
+  SYNC_STEPS_PER_REQUEST, transientFromNetworkError,
+} from "@/lib/sync-transport";
 import type { CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, StageReconciliation, SyncProgressState } from "@/lib/types";
 import { ANALYTICS_VERSION } from "@/lib/analytics";
 import { canonicalizeFieldOptions, normalizeCrmFields } from "@/lib/crm-fields";
@@ -2324,12 +2328,32 @@ export default function DashboardClient() {
     });
   }, [stageFunnelRecords, filters.manager, filters.pipeline, filters.search]);
 
+  /**
+   * One `/api/sync` call, retried only for gateway-class failures.
+   *
+   * The retry always replays the SAME body, so a transient 503 mid-run can
+   * never turn a `step` into a second `start`: the stored job keeps its cursor
+   * and stays resumable. A 4xx or an application error is returned to the
+   * caller immediately — those are decisions, not weather.
+   */
   async function postSync(body: Record<string, unknown>) {
-    const response = await fetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    const payload = await response.json() as SyncState & { error?: string };
-    if (!response.ok) throw new Error(payload.error ?? "Sinxronizatsiya bajarilmadi");
-    setSync(payload);
-    return payload;
+    for (let attempt = 0; ; attempt += 1) {
+      let outcome;
+      try {
+        const response = await fetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        outcome = classifySyncResponse<SyncState & { error?: string }>({
+          ok: response.ok, status: response.status,
+          contentType: response.headers.get("content-type"), body: await response.text(),
+        });
+      } catch { outcome = transientFromNetworkError(); }
+
+      if (outcome.kind === "ok") { setSync(outcome.payload); return outcome.payload; }
+      if (shouldRetry(outcome, attempt)) {
+        await new Promise((resolve) => window.setTimeout(resolve, retryDelayMs(attempt)));
+        continue;
+      }
+      throw new Error(outcome.kind === "transient" ? SYNC_EXHAUSTED_MESSAGE : outcome.message);
+    }
   }
   async function syncLoop(mode: "start" | "resume", full = false, daysOverride?: number, pipelineId?: string) {
     if (!settings || syncLoopRef.current) return;
@@ -2338,8 +2362,8 @@ export default function DashboardClient() {
       const activePipelineId = pipelineId || (settings.selectedPipelineIds.includes(syncPipelineId) ? syncPipelineId : settings.selectedPipelineIds[0]);
       let state = await postSync(mode === "start" ? { action: "start", days: daysOverride ?? Math.min(settings.historyDays, 30), full, pipelineId: activePipelineId } : { action: "resume" });
       while (syncLoopRef.current && state.status === "running") {
-        state = await postSync({ action: "step", steps: 4 });
-        if (state.status === "running") await new Promise((resolve) => window.setTimeout(resolve, 40));
+        state = await postSync({ action: "step", steps: SYNC_STEPS_PER_REQUEST });
+        if (state.status === "running") await new Promise((resolve) => window.setTimeout(resolve, SYNC_STEP_DELAY_MS));
       }
       if (!syncLoopRef.current && state.status === "running") await postSync({ action: "pause" });
       if (state.status === "success") await load();
