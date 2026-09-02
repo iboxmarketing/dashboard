@@ -1,5 +1,5 @@
 import type { StageFunnelRecord } from "./dashboard-record";
-import { isPreSqlClosed, isSalesLost } from "./sales-logic";
+import { isEligibleCohortDeal, isPreSqlClosed, isSalesLost } from "./sales-logic";
 import { stageIdList, type StageSemantics } from "./stage-config";
 import type { CurrentStageRecord, PipelineStageOption, StageReconciliation } from "./types";
 
@@ -426,7 +426,31 @@ export type ProgressionRow = {
 
 export type OutcomeRow = { key: string; label: string; count: number; share: number | null };
 
-export type HistoricalView = { progression: ProgressionRow[]; outcomes: OutcomeRow[]; total: number };
+export type HistoricalOutcome = "won" | "not_relevant" | "sales_lost" | "pre_sql" | "routing";
+
+export type HistoricalView = {
+  progression: ProgressionRow[];
+  outcomes: OutcomeRow[];
+  total: number;
+  resolvedOutcomeCount: number;
+  unresolvedCount: number;
+};
+
+/**
+ * One mutually exclusive terminal outcome for historical presentation.
+ *
+ * Routing wins first because that record has left the eligible IBOX cohort,
+ * even when stale or cross-funnel stored evidence also says WON. Everything
+ * else reuses the canonical predicates rather than stage/reason display text.
+ */
+export function historicalOutcome(row: StageFunnelRecord): HistoricalOutcome | null {
+  if (row.lossReasonGroup === "ROUTING") return "routing";
+  if (isEligibleCohortDeal(row) && row.salesStatus === "WON") return "won";
+  if (row.lossReasonGroup === "MARKETING") return "not_relevant";
+  if (isSalesLost(row)) return "sales_lost";
+  if (isPreSqlClosed(row)) return "pre_sql";
+  return null;
+}
 
 /**
  * Historical progression and outcomes, kept strictly apart.
@@ -434,8 +458,8 @@ export type HistoricalView = { progression: ProgressionRow[]; outcomes: OutcomeR
  * A terminal stage (configured Not Relevant / Sotilmadi) is an outcome, so it
  * never becomes a progression row and can never display a conversion rate.
  * `advanced` therefore means the deal reached a LATER PROGRESSION stage, or
- * ended as a canonical WON — dropping into a terminal stage is drop-off, not
- * successful progression.
+ * ended as an eligible canonical WON — dropping into a terminal stage is
+ * drop-off, not successful progression.
  *
  * Outcomes are classified from `qualified` / `lossReasonGroup` / `salesStatus`
  * through the canonical predicates, never from stage or reason text.
@@ -462,7 +486,8 @@ export function buildHistorical(
       current.entered += 1;
       current.durations.push(step.entry.durationHours);
       const nextProgression = progression[i + 1];
-      const advanced = Boolean(nextProgression) || record.salesStatus === "WON";
+      const advanced = Boolean(nextProgression)
+        || (isEligibleCohortDeal(record) && record.salesStatus === "WON");
       if (advanced) current.advanced += 1; else current.dropOff += 1;
       stats.set(key, current);
     }
@@ -486,19 +511,30 @@ export function buildHistorical(
     })
     .sort((a, b) => (rank.get(a.key) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.key) ?? Number.MAX_SAFE_INTEGER) || a.stage.localeCompare(b.stage));
 
-  const counts = {
-    won: records.filter((row) => row.salesStatus === "WON").length,
-    notRelevant: records.filter((row) => row.lossReasonGroup === "MARKETING").length,
-    salesLost: records.filter((row) => isSalesLost(row)).length,
-    routing: records.filter((row) => row.lossReasonGroup === "ROUTING").length,
-    preSql: records.filter((row) => isPreSqlClosed(row)).length,
+  const counts: Record<HistoricalOutcome, number> = {
+    won: 0,
+    not_relevant: 0,
+    sales_lost: 0,
+    pre_sql: 0,
+    routing: 0,
   };
+  for (const record of records) {
+    const outcome = historicalOutcome(record);
+    if (outcome) counts[outcome] += 1;
+  }
   const outcomes: OutcomeRow[] = [
     { key: "won", label: "Sotuv", count: counts.won, share: rate(counts.won, records.length) },
-    { key: "not_relevant", label: "Not Relevant", count: counts.notRelevant, share: rate(counts.notRelevant, records.length) },
-    { key: "sales_lost", label: "Sotilmadi", count: counts.salesLost, share: rate(counts.salesLost, records.length) },
-    { key: "pre_sql", label: "SQLgacha yopilgan", count: counts.preSql, share: rate(counts.preSql, records.length) },
+    { key: "not_relevant", label: "Not Relevant", count: counts.not_relevant, share: rate(counts.not_relevant, records.length) },
+    { key: "sales_lost", label: "Sotilmadi", count: counts.sales_lost, share: rate(counts.sales_lost, records.length) },
+    { key: "pre_sql", label: "SQLgacha yopilgan", count: counts.pre_sql, share: rate(counts.pre_sql, records.length) },
     { key: "routing", label: "Routing", count: counts.routing, share: rate(counts.routing, records.length) },
   ];
-  return { progression, outcomes, total: records.length };
+  const resolvedOutcomeCount = outcomes.reduce((sum, outcome) => sum + outcome.count, 0);
+  return {
+    progression,
+    outcomes,
+    total: records.length,
+    resolvedOutcomeCount,
+    unresolvedCount: records.length - resolvedOutcomeCount,
+  };
 }

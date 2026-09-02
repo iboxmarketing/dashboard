@@ -4,7 +4,7 @@ import { reconcileCurrentStages } from "../lib/current-stages";
 import { DASHBOARD_OMITTED_FIELDS, DASHBOARD_TIMELINE_FIELD, STAGE_FUNNEL_FIELDS, type StageFunnelRecord } from "../lib/dashboard-record";
 import {
   buildHistorical, buildManagerMatrix, buildOverdueRows, buildReconciliationView, buildStageCatalog,
-  buildStageHealth, buildSummary, humanDuration, limitRatio, overrunHours, stageKey, terminalStageKeys,
+  buildStageHealth, buildSummary, historicalOutcome, humanDuration, limitRatio, overrunHours, stageKey, terminalStageKeys,
 } from "../lib/stage-control-analytics";
 import type { AnalyticsRecord, CurrentStageRecord, PipelineStageOption, StageTimelineEntry } from "../lib/types";
 
@@ -403,6 +403,44 @@ test("AI/AJ: outcomes are classified canonically, not by stage or reason text", 
   assert.equal(count("routing"), 1);
 });
 
+test("historical outcome A: WON plus Routing resolves to Routing only", () => {
+  const row = funnel({ salesStatus: "WON", qualified: true, lossReasonGroup: "ROUTING" });
+  assert.equal(historicalOutcome(row), "routing");
+  const view = buildHistorical([row], HIST_CATALOG, STAGE_CONFIG);
+  assert.equal(view.outcomes.find((outcome) => outcome.key === "routing")?.count, 1);
+  assert.equal(view.outcomes.find((outcome) => outcome.key === "won")?.count, 0);
+});
+
+test("historical outcome B: an ordinary eligible WON resolves to Sotuv only", () => {
+  assert.equal(historicalOutcome(funnel({ salesStatus: "WON", qualified: true })), "won");
+});
+
+test("historical outcome C: MARKETING resolves to Not Relevant only", () => {
+  assert.equal(historicalOutcome(funnel({ salesStatus: "LOW_QUALITY", lossReasonGroup: "MARKETING" })), "not_relevant");
+});
+
+test("historical outcome D: a qualified SALES loss resolves to Sotilmadi only", () => {
+  assert.equal(historicalOutcome(funnel({ salesStatus: "LOST", qualified: true, lossReasonGroup: "SALES" })), "sales_lost");
+});
+
+test("historical outcome E: an unqualified SALES loss resolves to SQLgacha yopilgan only", () => {
+  assert.equal(historicalOutcome(funnel({ salesStatus: "LOST", qualified: false, lossReasonGroup: "SALES" })), "pre_sql");
+});
+
+test("historical outcome F: ACTIVE has no terminal outcome", () => {
+  assert.equal(historicalOutcome(funnel({ salesStatus: "ACTIVE" })), null);
+});
+
+test("historical outcome G: resolved counts are exclusive and never exceed total", () => {
+  const overlapping = funnel({ dealId: "won-routing", salesStatus: "WON", qualified: true, lossReasonGroup: "ROUTING" });
+  const view = buildHistorical([...HISTORY, overlapping], HIST_CATALOG, STAGE_CONFIG);
+  const sum = view.outcomes.reduce((total, outcome) => total + outcome.count, 0);
+  assert.equal(sum, view.resolvedOutcomeCount);
+  assert.equal(view.unresolvedCount, view.total - view.resolvedOutcomeCount);
+  assert.ok(view.resolvedOutcomeCount <= view.total);
+  assert.deepEqual([view.total, view.resolvedOutcomeCount, view.unresolvedCount], [8, 7, 1]);
+});
+
 test("AK: the same stageId with a renamed/case-changed label stays one historical row", () => {
   const newRows = HIST.progression.filter((row) => row.key === "1:C1:NEW");
   assert.equal(newRows.length, 1);
@@ -433,6 +471,36 @@ test("progression `advanced` means a later progression stage or a canonical win"
   const work = HIST.progression.find((row) => row.key === "1:C1:WORK")!;
   assert.equal(work.entered, 3, "won + lost + presql");
   assert.equal(work.advanced, 1, "only the won deal reached a later progression stage");
+});
+
+function singleProgression(record: StageFunnelRecord) {
+  const view = buildHistorical([record], HIST_CATALOG, STAGE_CONFIG);
+  return view.progression.find((row) => row.key === "1:C1:WORK")!;
+}
+
+test("historical progression H: a final stage on an eligible WON advances", () => {
+  const row = singleProgression(funnel({ salesStatus: "WON", qualified: true, stageTimeline: [tl("C1:WORK", "ОБРАБОТКА")] }));
+  assert.deepEqual([row.entered, row.advanced, row.dropOff], [1, 1, 0]);
+});
+
+test("historical progression I: a final stage on WON plus Routing does not advance", () => {
+  const row = singleProgression(funnel({ salesStatus: "WON", qualified: true, lossReasonGroup: "ROUTING", stageTimeline: [tl("C1:WORK", "ОБРАБОТКА")] }));
+  assert.deepEqual([row.entered, row.advanced, row.dropOff], [1, 0, 1]);
+});
+
+test("historical progression J: a direct Routing outcome is drop-off", () => {
+  const row = singleProgression(funnel({ salesStatus: "LOST", lossReasonGroup: "ROUTING", stageTimeline: [tl("C1:WORK", "ОБРАБОТКА")] }));
+  assert.deepEqual([row.advanced, row.dropOff], [0, 1]);
+});
+
+test("historical progression K: a direct Not Relevant outcome is drop-off", () => {
+  const row = singleProgression(funnel({ salesStatus: "LOW_QUALITY", lossReasonGroup: "MARKETING", stageTimeline: [tl("C1:WORK", "ОБРАБОТКА"), tl("C1:NR", "Not Relevant")] }));
+  assert.deepEqual([row.advanced, row.dropOff], [0, 1]);
+});
+
+test("historical progression L: a direct Sales Lost outcome is drop-off", () => {
+  const row = singleProgression(funnel({ salesStatus: "LOST", qualified: true, lossReasonGroup: "SALES", stageTimeline: [tl("C1:WORK", "ОБРАБОТКА"), tl("C1:LOST", "Sotilmadi")] }));
+  assert.deepEqual([row.advanced, row.dropOff], [0, 1]);
 });
 
 test("AO: the stage-funnel projection stays lazy and the dashboard payload carries no timeline", () => {
