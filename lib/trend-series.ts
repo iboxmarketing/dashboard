@@ -59,6 +59,12 @@ export function trendMetric(id: TrendMetricId) {
   return TREND_METRICS.find((metric) => metric.id === id) ?? TREND_METRICS[0];
 }
 
+/** Zero is an exact count, not a tiny positive bar; null remains no data. */
+export function trendBarHeight(value: number | null, max: number) {
+  if (value === null || value <= 0) return 0;
+  return Math.max(3, (value / Math.max(1, max)) * 100);
+}
+
 /** Calendar day in Asia/Tashkent — never the UTC date. */
 export function tashkentDayKey(value: string) {
   return new Intl.DateTimeFormat("en-CA", {

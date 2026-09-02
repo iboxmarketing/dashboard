@@ -3,7 +3,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import {
   DEFAULT_TREND_METRIC, EXCLUDED_SALES_METRIC_IDS, MATURITY_COVERAGE_THRESHOLD, TREND_METRICS,
-  buildTrendDays, buildTrendSeries, calendarSpine, movingAverage, supportsMovingAverage, tashkentDayKey, trendMetric, trendValue,
+  buildTrendDays, buildTrendSeries, calendarSpine, movingAverage, supportsMovingAverage, tashkentDayKey, trendBarHeight, trendMetric, trendValue,
 } from "../lib/trend-series";
 import { summarizeSla } from "../lib/sla";
 import type { AnalyticsRecord } from "../lib/types";
@@ -269,6 +269,14 @@ test("D: a zero calendar day participates in a count moving average", () => {
   const { points } = buildTrendSeries(rows, [], "leads", { from: "2026-08-01", to: "2026-08-03" });
   assert.deepEqual(points.map((p) => p.value), [10, 0, 8]);
   assert.deepEqual(points.map((p) => p.average), [10, 5, 6], "(10)/1, (10+0)/2, (10+0+8)/3");
+});
+
+test("a numeric zero has zero bar height while a small positive value stays visible", () => {
+  assert.equal(trendBarHeight(0, 100), 0, "zero cannot look like a positive count");
+  assert.equal(trendBarHeight(null, 100), 0, "null remains the no-data state");
+  assert.equal(trendBarHeight(1, 100), 3, "a real small positive value may use the visible minimum");
+  assert.equal(trendBarHeight(50, 100), 50);
+  assert.match(client, /trendBarHeight\(value, max\)/, "the rendered bars use the tested scale");
 });
 
 test("E: a null-evidence day is still skipped by the processing moving average", () => {

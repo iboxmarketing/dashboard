@@ -18,7 +18,7 @@ import { DASHBOARD_HEADLINE_CARD_IDS, headlineCardLabel, resolveHeadlineCardIds,
 import { BUCKET_COUNT, DEFAULT_LEAD_FLOW_METRIC, LEAD_FLOW_METRICS, WEEKDAY_LABELS, bucketLabel, buildLeadFlow, higherIsHealthier, leadFlowValue, type LeadFlowMetricId } from "@/lib/lead-flow-analytics";
 import { buildManagerProfile, notRelevantRecords, reasonBreakdown, salesLostRecords, sourceFunnelRows, stageWorkloadRows, teamMedian } from "@/lib/manager-profile";
 import { buildQualityAnalytics, type MarketingManagerDiagnostic, type SalesManagerDiagnostic } from "@/lib/quality-analytics";
-import { DEFAULT_TREND_METRIC, TREND_METRICS, buildTrendSeries, supportsMovingAverage, trendMetric, type TrendBounds, type TrendMetricId, type TrendPoint } from "@/lib/trend-series";
+import { DEFAULT_TREND_METRIC, TREND_METRICS, buildTrendSeries, supportsMovingAverage, trendBarHeight, trendMetric, type TrendBounds, type TrendMetricId, type TrendPoint } from "@/lib/trend-series";
 import { initialStageFunnelState, stageFunnelNext, type StageFunnelAction, type StageFunnelState, type StageFunnelStatus } from "@/lib/stage-funnel-cache";
 import type { CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, StageReconciliation, SyncProgressState } from "@/lib/types";
 import { ANALYTICS_VERSION } from "@/lib/analytics";
@@ -544,7 +544,7 @@ function TrendChart({ records, previousRecords, bounds, previousBounds }: { reco
     return `${Math.round(value)} ta`;
   };
   const max = Math.max(1, ...points.map((point) => Math.max(point.value ?? 0, point.average ?? 0, point.previous ?? 0)));
-  const height = (value: number | null) => (value === null ? 0 : Math.max(3, (value / max) * 100));
+  const height = (value: number | null) => trendBarHeight(value, max);
   /** Only the figures that explain the selected metric — nothing unrelated. */
   const tooltip = (point: TrendPoint) => {
     const day = `${Number(point.date.slice(8))}-${MONTHS_UZ[Number(point.date.slice(5, 7)) - 1]}`;
