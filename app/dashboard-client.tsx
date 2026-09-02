@@ -34,6 +34,7 @@ import {
   resolveWidgetCustomRange, resolveWidgetRange, selectLatestUpdates, selectProjectsListRows, widgetSource,
   type CustomPage, type PageWidget, type WidgetSource, type WidgetType,
 } from "@/lib/custom-pages";
+import { boundsFromKeys } from "@/lib/period";
 import {
   DEFAULT_SHARED_WIDGET_TYPES, SHARE_STATUS_LABELS, defaultVisibleWidgetIds, shareStatus,
   type PageShare,
@@ -2260,8 +2261,8 @@ export default function DashboardClient() {
 
   const { cohortFiltered, wonFiltered, previousCohortFiltered, previousWonFiltered, trendBounds, previousTrendBounds, detailFiltered } = useMemo(() => {
     const bounds = rangeBounds(filters); const search = filters.search.trim().toLowerCase();
-    const from = bounds.from ? new Date(`${bounds.from}T00:00:00+05:00`).getTime() : -Infinity;
-    const to = bounds.to ? new Date(`${bounds.to}T23:59:59+05:00`).getTime() : Infinity;
+    const from = bounds.from ? boundsFromKeys({ from: bounds.from, to: bounds.from }).from : -Infinity;
+    const to = bounds.to ? boundsFromKeys({ from: bounds.to, to: bounds.to }).to : Infinity;
     const base = records.filter((row) => {
       if (filters.manager && row.assignedManagerId !== filters.manager && row.salesManagerId !== filters.manager) return false;
       if (filters.pipeline && row.originPipeline !== filters.pipeline) return false;

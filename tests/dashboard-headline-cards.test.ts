@@ -7,6 +7,7 @@ import {
   NON_HEADLINE_METRIC_IDS, headlineCardLabel, resolveHeadlineCardIds,
 } from "../lib/dashboard-cards";
 import { validateWidgetConfig } from "../lib/custom-pages";
+import { boundsFromKeys } from "../lib/period";
 import type { AnalyticsRecord } from "../lib/types";
 
 const code = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
@@ -91,6 +92,26 @@ test("F: a lead created in August and sold in September splits across the two ca
   assert.equal(september.money.revenue, 500, "and the revenue");
   assert.equal(september.counts.cohort_sales, 0, "but not the cohort sale");
   assert.equal(september.money.cohort_revenue, 0);
+});
+
+test("the selected end date includes the final millisecond for cohort and period sales", () => {
+  const bounds = boundsFromKeys({ from: "2026-08-31", to: "2026-08-31" });
+  const atFinalHalfSecond = "2026-08-31T18:59:59.500Z"; // 23:59:59.500 in Tashkent
+  const record = deal({
+    dealId: "end-boundary",
+    createdAt: atFinalHalfSecond,
+    salesStatus: "WON",
+    qualified: true,
+    wonAt: atFinalHalfSecond,
+  });
+  const selected = selectPeriodPopulations([record], bounds.from, bounds.to);
+  assert.deepEqual(selected.cohort.map((row) => row.dealId), ["end-boundary"]);
+  assert.deepEqual(selected.periodSales.map((row) => row.dealId), ["end-boundary"]);
+
+  const client = code("../app/dashboard-client.tsx");
+  assert.match(client, /boundsFromKeys\(\{ from: bounds\.to, to: bounds\.to \}\)\.to/,
+    "every client view uses the canonical inclusive Tashkent end-of-day bound");
+  assert.doesNotMatch(client, /T23:59:59\+05:00/, "the truncated last-second bound cannot return");
 });
 
 test("G/H/I: check, funnel and processing keep their formulas and travel together", () => {
