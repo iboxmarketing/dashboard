@@ -277,6 +277,9 @@ test("a numeric zero has zero bar height while a small positive value stays visi
   assert.equal(trendBarHeight(1, 100), 3, "a real small positive value may use the visible minimum");
   assert.equal(trendBarHeight(50, 100), 50);
   assert.match(client, /trendBarHeight\(value, max\)/, "the rendered bars use the tested scale");
+  const css = code("../app/globals.css");
+  const barRule = css.match(/\.trend-column > span \{([^}]*)\}/)?.[1] ?? "";
+  assert.doesNotMatch(barRule, /min-height/, "CSS cannot force a zero-height bar back into view");
 });
 
 test("E: a null-evidence day is still skipped by the processing moving average", () => {

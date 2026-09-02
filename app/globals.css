@@ -244,7 +244,7 @@ aside nav button i { margin-left: auto; width: 7px; height: 7px; border-radius: 
 
 .trend-chart { height: 180px; margin-top: 14px; padding: 12px 6px 0; display: flex; align-items: flex-end; gap: max(3px, .5vw); border-bottom: 1px solid var(--line); background: repeating-linear-gradient(to top, transparent 0, transparent 39px, #f0f2f6 40px); }
 .trend-column { min-width: 5px; flex: 1; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 5px; }
-.trend-column > span { width: min(18px, 72%); min-height: 4px; border-radius: 4px 4px 1px 1px; background: linear-gradient(#5f91fd, #246bfd); }
+.trend-column > span { width: min(18px, 72%); border-radius: 4px 4px 1px 1px; background: linear-gradient(#5f91fd, #246bfd); }
 .trend-column small { height: 11px; color: #a0a8b5; font-size: 7px; }
 .permission-list { margin-top: 9px; display: grid; gap: 2px; }
 .permission-list > div { padding: 9px 4px; display: grid; grid-template-columns: 12px 1fr auto; gap: 8px; align-items: center; border-bottom: 1px solid #edf0f4; font-size: 9px; }
