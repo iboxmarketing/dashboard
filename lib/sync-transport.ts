@@ -32,7 +32,14 @@ export const SYNC_STEPS_PER_REQUEST = 1;
  */
 export const SYNC_STEP_DELAY_MS = 200;
 
-/** Gateway-class failures: the request never reached application code. */
+/**
+ * Gateway/edge failures.
+ *
+ * These may occur BEFORE, DURING or AFTER the Worker ran: a 503 is produced at
+ * the edge and says nothing about whether application code executed or what it
+ * wrote. Only idempotent/resumable actions are therefore safe to replay
+ * automatically — see `RETRYABLE_ACTIONS`.
+ */
 export const TRANSIENT_STATUSES = [502, 503, 504] as const;
 
 /** Backoff before retry 1, 2 and 3. Three attempts, then give up. */
@@ -114,7 +121,63 @@ export function transientFromNetworkError(): SyncResponseOutcome<never> {
   return { kind: "transient", message: SYNC_BUSY_MESSAGE, status: 0 };
 }
 
-/** Whether another attempt is allowed for an outcome of this kind. */
-export function shouldRetry(outcome: SyncResponseOutcome<unknown>, attempt: number) {
-  return outcome.kind === "transient" && attempt < SYNC_MAX_RETRIES;
+/**
+ * Whether another attempt is allowed.
+ *
+ * Both conditions must hold: the failure is gateway-class, AND the action is
+ * one that can be safely replayed. A transient failure on `start` returns
+ * false here, so exactly one start POST is ever sent.
+ */
+export function shouldRetry(outcome: SyncResponseOutcome<unknown>, attempt: number, action: unknown) {
+  return outcome.kind === "transient" && isRetryableAction(action) && attempt < SYNC_MAX_RETRIES;
+}
+
+/**
+ * Which sync actions may be replayed automatically after a transient failure.
+ *
+ * Decided by the request's `action`, never by HTTP method — every sync call is
+ * a POST. Verified against lib/sync.ts:
+ *
+ *  - `step`   runSyncSteps advances from the stored cursor; replaying a step
+ *             that already ran simply advances from wherever the job now is.
+ *  - `resume` flips a stored job back to running. It creates no run and resets
+ *             no cursor; on an already-successful job it returns state as-is.
+ *  - `pause`  running -> paused, otherwise a no-op.
+ *
+ * `start` is excluded because startSync is NOT idempotent: it mints a new
+ * runId, rewrites settings and the crmFields dictionary, replaces the stored
+ * job with `cursor: 0`, and for a full sync calls clearPipelineScope(). A
+ * replay after the Worker had already run it can create a second run, reset an
+ * in-flight cursor, or clear the pipeline scope a second time.
+ */
+export const RETRYABLE_ACTIONS = ["step", "resume", "pause"] as const;
+
+export function isRetryableAction(action: unknown): boolean {
+  return typeof action === "string" && (RETRYABLE_ACTIONS as readonly string[]).includes(action);
+}
+
+export const SYNC_START_UNCONFIRMED_MESSAGE =
+  "Sync boshlanganini tasdiqlab bo‘lmadi. Qayta boshlashdan oldin holatni tekshiring.";
+
+/**
+ * Did a `start` whose response was lost actually take effect?
+ *
+ * Read-only recovery: the caller performs ONE GET of existing sync state and
+ * hands the result here. A running job for the requested pipeline means the
+ * start succeeded and the loop may continue stepping. Anything else — no
+ * state, a different pipeline, a non-running status — is unconfirmed, and the
+ * only safe move is to stop and let a human look.
+ */
+export type StartRecovery = { kind: "recovered" } | { kind: "unconfirmed" };
+
+export function classifyStartRecovery(input: {
+  state: { status?: unknown; scopePipelineId?: unknown } | null | undefined;
+  requestedPipelineId?: string | null;
+}): StartRecovery {
+  const state = input.state;
+  if (!state || state.status !== "running") return { kind: "unconfirmed" };
+  const requested = input.requestedPipelineId ? String(input.requestedPipelineId) : "";
+  if (!requested) return { kind: "recovered" };
+  const scope = state.scopePipelineId === null || state.scopePipelineId === undefined ? "" : String(state.scopePipelineId);
+  return scope === requested ? { kind: "recovered" } : { kind: "unconfirmed" };
 }

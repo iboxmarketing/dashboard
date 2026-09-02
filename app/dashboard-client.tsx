@@ -21,8 +21,8 @@ import { buildQualityAnalytics, type MarketingManagerDiagnostic, type SalesManag
 import { DEFAULT_TREND_METRIC, TREND_METRICS, buildTrendSeries, supportsMovingAverage, trendBarHeight, trendMetric, type TrendBounds, type TrendMetricId, type TrendPoint } from "@/lib/trend-series";
 import { initialStageFunnelState, stageFunnelNext, type StageFunnelAction, type StageFunnelState, type StageFunnelStatus } from "@/lib/stage-funnel-cache";
 import {
-  classifySyncResponse, retryDelayMs, shouldRetry, SYNC_EXHAUSTED_MESSAGE, SYNC_STEP_DELAY_MS,
-  SYNC_STEPS_PER_REQUEST, transientFromNetworkError,
+  classifyStartRecovery, classifySyncResponse, retryDelayMs, shouldRetry, SYNC_EXHAUSTED_MESSAGE,
+  SYNC_START_UNCONFIRMED_MESSAGE, SYNC_STEP_DELAY_MS, SYNC_STEPS_PER_REQUEST, transientFromNetworkError,
 } from "@/lib/sync-transport";
 import type { CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, StageReconciliation, SyncProgressState } from "@/lib/types";
 import { ANALYTICS_VERSION } from "@/lib/analytics";
@@ -2329,14 +2329,35 @@ export default function DashboardClient() {
   }, [stageFunnelRecords, filters.manager, filters.pipeline, filters.search]);
 
   /**
-   * One `/api/sync` call, retried only for gateway-class failures.
+   * Reads sync state once, read-only, to find out whether a `start` whose
+   * response was lost actually took effect. Never mutates anything.
+   */
+  async function recoverStartedSync(pipelineId: unknown) {
+    try {
+      const response = await fetch("/api/bootstrap", { cache: "no-store" });
+      if (!response.ok || !/\bjson\b/i.test(response.headers.get("content-type") ?? "")) return null;
+      const payload = await response.json() as { sync?: SyncState };
+      const decision = classifyStartRecovery({
+        state: payload.sync as { status?: unknown; scopePipelineId?: unknown } | undefined,
+        requestedPipelineId: pipelineId ? String(pipelineId) : null,
+      });
+      return decision.kind === "recovered" && payload.sync ? payload.sync : null;
+    } catch { return null; }
+  }
+
+  /**
+   * One `/api/sync` call, retried only for gateway-class failures AND only for
+   * actions that are safe to replay (step / resume / pause).
    *
-   * The retry always replays the SAME body, so a transient 503 mid-run can
-   * never turn a `step` into a second `start`: the stored job keeps its cursor
-   * and stays resumable. A 4xx or an application error is returned to the
-   * caller immediately — those are decisions, not weather.
+   * `start` is never retried: startSync mints a new runId, resets the stored
+   * job's cursor and — for a full sync — clears the pipeline scope, and a 503
+   * is produced at the edge, so it cannot tell us whether the Worker already
+   * ran. Instead a lost start is resolved by READING state once: a running job
+   * for the requested pipeline means it succeeded and stepping continues;
+   * anything else stops for a human rather than starting a second run.
    */
   async function postSync(body: Record<string, unknown>) {
+    const action = body.action;
     for (let attempt = 0; ; attempt += 1) {
       let outcome;
       try {
@@ -2348,9 +2369,14 @@ export default function DashboardClient() {
       } catch { outcome = transientFromNetworkError(); }
 
       if (outcome.kind === "ok") { setSync(outcome.payload); return outcome.payload; }
-      if (shouldRetry(outcome, attempt)) {
+      if (shouldRetry(outcome, attempt, action)) {
         await new Promise((resolve) => window.setTimeout(resolve, retryDelayMs(attempt)));
         continue;
+      }
+      if (outcome.kind === "transient" && action === "start") {
+        const recovered = await recoverStartedSync(body.pipelineId);
+        if (recovered) { setSync(recovered); return recovered; }
+        throw new Error(SYNC_START_UNCONFIRMED_MESSAGE);
       }
       throw new Error(outcome.kind === "transient" ? SYNC_EXHAUSTED_MESSAGE : outcome.message);
     }
