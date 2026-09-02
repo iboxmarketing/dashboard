@@ -145,19 +145,14 @@ test("J/O: merged and diagnostic metrics are absent from the headline selector",
   assert.equal(DEFAULT_HEADLINE_CARD_IDS.includes("active_cohort" as never), false, "optional, not default");
 });
 
-test("K: the full legacy 26-id selection folds into unique headline cards", () => {
+test("K: the untouched legacy 26-card default migrates to the curated headline layout", () => {
   const legacy = DASHBOARD_METRICS.map((metric) => metric.id);
   assert.equal(legacy.length, 26);
   const resolved = resolveHeadlineCardIds(legacy);
-  assert.equal(new Set(resolved).size, resolved.length, "no card appears twice");
-  // The order follows where each anchor first appears in the saved list;
-  // classified_leads was appended to the registry in Sprint 28, so it lands last.
-  assert.deepEqual(resolved, [
-    "leads", "sql", "not_relevant", "sales_lost", "cohort_sales", "period_sales",
-    "avg_processing", "lead_to_sql", "avg_check", "sales_cycle", "active_cohort",
-    "classified_leads",
-  ]);
-  assert.equal(resolved.length, DASHBOARD_HEADLINE_CARD_IDS.length, "all 12 headline cards, none twice");
+  assert.deepEqual(resolved, DEFAULT_HEADLINE_CARD_IDS,
+    "production's unmistakable old default gets the intentional order and keeps Active optional");
+  assert.equal(resolved[1], "classified_leads", "Saralangan stays beside Leadlar");
+  assert.equal(resolved.includes("active_cohort"), false, "the optional Active card is not enabled by migration");
   // The specific pairings the brief calls out.
   assert.deepEqual(resolveHeadlineCardIds(["period_sales", "revenue"]), ["period_sales"]);
   assert.deepEqual(resolveHeadlineCardIds(["revenue", "period_sales"]), ["period_sales"]);
@@ -173,6 +168,10 @@ test("K: the full legacy 26-id selection folds into unique headline cards", () =
 
 test("L/M: a custom headline order survives, and invalid input falls back", () => {
   assert.deepEqual(resolveHeadlineCardIds(["period_sales", "leads", "sql"]), ["period_sales", "leads", "sql"]);
+  const customizedLegacy = DASHBOARD_METRICS.map((metric) => metric.id);
+  [customizedLegacy[0], customizedLegacy[1]] = [customizedLegacy[1], customizedLegacy[0]];
+  assert.deepEqual(resolveHeadlineCardIds(customizedLegacy).slice(0, 2), ["sql", "leads"],
+    "even a full legacy selection is preserved when its order proves it was customized");
   // A legacy id folds into its anchor at the position it was saved in.
   assert.deepEqual(resolveHeadlineCardIds(["revenue", "leads"]), ["period_sales", "leads"]);
   // Uncheck / re-check lands at the end.

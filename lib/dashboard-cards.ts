@@ -67,6 +67,10 @@ export function isHeadlineCardId(value: string): value is HeadlineCardId {
  */
 export function resolveHeadlineCardIds(saved: unknown): HeadlineCardId[] {
   const raw = Array.isArray(saved) ? saved.map(String) : [];
+  const legacyDefault = DASHBOARD_METRICS.map((metric) => metric.id);
+  if (raw.length === legacyDefault.length && raw.every((value, index) => value === legacyDefault[index])) {
+    return DEFAULT_HEADLINE_CARD_IDS;
+  }
   const mapped = raw.flatMap((value) => {
     if (isHeadlineCardId(value)) return [value];
     const anchor = MERGED_INTO_HEADLINE[value as DashboardMetricId];
