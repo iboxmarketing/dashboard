@@ -34,6 +34,7 @@ export const D1_WRITE_AUDIT_OPERATIONS = [
   "upsert",
   "insert_or_replace",
   "delete",
+  "stale_delete",
   "delete_range",
   "full_clear_delete",
   "guarded_upsert",

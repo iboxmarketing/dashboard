@@ -21,6 +21,11 @@ import {
   withD1WriteAuditPhase,
   type D1WriteAuditPointValue,
 } from "./d1-write-audit";
+import {
+  persistStageHistoryRows,
+  stageHistoryRowKey,
+  type StageHistoryPersistenceRow,
+} from "./stage-history-persistence";
 
 const stageDealBatchSize = 25;
 const analyticsDealBatchSize = 80;
@@ -174,19 +179,17 @@ function move(job: StoredSyncJob, phase: StoredSyncJob["phase"], message: string
   return { ...job, phase, cursor: 0, processed: 0, total, progress: phaseProgress(phase, 0, total), message };
 }
 
-async function upsertRaw(table: "raw_deals" | "raw_activities" | "raw_stage_history" | "raw_call_stats", rows: unknown[][]) {
+async function upsertRaw(table: "raw_deals" | "raw_activities" | "raw_call_stats", rows: unknown[][]) {
   const db = getD1();
   const auditPoints: Record<typeof table, D1WriteAuditPointValue> = {
     raw_deals: D1_WRITE_AUDIT_POINTS.RAW_DEALS_UPSERT,
     raw_activities: D1_WRITE_AUDIT_POINTS.RAW_ACTIVITIES_UPSERT,
-    raw_stage_history: D1_WRITE_AUDIT_POINTS.RAW_STAGE_HISTORY_INSERT,
     raw_call_stats: D1_WRITE_AUDIT_POINTS.RAW_CALL_STATS_UPSERT,
   };
   for (let index = 0; index < rows.length; index += 40) {
     const statements = rows.slice(index, index + 40).map((bindings) => {
       if (table === "raw_deals") return db.prepare("INSERT OR REPLACE INTO raw_deals(deal_id, category_id, created_at, payload, synced_at) VALUES(?, ?, ?, ?, ?)").bind(...bindings);
       if (table === "raw_activities") return db.prepare("INSERT OR REPLACE INTO raw_activities(row_key, deal_id, activity_id, created_at, payload, synced_at) VALUES(?, ?, ?, ?, ?, ?)").bind(...bindings);
-      if (table === "raw_stage_history") return db.prepare("INSERT OR REPLACE INTO raw_stage_history(row_key, deal_id, created_at, payload, synced_at) VALUES(?, ?, ?, ?, ?)").bind(...bindings);
       return db.prepare("INSERT OR REPLACE INTO raw_call_stats(row_key, activity_id, payload, synced_at) VALUES(?, ?, ?, ?)").bind(...bindings);
     });
     if (statements.length) {
@@ -363,16 +366,19 @@ async function stageStep(job: StoredSyncJob) {
   if (!ids.length) return move(job, "lookups", "Menejer, pipeline va status nomlari yangilanmoqda…", 1);
   const cmd = Object.fromEntries(ids.map((id) => [`deal_${id}`, query("crm.stagehistory.list", { OWNER_ID: id }, ["ID", "OWNER_ID", "CATEGORY_ID", "STAGE_ID", "STAGE_SEMANTIC_ID", "TYPE_ID", "CREATED_TIME"], { ID: "ASC" }).replace("?", "?entityTypeId=2&")]));
   const response = await bitrixCall<Record<string, unknown>>("batch", { halt: 0, cmd });
-  const placeholders = ids.map(() => "?").join(", ");
-  const deleteResult = await getD1().prepare(`DELETE FROM raw_stage_history WHERE deal_id IN (${placeholders})`).bind(...ids).run();
-  recordD1RunMetadata(D1_WRITE_AUDIT_POINTS.RAW_STAGE_HISTORY_DELETE, deleteResult.meta);
-  const rows: unknown[][] = [];
+  const rows: StageHistoryPersistenceRow[] = [];
   for (const id of ids) for (const history of batchItems(response as unknown as Record<string, unknown>, `deal_${id}`)) {
     const createdAt = value(history, "CREATED_TIME");
     history.OWNER_ID = id;
-    rows.push([`${id}:${value(history, "ID") || `${value(history, "STAGE_ID")}:${createdAt}`}`, id, createdAt, JSON.stringify(history), job.runId]);
+    rows.push({
+      rowKey: stageHistoryRowKey(id, value(history, "ID"), value(history, "STAGE_ID"), createdAt),
+      dealId: id,
+      createdAt,
+      payload: JSON.stringify(history),
+      syncedAt: job.runId,
+    });
   }
-  await upsertRaw("raw_stage_history", rows);
+  await persistStageHistoryRows(getD1(), ids, rows);
   const cursor = job.cursor + ids.length;
   const counts = { ...job.counts, stageHistory: (job.counts.stageHistory ?? 0) + rows.length };
   return { ...job, cursor, processed: cursor, total: job.counts.deals, counts, progress: phaseProgress("stageHistory", cursor, job.counts.deals), message: `${Math.min(cursor, job.counts.deals)} / ${job.counts.deals} ta Deal stage history’si tekshirildi` };

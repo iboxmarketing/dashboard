@@ -64,7 +64,7 @@ test("db.batch metadata is aggregated from every individual result", () => {
 
 test("zero rows_written remains a measured zero", () => {
   const summary = withD1WriteAudit("1", () => {
-    recordD1RunMetadata(D1_WRITE_AUDIT_POINTS.RAW_STAGE_HISTORY_DELETE, {
+    recordD1RunMetadata(D1_WRITE_AUDIT_POINTS.RAW_STAGE_HISTORY_STALE_DELETE, {
       rows_written: 0, rows_read: 25, changes: 0,
     });
     return getD1WriteAuditSummary();
@@ -76,19 +76,19 @@ test("zero rows_written remains a measured zero", () => {
 test("phase, table, and operation labels remain separate aggregation buckets", () => {
   const summary = withD1WriteAudit("1", () => {
     withD1WriteAuditPhase("sync.stageHistory", () => {
-      recordD1RunMetadata(D1_WRITE_AUDIT_POINTS.RAW_STAGE_HISTORY_DELETE, { rows_written: 3 });
-      recordD1RunMetadata(D1_WRITE_AUDIT_POINTS.RAW_STAGE_HISTORY_INSERT, { rows_written: 5 });
+      recordD1RunMetadata(D1_WRITE_AUDIT_POINTS.RAW_STAGE_HISTORY_STALE_DELETE, { rows_written: 3 });
+      recordD1RunMetadata(D1_WRITE_AUDIT_POINTS.RAW_STAGE_HISTORY_GUARDED_UPSERT, { rows_written: 5 });
     });
     withD1WriteAuditPhase("sync.start", () => {
-      recordD1RunMetadata(D1_WRITE_AUDIT_POINTS.RAW_STAGE_HISTORY_DELETE, { rows_written: 7 });
+      recordD1RunMetadata(D1_WRITE_AUDIT_POINTS.RAW_STAGE_HISTORY_STALE_DELETE, { rows_written: 7 });
     });
     return getD1WriteAuditSummary();
   });
   assert.equal(summary?.entries.length, 3);
   assert.deepEqual(new Set(summary?.entries.map((entry) => `${entry.phase}/${entry.table}/${entry.operation}`)), new Set([
-    "sync.stageHistory/raw_stage_history/delete",
-    "sync.stageHistory/raw_stage_history/insert_or_replace",
-    "sync.start/raw_stage_history/delete",
+    "sync.stageHistory/raw_stage_history/stale_delete",
+    "sync.stageHistory/raw_stage_history/guarded_upsert",
+    "sync.start/raw_stage_history/stale_delete",
   ]));
 });
 
@@ -143,7 +143,7 @@ test("audit output accepts only fixed categories and aggregate numeric metadata"
 });
 
 test("audit uses the sync response path and no server console output", () => {
-  for (const file of ["app/api/sync/route.ts", "lib/d1-write-audit.ts", "lib/storage.ts", "lib/sync.ts", "lib/post-sync-reconciliation.ts"]) {
+  for (const file of ["app/api/sync/route.ts", "lib/d1-write-audit.ts", "lib/storage.ts", "lib/sync.ts", "lib/stage-history-persistence.ts", "lib/post-sync-reconciliation.ts"]) {
     assert.doesNotMatch(source(file), /console\.(?:log|info|warn|error|debug|trace)/, `${file} must not log audit data`);
   }
   const route = source("app/api/sync/route.ts");
@@ -180,9 +180,10 @@ test("generated config is explicit opt-in, defaults off, and keeps observability
   assert.match(config, /"\$audit_flag" != "0" && "\$audit_flag" != "1"/);
 });
 
-test("all required sync write sites consume D1 result metadata without changing SQL", () => {
+test("all required sync write sites consume D1 result metadata", () => {
   const storage = source("lib/storage.ts");
   const sync = source("lib/sync.ts");
+  const stageHistoryPersistence = source("lib/stage-history-persistence.ts");
   const reconciliation = source("lib/post-sync-reconciliation.ts");
 
   for (const point of [
@@ -190,10 +191,13 @@ test("all required sync write sites consume D1 result metadata without changing 
     "SYNC_STATE_UPSERT", "ANALYTICS_UPSERT", "SALES_SNAPSHOT_UPSERT", "ANALYTICS_RECONCILIATION_UPDATE",
   ]) assert.match(storage, new RegExp(`D1_WRITE_AUDIT_POINTS\\.${point}`));
   for (const point of [
-    "RAW_DEALS_UPSERT", "RAW_STAGE_HISTORY_DELETE", "RAW_STAGE_HISTORY_INSERT",
+    "RAW_DEALS_UPSERT",
     "FULL_CLEAR_RAW_CALL_STATS", "FULL_CLEAR_RAW_ACTIVITIES", "FULL_CLEAR_RAW_STAGE_HISTORY",
     "FULL_CLEAR_ANALYTICS", "FULL_CLEAR_RAW_DEALS", "CRM_DICTIONARY_CHECKPOINT",
   ]) assert.match(sync, new RegExp(`D1_WRITE_AUDIT_POINTS\\.${point}`));
+  for (const point of ["RAW_STAGE_HISTORY_STALE_DELETE", "RAW_STAGE_HISTORY_GUARDED_UPSERT"]) {
+    assert.match(stageHistoryPersistence, new RegExp(`D1_WRITE_AUDIT_POINTS\\.${point}`));
+  }
   assert.match(reconciliation, /CRM_DICTIONARY_RECONCILIATION/);
   assert.match(sync, /results\.map\(\(result\) => result\.meta\)/);
   assert.match(storage, /results\.map\(\(result\) => result\.meta\)/);
