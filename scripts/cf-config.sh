@@ -20,6 +20,7 @@
 # Required: CLOUDFLARE_D1_DATABASE_NAME, CLOUDFLARE_D1_DATABASE_ID
 # Optional: CLOUDFLARE_WORKER_NAME (default bitrix-deal-dashboard)
 #           CLOUDFLARE_COMPATIBILITY_DATE (default 2026-05-15)
+#           D1_WRITE_AUDIT (default 0; set exactly 1 only for the reviewed staging run)
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,7 +30,13 @@ cd "$project_root"
 : "${CLOUDFLARE_D1_DATABASE_ID:?set CLOUDFLARE_D1_DATABASE_ID (uuid from: wrangler d1 create <name>)}"
 worker_name="${CLOUDFLARE_WORKER_NAME:-bitrix-deal-dashboard}"
 compat_date="${CLOUDFLARE_COMPATIBILITY_DATE:-2026-05-15}"
+audit_flag="${D1_WRITE_AUDIT:-0}"
 out="${project_root}/wrangler.generated.jsonc"
+
+if [[ "$audit_flag" != "0" && "$audit_flag" != "1" ]]; then
+  echo "D1_WRITE_AUDIT must be exactly 0 or 1; refusing to generate config." >&2
+  exit 1
+fi
 
 cat > "$out" <<JSON
 {
@@ -39,6 +46,7 @@ cat > "$out" <<JSON
   "main": "./dist/server/index.js",
   "compatibility_date": "${compat_date}",
   "compatibility_flags": ["nodejs_compat"],
+  "vars": { "D1_WRITE_AUDIT": "${audit_flag}" },
   "assets": { "directory": "./dist/client" },
   "d1_databases": [
     {

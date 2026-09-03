@@ -5,6 +5,7 @@ import { getDictionary, listReconcileCandidates, saveDictionary, setAnalyticsCur
 import { bitrixList, safeBitrixMessage } from "./bitrix";
 import type { RawCurrentStageDeal } from "./current-stages";
 import type { DashboardSettings } from "./types";
+import { D1_WRITE_AUDIT_POINTS, withD1WriteAuditPhase } from "./d1-write-audit";
 
 /**
  * Reconciles cached-ACTIVE deals that have vanished from the live open-sales
@@ -23,6 +24,7 @@ import type { DashboardSettings } from "./types";
  * folded into the sync result.
  */
 export async function runPostSyncReconciliation(settings: DashboardSettings): Promise<ReconcileState> {
+  return await withD1WriteAuditPhase("sync.reconciliation", async () => {
   const categoryIds = [...new Set((settings.selectedPipelineIds ?? []).map(String).filter(Boolean))];
   const pipelineId = categoryIds[0] ?? "unknown";
   const state: ReconcileState = emptyReconcileState();
@@ -47,7 +49,7 @@ export async function runPostSyncReconciliation(settings: DashboardSettings): Pr
     // Persist even with nothing to do, so lastRunAt reflects the real last run
     // rather than the last run that happened to find work.
     if (!batch.length) {
-      await saveDictionary(reconcileStateKey(pipelineId), state);
+      await saveDictionary(reconcileStateKey(pipelineId), state, D1_WRITE_AUDIT_POINTS.CRM_DICTIONARY_RECONCILIATION);
       return state;
     }
 
@@ -70,8 +72,9 @@ export async function runPostSyncReconciliation(settings: DashboardSettings): Pr
     state.safeError = safeBitrixMessage(error);
   }
 
-  await saveDictionary(reconcileStateKey(pipelineId), state);
+  await saveDictionary(reconcileStateKey(pipelineId), state, D1_WRITE_AUDIT_POINTS.CRM_DICTIONARY_RECONCILIATION);
   return state;
+  });
 }
 
 export async function readReconcileState(pipelineId: string) {

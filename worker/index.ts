@@ -6,6 +6,7 @@ import { runScheduledSync } from "@/lib/scheduled-sync";
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
+  D1_WRITE_AUDIT?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {

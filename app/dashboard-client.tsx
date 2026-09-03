@@ -24,6 +24,7 @@ import {
   classifyStartRecovery, classifySyncResponse, retryDelayMs, shouldRetry, SYNC_EXHAUSTED_MESSAGE,
   SYNC_START_UNCONFIRMED_MESSAGE, SYNC_STEP_DELAY_MS, SYNC_STEPS_PER_REQUEST, transientFromNetworkError,
 } from "@/lib/sync-transport";
+import { mergeD1WriteAuditSummaries, type D1WriteAuditSummary } from "@/lib/d1-write-audit-shared";
 import type { CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, StageReconciliation, SyncProgressState } from "@/lib/types";
 import { ANALYTICS_VERSION } from "@/lib/analytics";
 import { canonicalizeFieldOptions, normalizeCrmFields } from "@/lib/crm-fields";
@@ -2111,6 +2112,7 @@ export default function DashboardClient() {
   const [templateDraft, setTemplateDraft] = useState<string | null>(null);
   const [projectError, setProjectError] = useState<string | null>(null);
   const syncLoopRef = useRef(false);
+  const d1WriteAuditRef = useRef<D1WriteAuditSummary | null>(null);
   const autoSyncIndexRef = useRef(0);
   const syncRunnerRef = useRef<((mode: "start" | "resume", full?: boolean, daysOverride?: number, pipelineId?: string) => Promise<void>) | null>(null);
 
@@ -2362,13 +2364,18 @@ export default function DashboardClient() {
       let outcome;
       try {
         const response = await fetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-        outcome = classifySyncResponse<SyncState & { error?: string }>({
+        outcome = classifySyncResponse<SyncState & { error?: string; d1WriteAudit?: D1WriteAuditSummary }>({
           ok: response.ok, status: response.status,
           contentType: response.headers.get("content-type"), body: await response.text(),
         });
       } catch { outcome = transientFromNetworkError(); }
 
-      if (outcome.kind === "ok") { setSync(outcome.payload); return outcome.payload; }
+      if (outcome.kind === "ok") {
+        const { d1WriteAudit, ...state } = outcome.payload;
+        d1WriteAuditRef.current = mergeD1WriteAuditSummaries(d1WriteAuditRef.current, d1WriteAudit);
+        setSync(state);
+        return state;
+      }
       if (shouldRetry(outcome, attempt, action)) {
         await new Promise((resolve) => window.setTimeout(resolve, retryDelayMs(attempt)));
         continue;
@@ -2383,7 +2390,7 @@ export default function DashboardClient() {
   }
   async function syncLoop(mode: "start" | "resume", full = false, daysOverride?: number, pipelineId?: string) {
     if (!settings || syncLoopRef.current) return;
-    syncLoopRef.current = true; setRefreshing(true); setLoadError(null);
+    syncLoopRef.current = true; d1WriteAuditRef.current = null; setRefreshing(true); setLoadError(null);
     try {
       const activePipelineId = pipelineId || (settings.selectedPipelineIds.includes(syncPipelineId) ? syncPipelineId : settings.selectedPipelineIds[0]);
       let state = await postSync(mode === "start" ? { action: "start", days: daysOverride ?? Math.min(settings.historyDays, 30), full, pipelineId: activePipelineId } : { action: "resume" });
@@ -2392,7 +2399,10 @@ export default function DashboardClient() {
         if (state.status === "running") await new Promise((resolve) => window.setTimeout(resolve, SYNC_STEP_DELAY_MS));
       }
       if (!syncLoopRef.current && state.status === "running") await postSync({ action: "pause" });
-      if (state.status === "success") await load();
+      if (state.status === "success") {
+        if (d1WriteAuditRef.current) console.info("D1_WRITE_AUDIT", d1WriteAuditRef.current);
+        await load();
+      }
     } catch (caught) { setLoadError(caught instanceof Error ? caught.message : "Sinxronizatsiya bajarilmadi"); }
     finally { syncLoopRef.current = false; setRefreshing(false); }
   }
