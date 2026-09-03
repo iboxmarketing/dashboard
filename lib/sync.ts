@@ -14,14 +14,6 @@ import { resolveSyncWindow } from "./sync-window";
 import { canonicalDealFieldKey, canonicalizeFieldOptions } from "./crm-fields";
 import { runPostSyncReconciliation } from "./post-sync-reconciliation";
 import {
-  D1_WRITE_AUDIT_POINTS,
-  isD1WriteAuditCollecting,
-  recordD1BatchMetadata,
-  recordD1RunMetadata,
-  withD1WriteAuditPhase,
-  type D1WriteAuditPointValue,
-} from "./d1-write-audit";
-import {
   persistStageHistoryRows,
   stageHistoryRowKey,
   type StageHistoryPersistenceRow,
@@ -181,46 +173,26 @@ function move(job: StoredSyncJob, phase: StoredSyncJob["phase"], message: string
 
 async function upsertRaw(table: "raw_deals" | "raw_activities" | "raw_call_stats", rows: unknown[][]) {
   const db = getD1();
-  const auditPoints: Record<typeof table, D1WriteAuditPointValue> = {
-    raw_deals: D1_WRITE_AUDIT_POINTS.RAW_DEALS_UPSERT,
-    raw_activities: D1_WRITE_AUDIT_POINTS.RAW_ACTIVITIES_UPSERT,
-    raw_call_stats: D1_WRITE_AUDIT_POINTS.RAW_CALL_STATS_UPSERT,
-  };
   for (let index = 0; index < rows.length; index += 40) {
     const statements = rows.slice(index, index + 40).map((bindings) => {
       if (table === "raw_deals") return db.prepare("INSERT OR REPLACE INTO raw_deals(deal_id, category_id, created_at, payload, synced_at) VALUES(?, ?, ?, ?, ?)").bind(...bindings);
       if (table === "raw_activities") return db.prepare("INSERT OR REPLACE INTO raw_activities(row_key, deal_id, activity_id, created_at, payload, synced_at) VALUES(?, ?, ?, ?, ?, ?)").bind(...bindings);
       return db.prepare("INSERT OR REPLACE INTO raw_call_stats(row_key, activity_id, payload, synced_at) VALUES(?, ?, ?, ?)").bind(...bindings);
     });
-    if (statements.length) {
-      const results = await db.batch(statements);
-      if (isD1WriteAuditCollecting()) {
-        recordD1BatchMetadata(auditPoints[table], results.map((result) => result.meta));
-      }
-    }
+    if (statements.length) await db.batch(statements);
   }
 }
 
 async function clearPipelineScope(categoryIds: string[]) {
   if (!categoryIds.length) return;
   const db = getD1(); const placeholders = categoryIds.map(() => "?").join(", ");
-  const results = await db.batch([
+  await db.batch([
     db.prepare(`DELETE FROM raw_call_stats WHERE activity_id IN (SELECT activity_id FROM raw_activities WHERE deal_id IN (SELECT deal_id FROM raw_deals WHERE category_id IN (${placeholders})))`).bind(...categoryIds),
     db.prepare(`DELETE FROM raw_activities WHERE deal_id IN (SELECT deal_id FROM raw_deals WHERE category_id IN (${placeholders}))`).bind(...categoryIds),
     db.prepare(`DELETE FROM raw_stage_history WHERE deal_id IN (SELECT deal_id FROM raw_deals WHERE category_id IN (${placeholders}))`).bind(...categoryIds),
     db.prepare(`DELETE FROM analytics_records WHERE category_id IN (${placeholders})`).bind(...categoryIds),
     db.prepare(`DELETE FROM raw_deals WHERE category_id IN (${placeholders})`).bind(...categoryIds),
   ]);
-  if (isD1WriteAuditCollecting()) {
-    const auditPoints = [
-      D1_WRITE_AUDIT_POINTS.FULL_CLEAR_RAW_CALL_STATS,
-      D1_WRITE_AUDIT_POINTS.FULL_CLEAR_RAW_ACTIVITIES,
-      D1_WRITE_AUDIT_POINTS.FULL_CLEAR_RAW_STAGE_HISTORY,
-      D1_WRITE_AUDIT_POINTS.FULL_CLEAR_ANALYTICS,
-      D1_WRITE_AUDIT_POINTS.FULL_CLEAR_RAW_DEALS,
-    ] as const;
-    results.forEach((result, index) => recordD1RunMetadata(auditPoints[index], result.meta));
-  }
 }
 
 export async function startSync(options: { days?: number; full?: boolean; pipelineId?: string } = {}) {
@@ -400,26 +372,20 @@ async function analyticsStep(job: StoredSyncJob) {
   const dealResult = await getD1().prepare(`SELECT deal_id, payload FROM raw_deals WHERE synced_at = ? ORDER BY created_at DESC LIMIT ${analyticsDealBatchSize} OFFSET ?`).bind(job.runId, job.cursor).all<{ deal_id: string; payload: string }>();
   const rawDeals = dealResult.results ?? [];
   if (!rawDeals.length) {
-    return await withD1WriteAuditPhase("sync.finalization", async () => {
-      const completedAt = new Date().toISOString();
-      const finished: StoredSyncJob = { ...job, status: "success", phase: "done", progress: 100, processed: job.counts.deals ?? 0, total: job.counts.deals ?? 0, cursor: 0, message: "Sinxronizatsiya yakunlandi", safeError: null };
-      await saveSyncJob(finished);
-      // The checkpoint is the watermark this run actually queried (`toIso`), not
-      // the moment it finished. A long run would otherwise skip everything
-      // modified while it was still working.
-      await saveDictionary(
-        `syncScope:${job.scopePipelineId}`,
-        { lastSyncAt: job.toIso, pipelineName: job.selectedPipelines[0]?.name ?? "" },
-        D1_WRITE_AUDIT_POINTS.CRM_DICTIONARY_CHECKPOINT,
-      );
-      await saveSyncState({ status: "success", lastSyncAt: completedAt, lastFrom: job.fromIso, counts: job.counts, permissions: job.permissions, safeError: null });
-      // The single completion point for every sync path — the UI's step loop and
-      // the scheduled handler both land here — so reconciliation applies
-      // identically to manual and cron runs. It never throws and never downgrades
-      // this successful result; its own state records any problem.
-      await runPostSyncReconciliation(await getSettings());
-      return finished;
-    });
+    const completedAt = new Date().toISOString();
+    const finished: StoredSyncJob = { ...job, status: "success", phase: "done", progress: 100, processed: job.counts.deals ?? 0, total: job.counts.deals ?? 0, cursor: 0, message: "Sinxronizatsiya yakunlandi", safeError: null };
+    await saveSyncJob(finished);
+    // The checkpoint is the watermark this run actually queried (`toIso`), not
+    // the moment it finished. A long run would otherwise skip everything
+    // modified while it was still working.
+    await saveDictionary(`syncScope:${job.scopePipelineId}`, { lastSyncAt: job.toIso, pipelineName: job.selectedPipelines[0]?.name ?? "" });
+    await saveSyncState({ status: "success", lastSyncAt: completedAt, lastFrom: job.fromIso, counts: job.counts, permissions: job.permissions, safeError: null });
+    // The single completion point for every sync path — the UI's step loop and
+    // the scheduled handler both land here — so reconciliation applies
+    // identically to manual and cron runs. It never throws and never downgrades
+    // this successful result; its own state records any problem.
+    await runPostSyncReconciliation(await getSettings());
+    return finished;
   }
   const ids = rawDeals.map((row) => row.deal_id);
   const placeholders = ids.map(() => "?").join(", ");
@@ -454,22 +420,15 @@ export async function runSyncStep() {
   if (job.status === "paused" || job.status === "success") return await getSyncState();
   if (job.status === "error") throw new Error(job.safeError ?? "Sync xatolikda to‘xtagan");
   try {
-    const phase = job.phase === "deals" ? "sync.deals"
-      : job.phase === "stageHistory" ? "sync.stageHistory"
-        : job.phase === "lookups" ? "sync.lookups"
-          : job.phase === "analytics" ? "sync.analytics"
-            : "sync.step";
-    return await withD1WriteAuditPhase(phase, async () => {
-      let next: StoredSyncJob;
-      if (job.phase === "deals") next = await dealStep(job);
-      else if (job.phase === "stageHistory") {
-        try { next = await stageStep(job); } catch { next = move({ ...job, permissions: { ...job.permissions, stageHistory: "error" } }, "lookups", "Stage history cheklangan; nomlar yangilanmoqda…", job.total); }
-      } else if (job.phase === "lookups") next = await lookupStep(job);
-      else if (job.phase === "analytics") next = await analyticsStep(job);
-      else next = job;
-      if (next.status === "running") await saveSyncJob(next);
-      return await getSyncState();
-    });
+    let next: StoredSyncJob;
+    if (job.phase === "deals") next = await dealStep(job);
+    else if (job.phase === "stageHistory") {
+      try { next = await stageStep(job); } catch { next = move({ ...job, permissions: { ...job.permissions, stageHistory: "error" } }, "lookups", "Stage history cheklangan; nomlar yangilanmoqda…", job.total); }
+    } else if (job.phase === "lookups") next = await lookupStep(job);
+    else if (job.phase === "analytics") next = await analyticsStep(job);
+    else next = job;
+    if (next.status === "running") await saveSyncJob(next);
+    return await getSyncState();
   } catch (error) {
     const safe = safeBitrixMessage(error);
     const message = safe === "Kutilmagan xavfsiz server xatosi" && error instanceof Error ? error.message.slice(0, 240) : safe;

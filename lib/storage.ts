@@ -2,20 +2,13 @@ import { getD1 } from "@/db";
 import { DASHBOARD_TIMELINE_FIELD, STAGE_FUNNEL_FIELDS, STAGE_HISTORY_COUNT_FIELD, dashboardRemovedPaths } from "./dashboard-record";
 import { defaultSettings } from "./business-time";
 import { SALES_SNAPSHOT_UPSERT } from "./sales-snapshots";
-import {
-  D1_WRITE_AUDIT_POINTS,
-  isD1WriteAuditCollecting,
-  recordD1BatchMetadata,
-  recordD1RunMetadata,
-  type D1WriteAuditPointValue,
-} from "./d1-write-audit";
 import { stageIdList } from "./stage-config";
 import { resolveDashboardMetricIds } from "./dashboard-metrics";
 import type { AnalyticsRecord, DashboardSettings, ProviderDiagnostic, SyncProgressState } from "./types";
 
 export async function ensureSchema() {
   const db = getD1();
-  const results = await db.batch([
+  await db.batch([
     db.prepare("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)"),
     db.prepare("CREATE TABLE IF NOT EXISTS analytics_records (deal_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, assigned_manager_id TEXT NOT NULL, category_id TEXT NOT NULL, stage_id TEXT NOT NULL, source_id TEXT NOT NULL, creation_period TEXT NOT NULL, processing_source TEXT NOT NULL, processing_minutes INTEGER, sla_status TEXT NOT NULL, call_outcome TEXT NOT NULL, stage_before_call INTEGER NOT NULL, payload TEXT NOT NULL, synced_at TEXT NOT NULL)"),
     db.prepare("CREATE INDEX IF NOT EXISTS analytics_created_idx ON analytics_records(created_at)"),
@@ -36,9 +29,6 @@ export async function ensureSchema() {
     db.prepare("CREATE TABLE IF NOT EXISTS crm_dictionaries (key TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL)"),
     db.prepare("CREATE TABLE IF NOT EXISTS deal_sales_snapshots (deal_id TEXT PRIMARY KEY, won_at TEXT NOT NULL, manager_id TEXT, manager_name TEXT, attribution_source TEXT NOT NULL, created_at TEXT NOT NULL)"),
   ]);
-  if (isD1WriteAuditCollecting()) {
-    recordD1BatchMetadata(D1_WRITE_AUDIT_POINTS.SCHEMA_ENSURE, results.map((result) => result.meta));
-  }
 }
 
 export async function getSettings(): Promise<DashboardSettings> {
@@ -76,11 +66,10 @@ export async function getSettings(): Promise<DashboardSettings> {
 export async function saveSettings(settings: DashboardSettings) {
   await ensureSchema();
   const now = new Date().toISOString();
-  const result = await getD1()
+  await getD1()
     .prepare("INSERT INTO app_settings(key, value, updated_at) VALUES(?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
     .bind("dashboard", JSON.stringify(settings), now)
     .run();
-  recordD1RunMetadata(D1_WRITE_AUDIT_POINTS.APP_SETTINGS_UPSERT, result.meta);
 }
 
 /**
@@ -131,9 +120,8 @@ export async function setAnalyticsCurrentScope(dealId: string, scope: "IN_SCOPE"
   try { record = JSON.parse(row.payload) as Record<string, unknown>; } catch { return false; }
   if (record.currentScope === scope) return true;
   record.currentScope = scope;
-  const result = await getD1().prepare("UPDATE analytics_records SET payload = ? WHERE deal_id = ?")
+  await getD1().prepare("UPDATE analytics_records SET payload = ? WHERE deal_id = ?")
     .bind(JSON.stringify(record), dealId).run();
-  recordD1RunMetadata(D1_WRITE_AUDIT_POINTS.ANALYTICS_RECONCILIATION_UPDATE, result.meta);
   return true;
 }
 
@@ -145,17 +133,15 @@ export async function getProviderRules() {
 
 export async function saveProviderRule(providerKey: string, mode: "AUTO" | "USE" | "IGNORE") {
   await ensureSchema();
-  const result = await getD1()
+  await getD1()
     .prepare("INSERT INTO provider_rules(provider_key, mode, updated_at) VALUES(?, ?, ?) ON CONFLICT(provider_key) DO UPDATE SET mode = excluded.mode, updated_at = excluded.updated_at")
     .bind(providerKey, mode, new Date().toISOString())
     .run();
-  recordD1RunMetadata(D1_WRITE_AUDIT_POINTS.PROVIDER_RULE_UPSERT, result.meta);
 }
 
 export async function replaceAnalyticsRecords(records: AnalyticsRecord[], fromIso: string) {
   await ensureSchema();
-  const result = await getD1().prepare("DELETE FROM analytics_records WHERE created_at >= ?").bind(fromIso).run();
-  recordD1RunMetadata(D1_WRITE_AUDIT_POINTS.ANALYTICS_RANGE_DELETE, result.meta);
+  await getD1().prepare("DELETE FROM analytics_records WHERE created_at >= ?").bind(fromIso).run();
   await upsertAnalyticsRecords(records);
 }
 
@@ -184,12 +170,7 @@ export async function upsertAnalyticsRecords(records: AnalyticsRecord[]) {
           syncedAt,
         ),
     );
-    if (statements.length) {
-      const results = await db.batch(statements);
-      if (isD1WriteAuditCollecting()) {
-        recordD1BatchMetadata(D1_WRITE_AUDIT_POINTS.ANALYTICS_UPSERT, results.map((result) => result.meta));
-      }
-    }
+    if (statements.length) await db.batch(statements);
   }
 }
 
@@ -198,12 +179,8 @@ export async function clearUnselectedAnalytics(selectedIds: string[], fromIso?: 
   const db = getD1();
   if (!selectedIds.length) return;
   const placeholders = selectedIds.map(() => "?").join(", ");
-  const unselected = await db.prepare(`DELETE FROM analytics_records WHERE category_id NOT IN (${placeholders})`).bind(...selectedIds).run();
-  recordD1RunMetadata(D1_WRITE_AUDIT_POINTS.ANALYTICS_RANGE_DELETE, unselected.meta);
-  if (fromIso) {
-    const selected = await db.prepare(`DELETE FROM analytics_records WHERE category_id IN (${placeholders}) AND created_at >= ?`).bind(...selectedIds, fromIso).run();
-    recordD1RunMetadata(D1_WRITE_AUDIT_POINTS.ANALYTICS_RANGE_DELETE, selected.meta);
-  }
+  await db.prepare(`DELETE FROM analytics_records WHERE category_id NOT IN (${placeholders})`).bind(...selectedIds).run();
+  if (fromIso) await db.prepare(`DELETE FROM analytics_records WHERE category_id IN (${placeholders}) AND created_at >= ?`).bind(...selectedIds, fromIso).run();
 }
 
 export async function listAnalyticsRecords() {
@@ -295,12 +272,7 @@ export async function saveSalesSnapshots(records: AnalyticsRecord[]) {
   for (let index = 0; index < won.length; index += 40) {
     const statements = won.slice(index, index + 40).map((record) => db.prepare(SALES_SNAPSHOT_UPSERT)
       .bind(record.dealId, record.wonAt, record.salesManagerId, record.salesManager, record.salesManagerAttribution, new Date().toISOString()));
-    if (statements.length) {
-      const results = await db.batch(statements);
-      if (isD1WriteAuditCollecting()) {
-        recordD1BatchMetadata(D1_WRITE_AUDIT_POINTS.SALES_SNAPSHOT_UPSERT, results.map((result) => result.meta));
-      }
-    }
+    if (statements.length) await db.batch(statements);
   }
 }
 
@@ -314,12 +286,7 @@ export async function saveProviderDiagnostics(providers: ProviderDiagnostic[]) {
         .prepare("INSERT OR REPLACE INTO provider_diagnostics(provider_key, provider_id, provider_type_id, type_id, direction, count, sample_subject, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(provider.key, provider.providerId, provider.providerTypeId, provider.typeId, provider.direction, provider.count, provider.sampleSubject, now),
     );
-    if (statements.length) {
-      const results = await db.batch(statements);
-      if (isD1WriteAuditCollecting()) {
-        recordD1BatchMetadata(D1_WRITE_AUDIT_POINTS.PROVIDER_DIAGNOSTIC_UPSERT, results.map((result) => result.meta));
-      }
-    }
+    if (statements.length) await db.batch(statements);
   }
 }
 
@@ -359,11 +326,10 @@ export async function saveSyncState(state: {
     permissions: state.permissions ?? previous.permissions,
     safeError: state.safeError === undefined ? previous.safeError : state.safeError,
   };
-  const result = await getD1()
+  await getD1()
     .prepare("INSERT INTO sync_state(id, status, last_sync_at, last_from, counts, permissions, safe_error, updated_at) VALUES('main', ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status, last_sync_at = excluded.last_sync_at, last_from = excluded.last_from, counts = excluded.counts, permissions = excluded.permissions, safe_error = excluded.safe_error, updated_at = excluded.updated_at")
     .bind(next.status, next.lastSyncAt, next.lastFrom, JSON.stringify(next.counts), JSON.stringify(next.permissions), next.safeError, new Date().toISOString())
     .run();
-  recordD1RunMetadata(D1_WRITE_AUDIT_POINTS.SYNC_STATE_UPSERT, result.meta);
 }
 
 export async function getSyncState() {
@@ -454,22 +420,16 @@ export async function saveSyncJob(job: StoredSyncJob) {
   await ensureSchema();
   const updatedAt = new Date().toISOString();
   const next = { ...job, updatedAt, heartbeatAt: job.status === "running" ? updatedAt : job.heartbeatAt };
-  const result = await getD1().prepare("INSERT INTO sync_jobs(id, status, payload, updated_at) VALUES('main', ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status, payload = excluded.payload, updated_at = excluded.updated_at")
+  await getD1().prepare("INSERT INTO sync_jobs(id, status, payload, updated_at) VALUES('main', ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status, payload = excluded.payload, updated_at = excluded.updated_at")
     .bind(next.status, JSON.stringify(next), updatedAt).run();
-  recordD1RunMetadata(D1_WRITE_AUDIT_POINTS.SYNC_JOB_UPSERT, result.meta);
   return next;
 }
 
-export async function saveDictionary(
-  key: string,
-  payload: unknown,
-  auditPoint: D1WriteAuditPointValue = D1_WRITE_AUDIT_POINTS.CRM_DICTIONARY_UPSERT,
-) {
+export async function saveDictionary(key: string, payload: unknown) {
   await ensureSchema();
   const now = new Date().toISOString();
-  const result = await getD1().prepare("INSERT INTO crm_dictionaries(key, payload, updated_at) VALUES(?, ?, ?) ON CONFLICT(key) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at")
+  await getD1().prepare("INSERT INTO crm_dictionaries(key, payload, updated_at) VALUES(?, ?, ?) ON CONFLICT(key) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at")
     .bind(key, JSON.stringify(payload), now).run();
-  recordD1RunMetadata(auditPoint, result.meta);
 }
 
 export async function getDictionary<T>(key: string, fallback: T): Promise<T> {

@@ -1,10 +1,3 @@
-import {
-  D1_WRITE_AUDIT_POINTS,
-  isD1WriteAuditCollecting,
-  recordD1BatchMetadata,
-  recordD1RunMetadata,
-} from "./d1-write-audit";
-
 export const STAGE_HISTORY_MUTATION_BATCH_SIZE = 40;
 
 export type StageHistoryPersistenceRow = Readonly<{
@@ -96,26 +89,19 @@ export async function persistStageHistoryRows(
 
   for (const staleBatch of stageHistoryMutationBatches(diff.staleRowKeys)) {
     const stalePlaceholders = staleBatch.map(() => "?").join(", ");
-    const result = await db.prepare(
+    await db.prepare(
       `DELETE FROM raw_stage_history WHERE row_key IN (${stalePlaceholders})`,
     ).bind(...staleBatch).run();
-    recordD1RunMetadata(D1_WRITE_AUDIT_POINTS.RAW_STAGE_HISTORY_STALE_DELETE, result.meta);
   }
 
   for (const upsertBatch of stageHistoryMutationBatches(diff.upserts)) {
-    const results = await db.batch(upsertBatch.map((row) => db.prepare(STAGE_HISTORY_GUARDED_UPSERT_SQL).bind(
+    await db.batch(upsertBatch.map((row) => db.prepare(STAGE_HISTORY_GUARDED_UPSERT_SQL).bind(
       row.rowKey,
       row.dealId,
       row.createdAt,
       row.payload,
       row.syncedAt,
     )));
-    if (isD1WriteAuditCollecting()) {
-      recordD1BatchMetadata(
-        D1_WRITE_AUDIT_POINTS.RAW_STAGE_HISTORY_GUARDED_UPSERT,
-        results.map((result) => result.meta),
-      );
-    }
   }
 
   return { upserts: diff.upserts.length, deletes: diff.staleRowKeys.length } as const;

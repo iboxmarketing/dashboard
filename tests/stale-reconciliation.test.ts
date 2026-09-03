@@ -113,7 +113,7 @@ test("a reconciliation failure never downgrades a successful sync", () => {
   assert.doesNotMatch(source, /saveSyncState\(/, "it must not rewrite the sync result");
   assert.doesNotMatch(source, /status: "error"/);
   // The partial failure is still visible.
-  assert.match(source, /saveDictionary\(reconcileStateKey\(pipelineId\), state(?:, [^)]+)?\)/);
+  assert.match(source, /saveDictionary\(reconcileStateKey\(pipelineId\), state\)/);
   assert.equal(reconcileStateKey("3"), "reconcileState:3");
 });
 
@@ -254,7 +254,7 @@ test("reconciliation selects candidates without loading full analytics payloads"
 test("reconcileState is persisted even when there is nothing to do", () => {
   const recon = readFileSync(new URL("../lib/post-sync-reconciliation.ts", import.meta.url), "utf8");
   const empty = recon.slice(recon.indexOf("if (!batch.length)"), recon.indexOf("const lookups"));
-  assert.match(empty, /saveDictionary\(reconcileStateKey\(pipelineId\), state(?:, [^)]+)?\)/,
+  assert.match(empty, /saveDictionary\(reconcileStateKey\(pipelineId\), state\)/,
     "lastRunAt must reflect the real last run, not the last run that found work");
 });
 
