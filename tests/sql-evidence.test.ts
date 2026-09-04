@@ -78,29 +78,36 @@ test("B: downstream history then LOST -> qualified, canonical Sales Lost", () =>
   assert.equal(row.qualifiedStageId, "C3:PREPARATION");
 });
 
-test("C: NEW -> Нет ответа -> LOST with complete history -> NOT qualified", () => {
+test("C: NEW -> Нет ответа -> LOST with complete history -> qualified anyway (direct close)", () => {
+  // A seller who closes "Закрыто и нереализовано" without ever moving the
+  // Deal through SQL/Обработка is a process violation, not proof the lead was
+  // never worked — it must still count as SQL and canonical Sales Lost.
   const row = build({ path: ["C3:NEW", "C3:UC_05P04E", "C3:LOSE"], reason: "ignorit" });
-  assert.equal(row.qualified, false, "read history showing no SQL is evidence against, not absence of evidence");
+  assert.equal(row.qualified, true, "an ordinary Sales closure is unconditionally qualified");
   assert.equal(row.salesStatus, "LOST");
   assert.equal(row.lossReasonGroup, "SALES");
-  assert.equal(isSalesLost(row), false);
+  assert.equal(isSalesLost(row), true);
+  // The diagnostic still fires: no real SQL/Обработка stage was ever recorded.
   assert.equal(isPreSqlClosed(row), true);
+  // No fabricated timing: qualified is true, but there is no real evidence moment.
   assert.equal(row.qualifiedAt, null);
   assert.equal(row.qualifiedStageId, null);
 });
 
-test("D: NEW -> Первое касание -> LOST with complete history -> NOT qualified", () => {
+test("D: NEW -> Первое касание -> LOST with complete history -> qualified anyway (direct close)", () => {
   const row = build({ path: ["C3:NEW", "C3:UC_L52PGZ", "C3:LOSE"], reason: "ne klient" });
-  assert.equal(row.qualified, false);
-  assert.equal(isSalesLost(row), false);
+  assert.equal(row.qualified, true);
+  assert.equal(isSalesLost(row), true);
   assert.equal(isPreSqlClosed(row), true);
   assert.equal(row.qualifiedAt, null);
 });
 
-test("E: LOST with genuinely unavailable history keeps the safe fallback", () => {
-  // The permission itself failed, so we cannot know whether SQL happened.
+test("E: LOST with genuinely unavailable history is qualified too (same unconditional rule)", () => {
+  // Evidence availability no longer matters for an ordinary Sales closure —
+  // it is qualified either way. canInferQualificationFromOutcome itself stays
+  // correct and tested below; it is simply no longer consulted for this.
   const unavailable = build({ path: [], current: "C3:LOSE", reason: "otsrochka", stageHistoryAvailable: false });
-  assert.equal(unavailable.qualified, true, "unknown evidence keeps the backward-safe upgrade");
+  assert.equal(unavailable.qualified, true);
   assert.equal(isSalesLost(unavailable), true);
   // ...but it must not invent a qualification moment.
   assert.equal(unavailable.qualifiedAt, null);
@@ -139,15 +146,17 @@ test("H: routed after SQL is excluded from every eligible metric", () => {
   assert.equal(metrics.counts.sales_lost, 0);
 });
 
-test("I: LOST with SALES reason but no SQL evidence never reaches the SQL card", () => {
+test("I: LOST with SALES reason but no SQL evidence reaches the SQL card too, flagged diagnostically", () => {
   const preSql = build({ path: ["C3:NEW", "C3:UC_05P04E", "C3:LOSE"], reason: "ignorit" });
   const realSql = build({ path: ["C3:NEW", "C3:UC_9SUEMM", "C3:LOSE"], reason: "otsrochka" });
   const metrics = buildDashboardMetrics([{ ...preSql, dealId: "p" }, { ...realSql, dealId: "r" }], []);
   assert.equal(metrics.counts.leads, 2);
-  assert.equal(metrics.counts.sql, 1);
-  assert.equal(metrics.counts.sales_lost, 1);
+  // Both are SQL and Sales Lost now — the direct close ("p") is not exempt.
+  assert.equal(metrics.counts.sql, 2);
+  assert.equal(metrics.counts.sales_lost, 2);
+  // The diagnostic still isolates exactly the one with no real SQL evidence.
   assert.equal(metrics.counts.pre_sql_closed, 1);
-  assert.deepEqual(metrics.sql.map((row) => row.dealId), ["r"]);
+  assert.deepEqual(metrics.sql.map((row) => row.dealId).sort(), ["p", "r"]);
   assert.deepEqual(metrics.preSqlClosed.map((row) => row.dealId), ["p"]);
 });
 
@@ -166,14 +175,79 @@ test("12: invariants hold over a mixed cohort", () => {
   assert.ok(m.counts.sql <= m.counts.leads, "SQL <= Leadlar");
   assert.ok(m.counts.sales_lost <= m.counts.sql, "Sales Lost <= SQL");
   assert.equal(m.salesLost.every((row) => row.qualified === true), true, "every Sales Lost is qualified");
-  assert.equal(m.preSqlClosed.some((row) => row.qualified === true), false, "no preSqlClosed is SQL");
-  assert.equal(m.preSqlClosed.some((row) => isSalesLost(row)), false, "no preSqlClosed is Sales Lost");
+  // preSqlClosed is a diagnostic, not a KPI exclusion: c/d are direct closes,
+  // so they ARE SQL and Sales Lost — the diagnostic just flags that neither
+  // ever showed real SQL/Обработка evidence.
+  assert.equal(m.preSqlClosed.every((row) => row.qualified === true), true, "preSqlClosed rows are still SQL");
+  assert.equal(m.preSqlClosed.every((row) => isSalesLost(row)), true, "preSqlClosed rows are still Sales Lost");
   assert.equal(m.sql.some((row) => row.lossReasonGroup === "MARKETING"), false, "no Not Relevant is SQL");
   assert.equal(m.sql.some((row) => row.lossReasonGroup === "ROUTING"), false, "no Routing in SQL");
   assert.equal(m.eligible.filter((row) => row.salesStatus === "WON").every((row) => row.qualified), true, "every eligible WON is qualified");
-  // A complete pre-SQL history ending in LOST never fabricates qualification.
+  // c and d never showed real SQL/Обработка evidence — the diagnostic isolates
+  // exactly them, independent of their (now unconditional) qualified status.
   assert.deepEqual(m.preSqlClosed.map((row) => row.dealId).sort(), ["c", "d"]);
   // qualifiedAt never points at a pre-SQL or terminal LOST stage.
   const preSqlOrTerminal = new Set(["C3:NEW", "C3:UC_05P04E", "C3:UC_L52PGZ", "C3:LOSE", "C3:UC_C0725V"]);
   for (const row of m.sql) assert.equal(preSqlOrTerminal.has(row.qualifiedStageId ?? ""), false, `${row.dealId} qualifiedStageId=${row.qualifiedStageId}`);
+});
+
+/**
+ * Direct, explicit coverage of the clarified business rule — one small cohort
+ * that exercises every formula the rule touches at once, rather than relying
+ * on incidental coverage from the scenarios above.
+ */
+test("6/7: a direct close counts as Saralangan and is NOT Not Relevant", () => {
+  const row = build({ path: ["C3:NEW", "C3:UC_05P04E", "C3:LOSE"], reason: "ignorit" });
+  const m = buildDashboardMetrics([row], []);
+  assert.equal(m.counts.classified_leads, 1, "6: the direct close IS Saralangan");
+  assert.equal(m.counts.not_relevant, 0, "7: a direct Sales closure is never Not Relevant");
+  assert.equal(row.lossReasonGroup, "SALES", "SALES precedence, not MARKETING");
+});
+
+test("12/13/14/15/16: canonical formulas hold over a cohort mixing every outcome", () => {
+  const rows = [
+    // Real SQL evidence, still open.
+    { ...build({ path: ["C3:NEW", "C3:UC_9SUEMM"] }), dealId: "sql-open" },
+    // Real SQL evidence, canonical Sales Lost.
+    { ...build({ path: ["C3:NEW", "C3:UC_9SUEMM", "C3:LOSE"], reason: "otsrochka" }), dealId: "sql-lost" },
+    // WON.
+    { ...build({ path: ["C3:NEW", "C3:WON"], opportunity: 500 }), dealId: "won" },
+    // Not Relevant — authoritative regardless of prior SQL evidence.
+    { ...build({ path: ["C3:NEW", "C3:UC_9SUEMM", "C3:UC_C0725V"] }), dealId: "nr" },
+    // Direct close — a seller process error, still qualified/Sales Lost/Saralangan.
+    { ...build({ path: ["C3:NEW", "C3:UC_05P04E", "C3:LOSE"], reason: "ignorit" }), dealId: "direct-close" },
+    // Routing — excluded from the eligible cohort entirely.
+    { ...build({ path: ["C3:NEW", "C3:LOSE"], reason: "peredano Idokon" }), dealId: "routed" },
+    // Untouched, active pre-SQL lead — the one row that stays Saralanmagan.
+    { ...build({ path: ["C3:NEW"] }), dealId: "fresh" },
+  ];
+  const m = buildDashboardMetrics(rows, rows.filter((row) => row.salesStatus === "WON"));
+
+  assert.equal(m.counts.leads, 6, "routing excluded, six eligible leads");
+  // Qualified: sql-open, sql-lost, won (downstream-of-SQL evidence via the
+  // paid stage) and direct-close. "nr" is not (MARKETING precedence) and
+  // "fresh" never reached any evidence, so it stays undecided.
+  assert.equal(m.counts.sql, 4, "sql-open, sql-lost, won, direct-close");
+  assert.equal(m.counts.not_relevant, 1, "nr only");
+  assert.equal(m.counts.sales_lost, 2, "sql-lost and direct-close");
+  assert.ok(m.counts.sales_lost <= m.counts.sql, "14: Sales Lost <= SQL");
+
+  // 12: Saralangan = SQL + Not Relevant, exactly, with no third bucket.
+  assert.equal(m.counts.classified_leads, m.counts.sql + m.counts.not_relevant, "12: Saralangan = SQL + Not Relevant");
+  assert.equal(m.counts.classified_leads, 5, "4 SQL + 1 Not Relevant");
+  // 13: Leadlar = Saralangan + Saralanmagan.
+  assert.equal(m.counts.leads, m.counts.classified_leads + m.counts.unclassified_leads, "13: Leadlar = Saralangan + Saralanmagan");
+  assert.equal(m.counts.unclassified_leads, 1, "only \"fresh\" is still undecided: 6 = 5 + 1");
+
+  // 15: Sifatli % + Sifatsiz % use the Saralangan denominator and sum to 100%.
+  assert.equal(m.rates.quality_accepted_rate, Math.round((4 / 5) * 100), "Sifatli % = SQL / Saralangan");
+  assert.equal(m.rates.low_quality_rate, Math.round((1 / 5) * 100), "Sifatsiz % = Not Relevant / Saralangan");
+  assert.equal(m.rates.quality_accepted_rate + m.rates.low_quality_rate, 100);
+
+  // 16: pre_sql_closed is diagnostic-only and never subtracted from any KPI.
+  assert.equal(m.counts.pre_sql_closed, 1, "direct-close is flagged");
+  assert.deepEqual(m.preSqlClosed.map((row) => row.dealId), ["direct-close"]);
+  assert.ok(m.sql.some((row) => row.dealId === "direct-close"), "16: still present in SQL");
+  assert.ok(m.salesLost.some((row) => row.dealId === "direct-close"), "16: still present in Sales Lost");
+  assert.ok(m.classified.some((row) => row.dealId === "direct-close"), "16: still present in Saralangan");
 });

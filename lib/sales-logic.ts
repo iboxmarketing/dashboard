@@ -100,14 +100,12 @@ export function fieldDisplayValue(raw: unknown, options: Map<string, string> = n
 }
 
 /**
- * Can a terminal LOST outcome stand in for qualification evidence?
- *
- * Only when the qualification history genuinely could not be observed. A deal
- * whose history was read and simply contains no SQL stage is evidence that the
- * lead never reached SQL — not an absence of evidence — and must not be
- * upgraded. `buildStageTimeline` synthesises a single entry from the current
- * stage when no history rows exist, so the timeline being non-empty proves
- * nothing; the raw row count is the honest signal.
+ * Historical helper, kept as a tested pure predicate but no longer wired into
+ * `qualified` (lib/analytics.ts): an ordinary Sales-group LOST closure is now
+ * unconditionally qualified regardless of stage-history evidence — a seller
+ * closing "Закрыто и нереализовано" without ever moving the Deal through SQL
+ * first is a process violation, not proof the lead was never worked. See
+ * `isPreSqlClosed` below for the diagnostic that replaced this gate.
  */
 export function canInferQualificationFromOutcome(input: { stageHistoryAvailable: boolean; historyRowCount: number }) {
   return !input.stageHistoryAvailable || input.historyRowCount === 0;
@@ -116,9 +114,10 @@ export function canInferQualificationFromOutcome(input: { stageHistoryAvailable:
 /**
  * Canonical Sales Lost population: a **quality-accepted** lead that Sales did
  * not close. Both halves are required — routing/transfer outcomes carry their
- * own group, and a deal closed before it ever reached SQL was never a sales
- * loss, it was a lead that never got worked. This is therefore strictly
- * narrower than `salesStatus === "LOST"`, and a strict subset of SQL.
+ * own group and are never Sales Lost even though they are also terminal. An
+ * ordinary Sales-group closure is always qualified (see lib/analytics.ts), so
+ * in practice this is now equivalent to `lossReasonGroup === "SALES"`; the
+ * `qualified` check is kept so the formula stays correct if that ever changes.
  *
  * Every metric labelled "Sotilmadi" / "Sales loss" must go through here.
  * `SalesStatus.LOST` stays useful as the broader terminal state (drop-off and
@@ -129,13 +128,24 @@ export function isSalesLost(row: { lossReasonGroup?: LossReasonGroup | null; qua
 }
 
 /**
- * Deals closed inside the Sales funnel that never produced canonical SQL
- * evidence — "SQLgacha yopilgan". A workflow signal, not a KPI: it belongs to
- * none of SQL, Sifatli, Sifatsiz, Sotilmadi or Sales Lost. It falls inside
- * Saralanmagan because its quality verdict was never actually reached.
+ * DIAGNOSTIC ONLY — never a KPI population. Every ordinary Sales-group
+ * closure is unconditionally SQL and, if lost, Sales Lost (see
+ * `lib/analytics.ts`), so this predicate must NEVER be subtracted from SQL,
+ * Sales Lost or Saralangan; it exists purely to surface a process-discipline
+ * signal for Diagnostics: "closed directly, without ever visiting SQL /
+ * Обработка first."
+ *
+ * Reads `qualifiedStageId` rather than `qualified`: qualified is true
+ * unconditionally for this population now, but `qualifiedStageId` is only
+ * ever populated from a real stage-history match, so its absence here means
+ * no SQL/downstream stage was ever recorded for the Deal. This also covers
+ * the case where stage-history evidence was simply unavailable (permission
+ * denied or empty) — that reads identically to a genuine skip, which the
+ * diagnostic cannot tell apart. That ambiguity is exactly why this stays a
+ * soft signal and is never allowed to gate a KPI.
  */
-export function isPreSqlClosed(row: { salesStatus?: SalesStatus; lossReasonGroup?: LossReasonGroup | null; qualified?: boolean }) {
-  return row.salesStatus === "LOST" && row.lossReasonGroup === "SALES" && row.qualified !== true;
+export function isPreSqlClosed(row: { salesStatus?: SalesStatus; lossReasonGroup?: LossReasonGroup | null; qualifiedStageId?: string | null }) {
+  return row.salesStatus === "LOST" && row.lossReasonGroup === "SALES" && !row.qualifiedStageId;
 }
 
 /**
@@ -182,16 +192,19 @@ export type DealOutcomePresentation = { label: string; tone: "success" | "danger
 
 /**
  * Row-level outcome badge. Terminal deals are split by loss group so a routed
- * card no longer reads "Sotilmadi" while every Sotilmadi count excludes it.
- * Presentation only: no new SalesStatus value and no stored field.
+ * card reads "Yo‘naltirildi", never "Sotilmadi". Presentation only: no new
+ * SalesStatus value and no stored field.
+ *
+ * A direct close (`isPreSqlClosed`) reads "Sotilmadi" here like any other
+ * ordinary Sales-group closure — it IS canonical Sotilmadi for KPI purposes.
+ * `isPreSqlClosed` stays a hidden Diagnostics signal and must never surface as
+ * a third outcome badge here.
  */
 export function dealOutcomeLabel(row: { salesStatus?: SalesStatus; lossReasonGroup?: LossReasonGroup | null; qualified?: boolean }): DealOutcomePresentation {
   if (row.salesStatus === "WON") return { label: "Sotilgan", tone: "success" };
   if (row.salesStatus === "LOW_QUALITY") return { label: "Sifatsiz", tone: "warning" };
   if (row.salesStatus === "LOST") {
     if (row.lossReasonGroup === "ROUTING") return { label: "Yo‘naltirildi", tone: "neutral" };
-    // A row must not read "Sotilmadi" while every Sotilmadi count excludes it.
-    if (isPreSqlClosed(row)) return { label: "SQLgacha yopilgan", tone: "warning" };
     return { label: "Sotilmadi", tone: "danger" };
   }
   return { label: "Aktiv", tone: "neutral" };

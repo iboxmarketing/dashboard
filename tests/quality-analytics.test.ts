@@ -21,28 +21,34 @@ function deal(over: Partial<AnalyticsRecord> = {}): AnalyticsRecord {
 const ALI = { salesManagerId: "a", salesManager: "Ali" };
 const BOB = { salesManagerId: "b", salesManager: "Bob" };
 
+const SQL_STAGE = "C3:UC_9SUEMM"; // real evidence marker for qualifiedStageId
+
 const FIXTURE = [
-  // Ali: 3 SQL (one sale, one Sales Lost, one active) + 2 Not Relevant.
-  deal({ dealId: "a-won", ...ALI, qualified: true, salesStatus: "WON", wonAt: "2026-08-08T09:00:00.000Z" }),
-  deal({ dealId: "a-lost", ...ALI, qualified: true, salesStatus: "LOST", lossReasonGroup: "SALES", lossReason: "Отсрочка" }),
-  deal({ dealId: "a-sql", ...ALI, qualified: true }),
+  // Ali: 4 SQL (one sale, two Sales Lost — one with real SQL evidence, one a
+  // direct close — one active) + 2 Not Relevant.
+  deal({ dealId: "a-won", ...ALI, qualified: true, qualifiedStageId: SQL_STAGE, salesStatus: "WON", wonAt: "2026-08-08T09:00:00.000Z" }),
+  deal({ dealId: "a-lost", ...ALI, qualified: true, qualifiedStageId: SQL_STAGE, salesStatus: "LOST", lossReasonGroup: "SALES", lossReason: "Отсрочка" }),
+  deal({ dealId: "a-sql", ...ALI, qualified: true, qualifiedStageId: SQL_STAGE }),
   deal({ dealId: "a-nr-filled", ...ALI, salesStatus: "LOW_QUALITY", lossReasonGroup: "MARKETING", lossReason: "Campaign" }),
   deal({ dealId: "a-nr-blank", ...ALI, salesStatus: "LOW_QUALITY", lossReasonGroup: "MARKETING", lossReason: "" }),
-  // A closed card that never reached SQL stays outside canonical Sales Lost.
-  deal({ dealId: "a-pre-sql", ...ALI, salesStatus: "LOST", qualified: false, lossReasonGroup: "SALES", lossReason: "Игнорить" }),
+  // A direct close — Закрыто и нереализовано reached without ever visiting
+  // SQL/Обработка. Still unconditionally qualified and canonical Sales Lost;
+  // isPreSqlClosed (no qualifiedStageId) flags it as a hidden process-
+  // discipline diagnostic only, never subtracted from SQL/Sales Lost/Saralangan.
+  deal({ dealId: "a-pre-sql", ...ALI, salesStatus: "LOST", qualified: true, lossReasonGroup: "SALES", lossReason: "Игнорить" }),
 
-  // Bob: 4 SQL (one sale, three Sales Lost) + one Not Relevant.
-  deal({ dealId: "b-won", ...BOB, qualified: true, salesStatus: "WON", wonAt: "2026-08-09T09:00:00.000Z" }),
-  deal({ dealId: "b-lost-1", ...BOB, qualified: true, salesStatus: "LOST", lossReasonGroup: "SALES", lossReason: "Дорого" }),
-  deal({ dealId: "b-lost-2", ...BOB, qualified: true, salesStatus: "LOST", lossReasonGroup: "SALES", lossReason: "Дорого" }),
-  deal({ dealId: "b-lost-blank", ...BOB, qualified: true, salesStatus: "LOST", lossReasonGroup: "SALES", lossReason: "" }),
+  // Bob: 4 SQL (one sale, three Sales Lost, all with real SQL evidence) + one Not Relevant.
+  deal({ dealId: "b-won", ...BOB, qualified: true, qualifiedStageId: SQL_STAGE, salesStatus: "WON", wonAt: "2026-08-09T09:00:00.000Z" }),
+  deal({ dealId: "b-lost-1", ...BOB, qualified: true, qualifiedStageId: SQL_STAGE, salesStatus: "LOST", lossReasonGroup: "SALES", lossReason: "Дорого" }),
+  deal({ dealId: "b-lost-2", ...BOB, qualified: true, qualifiedStageId: SQL_STAGE, salesStatus: "LOST", lossReasonGroup: "SALES", lossReason: "Дорого" }),
+  deal({ dealId: "b-lost-blank", ...BOB, qualified: true, qualifiedStageId: SQL_STAGE, salesStatus: "LOST", lossReasonGroup: "SALES", lossReason: "" }),
   deal({ dealId: "b-nr", ...BOB, salesStatus: "LOW_QUALITY", lossReasonGroup: "MARKETING", lossReason: "Organic" }),
 
   // No classification evidence: both manager rates must stay unavailable.
   deal({ dealId: "c-open", salesManagerId: "c", salesManager: "Cora" }),
 
   // SALES semantics win over misleading Bitrix reason text.
-  deal({ dealId: "unknown-sales", salesManagerId: null, salesManager: null, qualified: true,
+  deal({ dealId: "unknown-sales", salesManagerId: null, salesManager: null, qualified: true, qualifiedStageId: SQL_STAGE,
     salesStatus: "LOST", lossReasonGroup: "SALES", lossReason: "Игнорить (Not relevant)" }),
   deal({ dealId: "unknown-nr", salesManagerId: null, salesManager: null,
     salesStatus: "LOW_QUALITY", lossReasonGroup: "MARKETING", lossReason: "" }),
@@ -60,30 +66,33 @@ test("A/B/C/D: canonical populations separate Routing, Marketing and Sales Lost"
   assert.equal(analytics.summary.leads, FIXTURE.length - 1, "A: Routing is excluded from Leadlar");
   assert.equal(analytics.summary.routing, 1, "Routing remains separately diagnosable");
   assert.equal(analytics.summary.notRelevant, 4, "B: only MARKETING records are Not Relevant");
-  assert.equal(analytics.summary.salesLost, 5, "C: canonical isSalesLost population");
-  assert.equal(FIXTURE.filter(isPreSqlClosed).length, 1);
-  assert.equal(FIXTURE.filter(isSalesLost).some((row) => row.dealId === "a-pre-sql"), false, "D: pre-SQL closed is absent");
+  // A direct close IS canonical Sales Lost now (a-lost, a-pre-sql, b-lost-1/2/blank, unknown-sales).
+  assert.equal(analytics.summary.salesLost, 6, "C: canonical isSalesLost population, direct closes included");
+  assert.equal(FIXTURE.filter(isPreSqlClosed).length, 1, "the diagnostic isolates only the direct close");
+  assert.equal(FIXTURE.filter(isSalesLost).some((row) => row.dealId === "a-pre-sql"), true, "D: a direct close IS canonical Sales Lost");
 });
 
 test("E/F: global top-reason shares use their own canonical population", () => {
   assert.deepEqual(analytics.summary.topMarketingReason, { reason: "Sabab ko‘rsatilmagan", count: 2, share: 50 },
     "E: top Marketing denominator is four Not Relevant records");
-  assert.deepEqual(analytics.summary.topSalesReason, { reason: "Дорого", count: 2, share: 40 },
-    "F: top Sales denominator is five canonical Sales Lost records");
+  assert.deepEqual(analytics.summary.topSalesReason, { reason: "Дорого", count: 2, share: 33 },
+    "F: top Sales denominator is six canonical Sales Lost records, direct closes included");
   assert.equal(analytics.marketingReasons.reduce((sum, row) => sum + row.count, 0), analytics.summary.notRelevant);
   assert.equal(analytics.salesReasons.reduce((sum, row) => sum + row.count, 0), analytics.summary.salesLost);
 });
 
 test("G/H: missing-reason discipline uses only Not Relevant plus Sales Lost", () => {
   assert.equal(analytics.summary.missingReasons, 3, "two NR blanks plus one Sales Lost blank");
-  assert.equal(analytics.summary.missingReasonPopulation, 9, "G: NR + canonical Sales Lost only");
-  assert.equal(analytics.summary.missingReasonRate, 33, "H: 3 / 9");
+  assert.equal(analytics.summary.missingReasonPopulation, 10, "G: NR + canonical Sales Lost only");
+  assert.equal(analytics.summary.missingReasonRate, 30, "H: 3 / 10");
   assert.equal(analytics.summary.missingReasonPopulation,
     analytics.summary.notRelevant + analytics.summary.salesLost);
 });
 
 test("I/J/K/L/U: Marketing manager diagnostics use classified and manager NR only", () => {
-  assert.deepEqual([marketing("a").notRelevant, marketing("a").classified, marketing("a").notRelevantRate], [2, 5, 40], "I");
+  // Ali's classified grows by one (the direct close joins SQL); notRelevantRate
+  // stays NR / classified, so it moves too — the formula itself is unchanged.
+  assert.deepEqual([marketing("a").notRelevant, marketing("a").classified, marketing("a").notRelevantRate], [2, 6, 33], "I");
   assert.equal(marketing("c").notRelevantRate, null, "J: classified=0 is unavailable");
   assert.deepEqual(marketing("a").topReason, { reason: "Campaign", count: 1, share: 50 }, "K: Ali's own NR only");
   assert.deepEqual([marketing("a").missingReasons, marketing("a").reasonFillRate], [1, 50], "L");
@@ -97,8 +106,8 @@ test("M/N/O/P/Q/V: Sales manager diagnostics use SQL and canonical manager metri
   const bobMetrics = buildDashboardMetrics(FIXTURE.filter((row) => row.salesManagerId === "b"), []);
   assert.equal(sales("b").sqlToSale, bobMetrics.rates.sql_to_sale, "O: SQL→Sale is canonical");
   assert.deepEqual(sales("b").topReason, { reason: "Дорого", count: 2, share: 67 }, "P: Bob's Sales Lost only");
-  assert.equal(sales("a").salesLost, 1, "Q: Ali's pre-SQL closure does not enter Sales Lost");
-  assert.equal(sales("a").topReasons.some((row) => row.reason === "Игнорить"), false, "pre-SQL reason absent");
+  assert.equal(sales("a").salesLost, 2, "Q: Ali's direct close DOES enter Sales Lost");
+  assert.equal(sales("a").topReasons.some((row) => row.reason === "Игнорить"), true, "pre-SQL reason now appears in Sotilmadi reasons");
   assert.equal(sales("c").smallSample, true, "V: SQL < 3");
   assert.equal(sales("b").smallSample, false);
 });

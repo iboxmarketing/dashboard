@@ -13,7 +13,7 @@ const code = (p: string) => read(p).replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/
 function deal(over: Partial<AnalyticsRecord> = {}): AnalyticsRecord {
   return {
     dealId: "1", title: "t", createdAt: "2026-08-05T09:00:00.000Z", wonAt: null, salesStatus: "ACTIVE",
-    qualified: false, lossReasonGroup: "NONE", lossReason: "", opportunity: 0, currencyId: "UZS",
+    qualified: false, qualifiedStageId: null, lossReasonGroup: "NONE", lossReason: "", opportunity: 0, currencyId: "UZS",
     processingBusinessMinutes: 10, salesCycleHours: null, slaStatus: "ON_TIME", processingSource: "QUALIFICATION_STAGE",
     stage: "Распределение", stageId: "C3:NEW", currentScope: null, categoryId: "3", originCategoryId: "3",
     originPipeline: "IBOX sales", pipeline: "IBOX sales", source: "CRM-форма", sourceId: "WEBFORM",
@@ -37,16 +37,25 @@ function project(rows: AnalyticsRecord[]) {
   });
 }
 
-/** A cohort covering every population the dashboard reports. */
+/**
+ * A cohort covering every population the dashboard reports.
+ *
+ * "presql" models a direct close — Закрыто и нереализовано reached without
+ * ever visiting SQL/Обработка. It is `qualified: true` because an ordinary
+ * Sales-group closure is unconditionally qualified regardless of evidence;
+ * `qualifiedStageId: null` (the factory default) is what marks it for the
+ * `isPreSqlClosed` DIAGNOSTIC — a process-discipline signal that must never
+ * subtract from SQL, Sales Lost or Saralangan.
+ */
 const COHORT = [
-  deal({ dealId: "sql", qualified: true, stage: "ОБРАБОТКА", stageTimeline: tl(3) }),
+  deal({ dealId: "sql", qualified: true, qualifiedStageId: "C3:UC_9SUEMM", stage: "ОБРАБОТКА", stageTimeline: tl(3) }),
   deal({ dealId: "won", qualified: true, salesStatus: "WON", wonAt: "2026-08-10T09:00:00.000Z", opportunity: 900, salesCycleHours: 12, stageTimeline: tl(4) }),
   deal({ dealId: "nr", salesStatus: "LOW_QUALITY", lossReasonGroup: "MARKETING", stage: "Not relevant", stageTimeline: tl(2) }),
-  deal({ dealId: "lost", salesStatus: "LOST", qualified: true, lossReasonGroup: "SALES", stageTimeline: tl(3) }),
-  deal({ dealId: "presql", salesStatus: "LOST", qualified: false, lossReasonGroup: "SALES", stageTimeline: tl(2) }),
+  deal({ dealId: "lost", salesStatus: "LOST", qualified: true, qualifiedStageId: "C3:UC_9SUEMM", lossReasonGroup: "SALES", stageTimeline: tl(3) }),
+  deal({ dealId: "presql", salesStatus: "LOST", qualified: true, lossReasonGroup: "SALES", stageTimeline: tl(2) }),
   deal({ dealId: "routing", salesStatus: "LOST", lossReasonGroup: "ROUTING", stageTimeline: tl(2) }),
   deal({ dealId: "active", stageTimeline: [] }),
-  deal({ dealId: "nohist", qualified: true, stageTimeline: [] }),
+  deal({ dealId: "nohist", qualified: true, qualifiedStageId: "C3:UC_9SUEMM", stageTimeline: [] }),
 ];
 const WON = COHORT.filter((r) => r.salesStatus === "WON");
 
@@ -73,8 +82,12 @@ test("invariants hold on the compact payload", () => {
   assert.equal(m.counts.classified_leads, m.counts.sql + m.counts.not_relevant);
   assert.ok(m.counts.sales_lost <= m.counts.sql, "Sales Lost <= SQL");
   assert.equal(m.salesLost.every((r) => r.qualified === true), true);
-  assert.equal(m.preSqlClosed.some((r) => r.qualified === true), false, "no preSqlClosed is SQL");
-  assert.equal(m.preSqlClosed.some((r) => isSalesLost(r)), false, "no preSqlClosed is Sales Lost");
+  // isPreSqlClosed is a diagnostic, not a KPI exclusion: a direct close IS SQL
+  // and Sales Lost now, so preSqlClosed rows must appear in both — the
+  // diagnostic only flags that no real SQL/Обработка evidence was recorded.
+  assert.equal(m.preSqlClosed.every((r) => r.qualified === true), true, "preSqlClosed rows are still SQL");
+  assert.equal(m.preSqlClosed.every((r) => isSalesLost(r)), true, "preSqlClosed rows are still Sales Lost");
+  assert.equal(m.preSqlClosed.every((r) => !r.qualifiedStageId), true, "the diagnostic itself never sees real evidence");
   assert.equal(m.sql.some((r) => r.lossReasonGroup === "MARKETING"), false, "no Not Relevant is SQL");
   assert.equal(m.eligible.some((r) => r.lossReasonGroup === "ROUTING"), false, "routing excluded");
   assert.equal(m.eligible.filter((r) => r.salesStatus === "WON").every((r) => r.qualified), true);
@@ -109,7 +122,10 @@ test("filters and drilldowns still work on the compact payload", () => {
   assert.equal(compact.filter((r) => r.slaStatus === "ON_TIME").length, COHORT.length, "SLA filter");
   assert.equal(compact.every((r) => r.title && r.dealId), true, "deal table fields present");
   assert.equal(compact.filter(isEligibleCohortDeal).length, 7, "routing still excluded");
-  assert.equal(countSalesLost(compact), 1);
+  // "lost" (real SQL evidence) and "presql" (direct close) are both canonical
+  // Sales Lost now; the direct close is additionally flagged by isPreSqlClosed
+  // as a process-discipline diagnostic, without being subtracted from either.
+  assert.equal(countSalesLost(compact), 2);
   assert.equal(compact.filter(isPreSqlClosed).length, 1);
   const pop = selectPeriodPopulations(compact, Date.parse("2026-08-01T00:00:00Z"), Date.parse("2026-08-31T23:59:59Z"));
   assert.equal(pop.cohort.length, COHORT.length, "date filter");

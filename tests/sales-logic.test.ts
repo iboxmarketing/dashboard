@@ -202,9 +202,12 @@ test("Sales Lost 6: isSalesLost SALES guruhi VA sifat qabulini talab qiladi", ()
   // The correction: a Sales-funnel closure that never reached SQL is not a
   // sales loss, it is a lead that was never worked.
   assert.equal(isSalesLost({ lossReasonGroup: "SALES", qualified: false }), false);
-  assert.equal(isPreSqlClosed({ salesStatus: "LOST", lossReasonGroup: "SALES", qualified: false }), true);
-  assert.equal(isPreSqlClosed({ salesStatus: "LOST", lossReasonGroup: "SALES", qualified: true }), false);
-  assert.equal(isPreSqlClosed({ salesStatus: "LOST", lossReasonGroup: "ROUTING", qualified: false }), false);
+  // isPreSqlClosed is a diagnostic now, keyed on qualifiedStageId (real SQL
+  // evidence), not on `qualified` — every ordinary Sales closure is qualified
+  // unconditionally, so `qualified` can no longer distinguish a direct close.
+  assert.equal(isPreSqlClosed({ salesStatus: "LOST", lossReasonGroup: "SALES", qualifiedStageId: null }), true);
+  assert.equal(isPreSqlClosed({ salesStatus: "LOST", lossReasonGroup: "SALES", qualifiedStageId: "C3:UC_9SUEMM" }), false);
+  assert.equal(isPreSqlClosed({ salesStatus: "LOST", lossReasonGroup: "ROUTING", qualifiedStageId: null }), false);
   assert.equal(salesManagerKey({ salesManagerId: null }), "unknown");
   assert.equal(salesManagerKey({ salesManagerId: "7" }), "7");
 });
@@ -260,8 +263,10 @@ test("Rate 3: ROUTING sotilmagan raqamga ham, foizga ham kirmaydi", () => {
 
 test("Rate 4: kanonik Sotilmadi yozuvi “Sotilmadi” deb belgilanadi", () => {
   assert.deepEqual(dealOutcomeLabel({ salesStatus: "LOST", lossReasonGroup: "SALES", qualified: true }), { label: "Sotilmadi", tone: "danger" });
-  // A pre-SQL closure must not read "Sotilmadi" while every Sotilmadi count excludes it.
-  assert.deepEqual(dealOutcomeLabel({ salesStatus: "LOST", lossReasonGroup: "SALES", qualified: false }), { label: "SQLgacha yopilgan", tone: "warning" });
+  // A direct close (skipped SQL/Обработка) reads "Sotilmadi" too now — it is a
+  // process-discipline signal for Diagnostics only, never a third outcome badge.
+  // (isPreSqlClosed itself is exercised separately, keyed on qualifiedStageId.)
+  assert.deepEqual(dealOutcomeLabel({ salesStatus: "LOST", lossReasonGroup: "SALES", qualified: true }), { label: "Sotilmadi", tone: "danger" });
 });
 
 test("Rate 5: Not Relevant Sotilmadi’dan ajratilgan bo‘lib qoladi", () => {

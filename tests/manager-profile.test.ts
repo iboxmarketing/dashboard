@@ -32,9 +32,11 @@ const COHORT = [
   deal({ dealId: "a2", ...ALI, qualified: true, salesStatus: "WON", wonAt: "2026-08-10T09:00:00.000Z", opportunity: 700, salesCycleHours: 24 }),
   deal({ dealId: "a3", ...ALI, salesStatus: "LOW_QUALITY", lossReasonGroup: "MARKETING", lossReason: "Man qoldirmadim" }),
   deal({ dealId: "a4", ...ALI, salesStatus: "LOW_QUALITY", lossReasonGroup: "MARKETING", lossReason: "" }),
-  deal({ dealId: "a5", ...ALI, salesStatus: "LOST", qualified: true, lossReasonGroup: "SALES", lossReason: "Otsrochka" }),
-  // Pre-SQL closure: SALES group but never qualified — must stay out of Sotilmadi.
-  deal({ dealId: "a6", ...ALI, salesStatus: "LOST", qualified: false, lossReasonGroup: "SALES", lossReason: "Ignorit" }),
+  deal({ dealId: "a5", ...ALI, salesStatus: "LOST", qualified: true, qualifiedStageId: "C3:UC_9SUEMM", lossReasonGroup: "SALES", lossReason: "Otsrochka" }),
+  // Direct close: reached "Закрыто и нереализовано" without ever visiting SQL.
+  // Unconditionally qualified and canonical Sales Lost now; isPreSqlClosed (no
+  // qualifiedStageId) flags it as a hidden process-discipline diagnostic only.
+  deal({ dealId: "a6", ...ALI, salesStatus: "LOST", qualified: true, lossReasonGroup: "SALES", lossReason: "Ignorit" }),
   // Routing: excluded from the cohort entirely.
   deal({ dealId: "a7", ...ALI, salesStatus: "LOST", lossReasonGroup: "ROUTING", lossReason: "Idokon" }),
   deal({ dealId: "a8", ...ALI, slaStatus: "OVERDUE_UNPROCESSED", source: "Telegram" }),
@@ -62,13 +64,14 @@ test("B: lead share divides by every manager, not a displayed subset", () => {
 
 test("C/D/E: classification and quality use canonical denominators", () => {
   assert.equal(metrics.counts.leads, 7, "8 Ali records minus the routed one");
-  assert.equal(metrics.counts.classified_leads, 5, "3 qualified + 2 Not Relevant");
-  assert.equal(metrics.rates.classification_coverage, pct(5, 7));
-  assert.equal(metrics.counts.unclassified_leads, 2);
-  assert.equal(metrics.counts.sql, 3);
-  assert.equal(metrics.rates.quality_accepted_rate, pct(3, 5));
+  // 4 qualified (a1, a2, a5, and a6 the direct close) + 2 Not Relevant.
+  assert.equal(metrics.counts.classified_leads, 6, "4 qualified + 2 Not Relevant");
+  assert.equal(metrics.rates.classification_coverage, pct(6, 7));
+  assert.equal(metrics.counts.unclassified_leads, 1);
+  assert.equal(metrics.counts.sql, 4);
+  assert.equal(metrics.rates.quality_accepted_rate, pct(4, 6));
   assert.equal(metrics.counts.not_relevant, 2);
-  assert.equal(metrics.rates.low_quality_rate, pct(2, 5));
+  assert.equal(metrics.rates.low_quality_rate, pct(2, 6));
   assert.equal(metrics.rates.quality_accepted_rate + metrics.rates.low_quality_rate, 100);
 });
 
@@ -76,9 +79,9 @@ test("F/G/H/I/J/K/L: result, workload and speed cards are canonical", () => {
   assert.equal(metrics.counts.cohort_sales, 1);
   assert.equal(metrics.money.cohort_revenue, 700);
   assert.equal(metrics.rates.lead_to_sale, pct(1, 7));
-  assert.equal(metrics.rates.sql_to_sale, pct(1, 3));
-  assert.equal(metrics.counts.sales_lost, 1, "a5 only — the pre-SQL a6 is excluded");
-  assert.equal(metrics.rates.sales_lost, pct(1, 3));
+  assert.equal(metrics.rates.sql_to_sale, pct(1, 4));
+  assert.equal(metrics.counts.sales_lost, 2, "a5 and a6 — the direct close is canonical Sales Lost too");
+  assert.equal(metrics.rates.sales_lost, pct(2, 4));
   assert.equal(metrics.counts.period_sales, 1);
   assert.equal(metrics.money.revenue, 700);
   assert.equal(metrics.counts.active_cohort, metrics.eligible.filter((r) => r.salesStatus === "ACTIVE").length);
@@ -153,15 +156,16 @@ test("T/U/Y: Not Relevant reasons are marketing-only and share their own denomin
   assert.equal(reasons.reduce((sum, row) => sum + row.count, 0), rows.length);
 });
 
-test("V/W/X/Y: Sales Lost reasons exclude pre-SQL closures and routing", () => {
+test("V/W/X/Y: Sales Lost includes a direct close, and routing stays excluded", () => {
   const rows = salesLostRecords(cohort);
-  assert.equal(rows.length, 1, "a5 only");
+  // a5 (real SQL evidence) AND a6 (direct close) are both canonical Sales Lost now.
+  assert.equal(rows.length, 2, "a5 and a6");
   assert.equal(rows.every(isSalesLost), true, "V");
-  assert.equal(rows.some(isPreSqlClosed), false, "X: a6 is a pre-SQL closure, not a sales loss");
-  assert.equal(cohort.filter(isPreSqlClosed).length, 1, "and it does exist in the cohort");
+  assert.equal(rows.some(isPreSqlClosed), true, "X: a6 is flagged diagnostically, but stays IN Sales Lost");
+  assert.equal(cohort.filter(isPreSqlClosed).length, 1, "the diagnostic still isolates exactly one row");
   assert.equal(rows.some((row) => row.lossReasonGroup === "ROUTING"), false, "Y");
   const reasons = reasonBreakdown(rows);
-  assert.deepEqual(reasons, [{ reason: "Otsrochka", count: 1, share: 100 }], "W");
+  assert.deepEqual(reasons, [{ reason: "Ignorit", count: 1, share: 50 }, { reason: "Otsrochka", count: 1, share: 50 }], "W");
 });
 
 test("Z/AA: processing is not repeated at the bottom, and Chek uses period sales", () => {

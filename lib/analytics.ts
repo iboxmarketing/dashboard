@@ -1,6 +1,6 @@
 import { calculateBusinessMinutes, getSlaStart, isInsideWorkingTime } from "./business-time";
 import { resolveSlaState } from "./sla";
-import { canInferQualificationFromOutcome, classifyLossReasonGroup, MISSING_LOSS_REASON, classifySalesStatus, fieldDisplayValue, isLowQualityStage, isPaymentStage, isSqlOrDownstreamStage } from "./sales-logic";
+import { classifyLossReasonGroup, MISSING_LOSS_REASON, classifySalesStatus, fieldDisplayValue, isLowQualityStage, isPaymentStage, isSqlOrDownstreamStage } from "./sales-logic";
 import { sqlThresholdsByCategory, type StageMeta, type StageSemantics } from "./stage-config";
 import { canonicalDealFieldKey } from "./crm-fields";
 import type { SalesSnapshot } from "./storage";
@@ -20,8 +20,20 @@ import type { AnalyticsRecord, DashboardSettings, ProcessingSource, SalesManager
  *     before SQL are a separate pre-SQL population. A version 5 record was
  *     written under the old rule and reports different SQL and Sotilmadi
  *     numbers until it is rebuilt.
+ * 7 — Direct-close correction: an ordinary canonical Sales LOST closure is
+ *     always qualified now, regardless of stage-history evidence — a Deal
+ *     moved straight to "Закрыто и нереализовано" without ever visiting
+ *     SQL/Обработка is a seller process error, not proof the lead was never
+ *     worked, so it counts as SQL + Sales Lost. LOW_QUALITY still forces
+ *     qualified=false (Not Relevant stays authoritative) and ROUTING stays
+ *     outside the eligible cohort entirely, untouched by this rule.
+ *     `pre_sql_closed` (isPreSqlClosed) is diagnostic only from here on — it
+ *     flags a missing SQL-stage evidence trail but is never subtracted from
+ *     SQL, Sales Lost or Saralangan. A version 6 record was written under the
+ *     old exclusion and reports different SQL and Sotilmadi numbers, and a
+ *     different Saralangan, until it is rebuilt.
  */
-export const ANALYTICS_VERSION = 6;
+export const ANALYTICS_VERSION = 7;
 
 export type RawDeal = Record<string, unknown>;
 export type RawActivity = Record<string, unknown>;
@@ -144,25 +156,40 @@ export function buildAnalyticsRecords(input: {
       isSqlOrDownstreamStage({ stageId, stage: name, categoryId, semantic, thresholds: stageThresholds, stageMeta: input.stageMeta, config: stageSemantics });
     const qualifiedEvent = stageTimeline.find((entry) => mainIds.has(entry.categoryId) && acceptsAsQualified(entry.stageId, entry.stage, entry.categoryId));
     const salesStatus = baseSalesStatus;
-    // Quality acceptance is evidence-based. Not Relevant is always a marketing
-    // rejection, so a previous SQL visit must not reclassify it as a salesperson
-    // loss. A sale proves acceptance on its own. A terminal LOST outcome does
-    // NOT: it may only stand in for evidence when the qualification history
-    // could not be observed at all. Read history showing the deal never reached
-    // SQL is positive evidence against qualification, and upgrading it was
-    // counting never-worked leads as SQL.
-    const outcomeMayImplyQualification = canInferQualificationFromOutcome({
-      stageHistoryAvailable: input.stageHistoryAvailable,
-      historyRowCount: histories.length,
-    });
+    // lossReasonGroup must be known before `qualified` below, because ordinary
+    // Sales closures and routed/transferred ones are treated differently.
+    // Neither this block nor lossReasonGroup depends on qualified, so hoisting
+    // it here (its position in the returned record is unchanged) is safe.
+    const reasonField = input.settings.failureReasonFieldByPipeline?.[originCategoryId]
+      ?? input.settings.failureReasonFieldByPipeline?.[currentCategoryId]
+      ?? input.settings.failureReasonField;
+    // Legacy settings may hold the camelCase spelling; deals only ever carry UF_CRM_*.
+    const reasonKey = reasonField ? canonicalDealFieldKey(reasonField) : "";
+    const lossReason = reasonKey ? fieldDisplayValue(deal[reasonKey] ?? deal[reasonField as string], fieldOptions.get(reasonKey) ?? fieldOptions.get(reasonField as string)) : "";
+    const effectiveLossReason = lossReason || ((salesStatus === "LOST" || salesStatus === "LOW_QUALITY") ? MISSING_LOSS_REASON : "");
+    const lossReasonGroup = classifyLossReasonGroup({ status: salesStatus, reason: effectiveLossReason, routingPatterns: input.settings.routingReasonPatterns });
+    // Quality acceptance. Not Relevant is always a marketing rejection, so a
+    // previous SQL visit must not reclassify it as a salesperson loss. A sale
+    // proves acceptance on its own. An ORDINARY Sales-funnel closure
+    // (lossReasonGroup === "SALES", i.e. not Not Relevant and not routed/
+    // transferred to another project) is also always treated as qualified,
+    // even with no SQL/Обработка stage evidence: a seller who closes a Deal
+    // directly as "Закрыто и нереализовано" without moving it through SQL
+    // first is a process violation, not proof the lead was never worked, and
+    // it must still count as a seller-qualified lost lead. Routed/transferred
+    // closures are excluded from this rule — they never had a chance to
+    // convert here at all, so they are neither SQL nor Sales Lost.
     const qualified = salesStatus === "LOW_QUALITY"
       ? false
       : Boolean(qualifiedEvent)
         || salesStatus === "WON"
-        || (salesStatus === "LOST" && outcomeMayImplyQualification);
+        || (salesStatus === "LOST" && lossReasonGroup === "SALES");
     // Timing comes only from real qualification evidence. The old positional
     // fallback picked whatever stage happened to sit second in the timeline,
-    // which dated qualification to Нет ответа or Сделка провалена.
+    // which dated qualification to Нет ответа or Сделка провалена. A direct
+    // close carries no such evidence, so qualifiedAt/qualifiedStage stay null
+    // for it even though `qualified` is true — see isPreSqlClosed below for
+    // the diagnostic that reads exactly this gap.
     const effectiveQualifiedEvent = qualified ? qualifiedEvent ?? null : null;
     const qualifiedAt = effectiveQualifiedEvent?.enteredAt ?? null;
 
@@ -212,14 +239,6 @@ export function buildAnalyticsRecords(input: {
     else if (!snapshotManagerId && assignedManagerId) { salesManagerId = assignedManagerId; salesManagerAttribution = "CURRENT_RESPONSIBLE"; }
     if (!salesManager && salesManagerId) salesManager = managerName(salesManagerId, input.users);
 
-    // Each Sales funnel carries its own Причина провала field; fall back to the
-    // single configured field for installs that have not mapped per pipeline.
-    const reasonField = input.settings.failureReasonFieldByPipeline?.[originCategoryId]
-      ?? input.settings.failureReasonFieldByPipeline?.[currentCategoryId]
-      ?? input.settings.failureReasonField;
-    // Legacy settings may hold the camelCase spelling; deals only ever carry UF_CRM_*.
-    const reasonKey = reasonField ? canonicalDealFieldKey(reasonField) : "";
-    const lossReason = reasonKey ? fieldDisplayValue(deal[reasonKey] ?? deal[reasonField as string], fieldOptions.get(reasonKey) ?? fieldOptions.get(reasonField as string)) : "";
     // Source is the standard Bitrix SOURCE_ID resolved through the live SOURCE
     // dictionary. Custom "how did you hear" fields and UTM are separate
     // dimensions and must not stand in for it.
@@ -230,8 +249,6 @@ export function buildAnalyticsRecords(input: {
     const salesCycleHours = effectiveWonAt ? Math.max(0, (new Date(effectiveWonAt).getTime() - created.getTime()) / 3_600_000) : null;
     const contactId = string(deal.CONTACT_ID) || (Array.isArray(deal.CONTACT_IDS) ? string(deal.CONTACT_IDS[0]) : "");
     const companyId = string(deal.COMPANY_ID);
-    const effectiveLossReason = lossReason || ((salesStatus === "LOST" || salesStatus === "LOW_QUALITY") ? MISSING_LOSS_REASON : "");
-    const lossReasonGroup = classifyLossReasonGroup({ status: salesStatus, reason: effectiveLossReason, routingPatterns: input.settings.routingReasonPatterns });
 
     return [{
       analyticsVersion: ANALYTICS_VERSION, dealId, title: string(deal.TITLE) || `Deal #${dealId}`, createdAt: created.toISOString(), creationPeriod: isInsideWorkingTime(created, input.settings) ? "WORK_HOURS" : "AFTER_HOURS", slaStart: slaStart.toISOString(),
