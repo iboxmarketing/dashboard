@@ -132,12 +132,28 @@ export function buildDashboardMetrics(cohortRecords: MetricRecord[], periodSales
   // label that has been read the same way for months.
   const duplicatesRaw = countDuplicates(cohortRecords);
   const duplicatesEligible = countDuplicates(eligible);
+  /** Non-zero means a record asserts both verdicts; Diagnostics shows it. */
+  const classificationConflicts = countClassificationConflicts(eligible);
+
+  const qualityAcceptedRate = percent(sql.length, classified.length);
+  // Sifatli % and Sifatsiz % are displayed as a pair and read as complementary
+  // shares of Saralangan. Rounding each independently can land both sides on
+  // a .5 boundary and round up together — 195/312 and 117/312 are 62.5% and
+  // 37.5%, which independently round to 63 + 38 = 101%. When SQL and Not
+  // Relevant cleanly partition `classified` (no classification conflict),
+  // Sifatsiz % is defined as the remainder instead of rounded on its own, so
+  // the displayed pair always sums to exactly 100%. A conflict means SQL and
+  // Not Relevant no longer exhaustively/exclusively cover `classified`, so
+  // subtracting would silently paper over that; the independent rate is kept
+  // so Diagnostics still shows the real mismatch.
+  const lowQualityRate = classified.length > 0 && classificationConflicts === 0
+    ? 100 - qualityAcceptedRate
+    : percent(notRelevant.length, classified.length);
 
   return {
     eligible, sql, notRelevant, salesLost, cohortSales, periodSales, sla,
     classified, unclassified, preSqlClosed,
-    /** Non-zero means a record asserts both verdicts; Diagnostics shows it. */
-    classificationConflicts: countClassificationConflicts(eligible),
+    classificationConflicts,
     counts: {
       leads: eligible.length,
       sql: sql.length,
@@ -165,8 +181,8 @@ export function buildDashboardMetrics(cohortRecords: MetricRecord[], periodSales
       lead_to_sql: percent(sql.length, eligible.length),
       lead_to_sale: percent(cohortSales.length, eligible.length),
       // Quality: denominator is the leads we have actually judged.
-      quality_accepted_rate: percent(sql.length, classified.length),
-      low_quality_rate: percent(notRelevant.length, classified.length),
+      quality_accepted_rate: qualityAcceptedRate,
+      low_quality_rate: lowQualityRate,
       classification_coverage: percent(classified.length, eligible.length),
       // Kept for the explicitly-labelled full-funnel card. `not_relevant` is
       // retained as an alias so no existing consumer silently changes meaning.

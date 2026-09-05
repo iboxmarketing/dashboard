@@ -152,3 +152,42 @@ test("17.1: davr sarlavhasi Leadlar bilan bir xil populyatsiyani ko‘rsatadi", 
   assert.equal(CLIENT.includes("unique lead"), false);
   assert.ok(CLIENT.includes("cohortFiltered.filter(isEligibleCohortDeal).length"));
 });
+
+test("24: Sifatli % + Sifatsiz % = 100% aynan shu nisbatda (195/312, 117/312)", () => {
+  // Reproduces the 2026-08-05..09-03 IBOX sales / CRM-forma production cohort:
+  // SQL=195, Not Relevant=117, Saralangan=312. 195/312 = 62.5% and
+  // 117/312 = 37.5% independently round to 63 + 38 = 101% — the bug this
+  // guards against. SQL and Not Relevant are disjoint here (no record is both
+  // qualified and MARKETING), so Sifatsiz % must be defined as the remainder.
+  const rows = [
+    ...Array.from({ length: 195 }, (_, i) => deal({ dealId: `sql-${i}`, qualified: true })),
+    ...Array.from({ length: 117 }, (_, i) => deal({ dealId: `nr-${i}`, salesStatus: "LOW_QUALITY", lossReasonGroup: "MARKETING" })),
+  ];
+  const m = buildDashboardMetrics(rows, []);
+  assert.equal(m.counts.sql, 195);
+  assert.equal(m.counts.not_relevant, 117);
+  assert.equal(m.counts.classified_leads, 312);
+  assert.equal(m.classificationConflicts, 0);
+  assert.equal(m.rates.quality_accepted_rate, 63);
+  assert.equal(m.rates.low_quality_rate, 37);
+  assert.equal(m.rates.quality_accepted_rate + m.rates.low_quality_rate, 100);
+});
+
+test("25: klassifikatsiya konflikti bo‘lsa, mos yozuv o‘rniga mustaqil foiz saqlanadi", () => {
+  // A record that is somehow both qualified and MARKETING is counted in both
+  // sql and notRelevant, so they no longer partition classified — subtracting
+  // would hide that. The independent (possibly non-complementary) rate must
+  // survive so Diagnostics still shows the real mismatch.
+  const rows = [
+    deal({ dealId: "1", qualified: true }),
+    deal({ dealId: "2", qualified: true, lossReasonGroup: "MARKETING" }), // conflict: both verdicts
+  ];
+  const m = buildDashboardMetrics(rows, []);
+  assert.equal(m.classificationConflicts, 1);
+  assert.equal(m.counts.sql, 2);
+  assert.equal(m.counts.not_relevant, 1);
+  assert.equal(m.counts.classified_leads, 2);
+  // Independent rounding, not 100 - quality_accepted_rate (which would be 0).
+  assert.equal(m.rates.quality_accepted_rate, 100);
+  assert.equal(m.rates.low_quality_rate, 50);
+});
