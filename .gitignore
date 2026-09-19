@@ -54,3 +54,5 @@ next-env.d.ts
 
 # generated Cloudflare deploy config (contains account-scoped ids)
 wrangler.generated.jsonc
+.ai-team/runs/
+.ai-team/worktrees/
