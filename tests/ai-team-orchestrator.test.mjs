@@ -22,6 +22,9 @@ async function fixtureRepo() {
   await runCommand("git", ["init", "-b", "main"], { cwd: repo, env: safeEnvironment() });
   await runCommand("git", ["add", "."], { cwd: repo, env: safeEnvironment() });
   await runCommand("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@localhost", "commit", "-m", "fixture"], { cwd: repo, env: safeEnvironment() });
+  // Match a clean CI runner so integration commits cannot inherit a developer identity.
+  await runCommand("git", ["config", "user.name", ""], { cwd: repo, env: safeEnvironment() });
+  await runCommand("git", ["config", "user.email", ""], { cwd: repo, env: safeEnvironment() });
   return repo;
 }
 

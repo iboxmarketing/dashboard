@@ -81,7 +81,10 @@ export async function commitTask(worktree, task, files) {
 }
 
 export async function cherryPick(worktree, commit) {
-  await git(worktree, ["cherry-pick", commit]);
+  await git(worktree, [
+    "-c", "user.name=IBOX AI Team", "-c", "user.email=ai-team@localhost",
+    "cherry-pick", commit,
+  ]);
 }
 
 export async function diffFiles(worktree, baseRef) {
