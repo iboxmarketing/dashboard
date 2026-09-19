@@ -9,8 +9,15 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cli = path.join(root, "scripts/ai-team/cli.mjs");
 const capabilities = {
-  codex: ["--sandbox", "--output-schema", "--output-last-message", "--ephemeral"],
-  claude: ["--print", "--json-schema", "--permission-mode", "--permission-prompts", "--no-session-persistence", "--restricted"],
+  codex: [
+    "--sandbox", "--output-schema", "--output-last-message", "--ephemeral",
+    "--config", "--disable", "--ignore-user-config", "--strict-config",
+  ],
+  claude: [
+    "--print", "--json-schema", "--permission-mode", "--permission-prompts",
+    "--no-session-persistence", "--restricted", "--tools", "--safe-mode",
+    "--strict-mcp-config", "--disable-slash-commands", "--no-chrome",
+  ],
 };
 
 async function fixture(t, omitted) {

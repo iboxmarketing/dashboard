@@ -44,8 +44,15 @@ async function doctor(repo, codexCommand = "codex", claudeCommand = "claude") {
     runCommand(claudeCommand, ["--help"], { cwd: repo, timeoutMs: 20_000, maxOutput: 100_000 }),
   ]);
   const checks = {
-    codex: ["--sandbox", "--output-schema", "--output-last-message", "--ephemeral"],
-    claude: ["--print", "--json-schema", "--permission-mode", "--permission-prompts", "--no-session-persistence", "--restricted"],
+    codex: [
+      "--sandbox", "--output-schema", "--output-last-message", "--ephemeral",
+      "--config", "--disable", "--ignore-user-config", "--strict-config",
+    ],
+    claude: [
+      "--print", "--json-schema", "--permission-mode", "--permission-prompts",
+      "--no-session-persistence", "--restricted", "--tools", "--safe-mode",
+      "--strict-mcp-config", "--disable-slash-commands", "--no-chrome",
+    ],
   };
   const missing = [
     ...checks.codex.filter((flag) => !codexHelp.stdout.includes(flag)).map((flag) => `codex exec ${flag}`),

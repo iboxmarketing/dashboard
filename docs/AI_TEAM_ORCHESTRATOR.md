@@ -8,9 +8,11 @@ runtime dependencies.
 
 1. Codex proposes a structured plan in read-only mode.
 2. Claude reviews the plan independently in read-only mode.
-3. Codex produces the agreed plan with dependencies, path ownership, tests and
+3. Codex produces a revised plan with dependencies, path ownership, tests and
    acceptance criteria.
-4. A blocking business decision stops the run before any worktree is created.
+4. Claude independently reviews the revision. A rejection or blocking business
+   decision stops the run before any worktree is created; only an approval makes
+   the plan agreed.
 5. Each task gets its own Git branch and worktree. The assigned agent edits only
    its declared paths.
 6. The other agent reviews the uncommitted task diff. Actionable findings return
@@ -77,7 +79,8 @@ leaves the run blocked for inspection.
 Local, ignored artifacts live under `.ai-team/runs/<run-id>/`:
 
 - original goal;
-- Codex plan, Claude review and agreed plan;
+- Codex plan, initial Claude review, revised Codex plan, final Claude approval
+  and agreed plan;
 - implementation and review reports for each task;
 - final machine-readable run state;
 - consolidated `final-report.md`.
@@ -89,18 +92,21 @@ abandoned.
 
 ## Troubleshooting
 
-A run that does not reach `ready_for_owner` exits with a nonzero code and prints
-its `status` and `unresolved` list. The same information is in
-`.ai-team/runs/<run-id>/run.json` and `final-report.md`.
+A run that reaches a handled `needs_input` or `blocked` state exits with a
+nonzero code and prints its `status` and `unresolved` list. The same information
+is in `.ai-team/runs/<run-id>/run.json` and `final-report.md`. An unexpected
+failure before state finalization prints an `ai-team:` error and may leave only
+the artifacts written before that failure.
 
 ### Blocked before any worktree exists
 
-If the agreed plan or Claude's plan review contains a blocking decision, the run
-ends with status `needs_input` and creates no worktree or integration branch.
-Only the plan artifacts and report exist under `.ai-team/runs/<run-id>/`. An
-invalid plan (for example a dependency cycle or a multi-task plan that does not
-use both agents) also stops the run at this stage, with an `ai-team:` error and
-no `run.json`.
+If the revised plan contains a blocking decision, or Claude rejects it at the
+final consensus gate, the run ends with status `needs_input` and creates no
+worktree or integration branch. Only the planning artifacts and report exist
+under `.ai-team/runs/<run-id>/`; `plan.agreed.json` is written only after final
+approval. An invalid plan (for example a dependency cycle or a multi-task plan
+that does not use both agents) stops earlier with an `ai-team:` error and no
+`run.json`.
 
 ### Blocked after work has started
 
@@ -150,15 +156,32 @@ permissions or delete anything unreviewed to get past a blocked run.
 ## Safety boundary
 
 The subprocess environment is allowlisted and removes variables whose names may
-contain credentials. Prompts repeat the repository's safety rules. Codex uses a
-workspace sandbox; Claude receives a bounded tool list and a noninteractive mode
-that denies permission prompts. Neither dangerous bypass flag is used.
+contain credentials. Each invocation receives a temporary isolated `HOME`; the
+launcher receives only the relevant Codex or Claude configuration directory for
+local authentication. Prompts repeat the repository's safety rules, but command
+enforcement does not depend on those prompts.
+
+Codex implementation and revision sessions use the workspace-write sandbox with
+the shell tool disabled. User configuration, hooks, apps, web search and nested
+agents are disabled, and approval requests are denied. Claude implementation and
+revision sessions use restricted and safe modes with an explicit tool list of
+`Read`, `Glob`, `Grep`, `Edit` and `Write`; Bash, PowerShell, REPL, web, MCP and
+other command/code execution tools are unavailable. Therefore implementation
+agents cannot run deploy, Sync, Backfill, Wrangler/D1, Cloudflare Access, Git
+push, force-push, destructive shell commands or any equivalent command wrapper.
+
+Read-only planning and review sessions cannot write the worktree. Codex runs
+those sessions in its read-only, network-disabled sandbox with approvals denied;
+Claude receives only confined read/search tools. Agents do not run tests during
+implementation. The orchestrator runs validated test/build commands afterward
+with a separate temporary `HOME` and no AI CLI configuration directories.
 
 The tool rejects `.vscode/` changes, edits outside task ownership, credential-
 shaped Bitrix URLs and shell test commands outside a narrow test/build allowlist.
-It imposes explicit process timeouts and caps captured output. It does not run
-deploy, Sync, Backfill, D1, Cloudflare Access, force-push or automatic merge
-operations.
+It imposes explicit process timeouts and caps captured output. PR creation is an
+explicit orchestrator option; it rejects `main` as a push target and never
+merges. It does not run deploy, Sync, Backfill, D1, Cloudflare Access or
+force-push operations.
 
 These controls reduce automation risk; they do not turn an AI-generated change
 into trusted code. The owner must inspect the agreed plan, diff, reviews and

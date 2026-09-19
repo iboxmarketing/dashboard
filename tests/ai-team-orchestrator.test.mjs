@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { AgentRunner } from "../scripts/ai-team/agents.mjs";
+import { AgentRunner, agentEnvironment, claudeInvocationArgs, codexInvocationArgs } from "../scripts/ai-team/agents.mjs";
 import { pathOwned } from "../scripts/ai-team/git.mjs";
 import { Orchestrator } from "../scripts/ai-team/orchestrator.mjs";
 import { commandFailureMessage, redact, runCommand, safeEnvironment } from "../scripts/ai-team/process.mjs";
@@ -32,6 +32,7 @@ test("AI team completes planning, reciprocal reviews, integration, and verificat
   const orchestrator = new Orchestrator({ repo, runner, baseRef: "main", timeoutMs: 30_000 });
   const state = await orchestrator.run("Create two independent fixture documents.", { runId: "test-run" });
   assert.equal(state.status, "ready_for_owner");
+  assert.equal(state.planApproval.approved, true);
   assert.deepEqual(state.tasks.map((item) => [item.task.agent, item.status]), [["codex", "complete"], ["claude", "complete"]]);
   assert.ok(state.tasks.every((item) => item.reviews.length === 1 && item.reviews[0].approved));
   assert.equal(state.tests.at(-1).command, "npm run verify");
@@ -39,6 +40,67 @@ test("AI team completes planning, reciprocal reviews, integration, and verificat
   const integration = state.tasks[0].worktree.replace(/\/codex-doc$/, "/integration");
   assert.match(await readFile(path.join(integration, "docs/codex-fixture.md"), "utf8"), /codex fixture/);
   assert.match(await readFile(path.join(integration, "docs/claude-fixture.md"), "utf8"), /claude fixture/);
+});
+
+test("final Claude rejection blocks implementation before worktree creation", async () => {
+  await chmod(mock, 0o755);
+  const repo = await fixtureRepo();
+  const delegate = new AgentRunner({ codexCommand: mock, claudeCommand: mock, timeoutMs: 20_000, mock: true });
+  const runner = {
+    async invoke(agent, options) {
+      if (options.phase === "plan_approval") {
+        return { approved: false, feedback: ["Acceptance criteria remain ambiguous."], unresolvedDecisions: [] };
+      }
+      return await delegate.invoke(agent, options);
+    },
+  };
+  const orchestrator = new Orchestrator({ repo, runner, baseRef: "main", timeoutMs: 30_000 });
+  const state = await orchestrator.run("Create two independent fixture documents.", { runId: "rejected-plan" });
+  assert.equal(state.status, "needs_input");
+  assert.equal(state.integrationBranch, null);
+  assert.equal(state.tasks.length, 0);
+  assert.equal(state.planApproval.approved, false);
+  assert.deepEqual(state.unresolved, ["Acceptance criteria remain ambiguous."]);
+});
+
+test("implementation invocations expose file editing but no command execution", () => {
+  const codex = codexInvocationArgs({
+    cwd: "/workspace", schemaPath: "/tmp/schema.json", outputPath: "/tmp/result.json", readOnly: false,
+  });
+  assert.ok(codex.some((item, index) => item === "--disable" && codex[index + 1] === "shell_tool"));
+  assert.ok(codex.includes("--ignore-user-config"));
+  assert.ok(codex.some((item, index) => item === "--config" && codex[index + 1] === 'approval_policy="never"'));
+  assert.ok(codex.some((item, index) => item === "--config" && codex[index + 1] === 'web_search="disabled"'));
+  assert.ok(!codex.some((item) => item.includes("dangerously-bypass")));
+
+  const claude = claudeInvocationArgs({ schema: { type: "object" }, readOnly: false });
+  const tools = claude[claude.indexOf("--tools") + 1];
+  assert.equal(tools, "Read,Glob,Grep,Edit,Write");
+  assert.doesNotMatch(tools, /Bash|PowerShell|REPL/);
+  assert.ok(claude.includes("--restricted"));
+  assert.ok(claude.includes("--safe-mode"));
+  assert.ok(claude.includes("--strict-mcp-config"));
+  assert.ok(!claude.some((item) => item.includes("dangerously-skip-permissions")));
+});
+
+test("agent launchers receive an isolated HOME and only their own auth directory", () => {
+  const source = {
+    PATH: "/usr/bin:/bin",
+    HOME: "/real-home",
+    CODEX_HOME: "/real-home/.codex",
+    CLAUDE_CONFIG_DIR: "/real-home/.claude",
+    BITRIX24_WEBHOOK_URL: "fixture-sensitive-value",
+  };
+  const codex = agentEnvironment("codex", "/tmp/codex-home", {}, source);
+  assert.equal(codex.HOME, "/tmp/codex-home");
+  assert.equal(codex.CODEX_HOME, "/real-home/.codex");
+  assert.equal(codex.CLAUDE_CONFIG_DIR, undefined);
+  assert.equal(codex.BITRIX24_WEBHOOK_URL, undefined);
+  const claude = agentEnvironment("claude", "/tmp/claude-home", {}, source);
+  assert.equal(claude.HOME, "/tmp/claude-home");
+  assert.equal(claude.CLAUDE_CONFIG_DIR, "/real-home/.claude");
+  assert.equal(claude.CODEX_HOME, undefined);
+  assert.equal(claude.BITRIX24_WEBHOOK_URL, undefined);
 });
 
 test("path ownership supports exact files and bounded glob patterns", () => {

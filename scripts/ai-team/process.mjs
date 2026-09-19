@@ -2,13 +2,13 @@ import { spawn } from "node:child_process";
 
 const SECRET_KEY = /(secret|token|password|passwd|credential|private[_-]?key|webhook)/i;
 
-export function safeEnvironment(extra = {}) {
+export function safeEnvironment(extra = {}, source = process.env) {
   const allowed = [
     "PATH", "HOME", "USER", "SHELL", "TERM", "LANG", "LC_ALL", "TMPDIR",
     "CODEX_HOME", "CLAUDE_CONFIG_DIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
     "http_proxy", "https_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR",
   ];
-  const env = Object.fromEntries(allowed.flatMap((key) => process.env[key] === undefined ? [] : [[key, process.env[key]]]));
+  const env = Object.fromEntries(allowed.flatMap((key) => source[key] === undefined ? [] : [[key, source[key]]]));
   for (const [key, value] of Object.entries(extra)) {
     if (!SECRET_KEY.test(key) && value !== undefined) env[key] = String(value);
   }

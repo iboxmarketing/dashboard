@@ -1,10 +1,11 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   addWorktree, assertClean, changedFiles, cherryPick, commitTask, diffFiles, git,
   resolveRef, safeBranchPart, validateTaskChanges,
 } from "./git.mjs";
-import { implementationPrompt, planningPrompt, planReviewPrompt, planRevisionPrompt, reviewPrompt, revisionPrompt } from "./prompts.mjs";
+import { finalPlanApprovalPrompt, implementationPrompt, planningPrompt, planReviewPrompt, planRevisionPrompt, reviewPrompt, revisionPrompt } from "./prompts.mjs";
 import { implementationSchema, planReviewSchema, planSchema, reviewSchema, revisionSchema } from "./schemas.mjs";
 import { runCommand, safeEnvironment } from "./process.mjs";
 
@@ -46,11 +47,13 @@ function validatePlan(plan) {
   }
 }
 
-function blockingDecisions(plan, review) {
-  return [
+function consensusBlockers(plan, approval) {
+  const blockers = [
     ...plan.unresolvedDecisions.filter((item) => item.blocking).map((item) => `${item.question}: ${item.reason}`),
-    ...review.unresolvedDecisions,
+    ...approval.unresolvedDecisions,
   ];
+  if (!approval.approved) blockers.push(...(approval.feedback.length ? approval.feedback : ["Claude did not approve the revised plan."]));
+  return blockers;
 }
 
 function safeTestCommand(command) {
@@ -61,7 +64,15 @@ function safeTestCommand(command) {
 
 async function runSafeTest(cwd, command, timeoutMs) {
   if (!safeTestCommand(command)) throw new Error(`Rejected unapproved test command: ${command}`);
-  return await runCommand("bash", ["-c", command], { cwd, timeoutMs, env: safeEnvironment() });
+  const isolatedHome = await mkdtemp(path.join(tmpdir(), "ibox-ai-team-test-home-"));
+  const env = safeEnvironment({ HOME: isolatedHome, GIT_TERMINAL_PROMPT: "0" });
+  delete env.CODEX_HOME;
+  delete env.CLAUDE_CONFIG_DIR;
+  try {
+    return await runCommand("bash", ["-c", command], { cwd, timeoutMs, env });
+  } finally {
+    await rm(isolatedHome, { recursive: true, force: true });
+  }
 }
 
 function markdownReport(state) {
@@ -72,7 +83,7 @@ function markdownReport(state) {
   });
   const reviewLines = state.tasks.flatMap((item) => item.reviews.map((review, index) =>
     `- ${item.task.id}, round ${index + 1}: ${review.approved ? "approved" : `${review.findings.length} finding(s)`}`));
-  return `# IBOX AI team run\n\n## Original goal\n\n${state.goal}\n\n## Tasks\n\n${taskLines.join("\n") || "- None"}\n\n## Contributions\n\n${contributionLines.join("\n")}\n\n## Tests\n\n${state.tests.map((item) => `- ${item.command}: ${item.status}`).join("\n") || "- Not run"}\n\n## Reviews\n\n${reviewLines.join("\n") || "- No task reviews"}\n\n## Changed files\n\n${state.changedFiles.map((file) => `- ${file}`).join("\n") || "- None"}\n\n## Risks and unresolved decisions\n\n${state.unresolved.map((item) => `- ${item}`).join("\n") || "- None"}\n\n## Branch / PR\n\n- Branch: ${state.integrationBranch ?? "not created"}\n- PR: ${state.prUrl ?? "not created"}\n\n## Owner acceptance\n\n1. Review this report and the agreed plan artifact.\n2. Review the integration branch diff.\n3. Confirm all unresolved decisions are acceptable.\n4. Confirm the recorded verification result.\n5. Open or approve the PR; merge manually only after approval.\n`;
+  return `# IBOX AI team run\n\n## Original goal\n\n${state.goal}\n\n## Plan consensus\n\n- Final Claude approval: ${state.planApproval.approved ? "approved" : "rejected"}\n\n## Tasks\n\n${taskLines.join("\n") || "- None"}\n\n## Contributions\n\n${contributionLines.join("\n")}\n\n## Tests\n\n${state.tests.map((item) => `- ${item.command}: ${item.status}`).join("\n") || "- Not run"}\n\n## Reviews\n\n${reviewLines.join("\n") || "- No task reviews"}\n\n## Changed files\n\n${state.changedFiles.map((file) => `- ${file}`).join("\n") || "- None"}\n\n## Risks and unresolved decisions\n\n${state.unresolved.map((item) => `- ${item}`).join("\n") || "- None"}\n\n## Branch / PR\n\n- Branch: ${state.integrationBranch ?? "not created"}\n- PR: ${state.prUrl ?? "not created"}\n\n## Owner acceptance\n\n1. Review this report and the agreed plan artifact.\n2. Review the integration branch diff.\n3. Confirm all unresolved decisions are acceptable.\n4. Confirm the recorded verification result.\n5. Open or approve the PR; merge manually only after approval.\n`;
 }
 
 export class Orchestrator {
@@ -107,18 +118,23 @@ export class Orchestrator {
       cwd: this.repo, prompt: planRevisionPrompt(goal, initial, planReview), schema: planSchema, readOnly: true, phase: "plan_revise",
     });
     validatePlan(plan);
-    await jsonFile(path.join(artifactDir, "plan.agreed.json"), plan);
+    await jsonFile(path.join(artifactDir, "plan.codex-revised.json"), plan);
+    const planApproval = await this.runner.invoke("claude", {
+      cwd: this.repo, prompt: finalPlanApprovalPrompt(goal, plan, planReview), schema: planReviewSchema, readOnly: true, phase: "plan_approval",
+    });
+    await jsonFile(path.join(artifactDir, "plan.claude-approval.json"), planApproval);
 
-    const unresolved = blockingDecisions(plan, planReview);
+    const unresolved = consensusBlockers(plan, planApproval);
     const state = {
       runId: id, goal, baseRef: this.baseRef, baseSha, status: "planned", integrationBranch: null,
-      plan, tasks: [], tests: [], changedFiles: [], unresolved, prUrl: null,
+      plan, planApproval, tasks: [], tests: [], changedFiles: [], unresolved, prUrl: null,
     };
     if (unresolved.length) {
       state.status = "needs_input";
       await this.#finish(artifactDir, state);
       return state;
     }
+    await jsonFile(path.join(artifactDir, "plan.agreed.json"), plan);
 
     const integrationBranch = `ai-team/${id}/integration`;
     const integrationWorktree = path.join(workRoot, "integration");

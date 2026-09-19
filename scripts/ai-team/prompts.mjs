@@ -18,13 +18,18 @@ Find missing dependencies, unsafe scope, overlapping ownership, weak acceptance 
 }
 
 export function planRevisionPrompt(goal, plan, review) {
-  return `[AI_TEAM_PHASE:PLAN_REVISE]\nYou are Codex. Produce the final agreed plan by incorporating Claude's actionable feedback.\nGoal:\n${goal}\n\nInitial plan:\n${JSON.stringify(plan, null, 2)}\n\nClaude review:\n${JSON.stringify(review, null, 2)}\n${SAFETY}
+  return `[AI_TEAM_PHASE:PLAN_REVISE]\nYou are Codex. Produce a revised plan by incorporating Claude's actionable feedback. Claude will independently approve or reject this revision before implementation.\nGoal:\n${goal}\n\nInitial plan:\n${JSON.stringify(plan, null, 2)}\n\nClaude review:\n${JSON.stringify(review, null, 2)}\n${SAFETY}
 Do not dismiss unresolved decisions. Keep owned paths non-overlapping. Return only the requested structured object.`;
+}
+
+export function finalPlanApprovalPrompt(goal, plan, previousReview) {
+  return `[AI_TEAM_PHASE:PLAN_APPROVAL]\nYou are Claude, the final independent consensus gate. Approve or reject Codex's revised plan before any implementation worktree is created.\nGoal:\n${goal}\n\nYour earlier review:\n${JSON.stringify(previousReview, null, 2)}\n\nRevised Codex plan:\n${JSON.stringify(plan, null, 2)}\n${SAFETY}
+Approve only if the revision resolves every blocking concern, has safe non-overlapping ownership and dependencies, includes adequate tests and acceptance criteria, and invents no business decision. Put every remaining blocker in feedback or unresolvedDecisions. Return only the requested structured object.`;
 }
 
 export function implementationPrompt(goal, task, plan) {
   return `[AI_TEAM_PHASE:IMPLEMENT]\nYou are ${task.agent}. Implement only this assigned task in the current isolated worktree.\nOriginal goal:\n${goal}\n\nTask:\n${JSON.stringify(task, null, 2)}\n\nAgreed plan summary:\n${plan.summary}\n${SAFETY}
-You may edit only ownedPaths. Do not commit, push, create worktrees, or edit orchestration artifacts. Run the task's safe tests when useful. Return only the requested structured report.`;
+You may edit only ownedPaths. Your implementation session has no shell, command, code-execution, web or external-service tools. Do not commit, push, create worktrees, or edit orchestration artifacts. Make file changes with the provided edit tools; the orchestrator runs approved tests after your session. Report testsRun as empty unless a non-command tool performed a real check. Return only the requested structured report.`;
 }
 
 export function reviewPrompt(goal, task, implementation, baseSha) {
@@ -34,5 +39,5 @@ Check correctness, scope, tests, security, and repository rules. Findings must b
 
 export function revisionPrompt(goal, task, review, round) {
   return `[AI_TEAM_PHASE:REVISE]\nYou are ${task.agent}. Address every actionable review finding for round ${round} in the current isolated worktree.\nGoal:\n${goal}\n\nTask:\n${JSON.stringify(task, null, 2)}\n\nReview:\n${JSON.stringify(review, null, 2)}\n${SAFETY}
-Edit only ownedPaths. Do not commit or push. Return only the requested structured report.`;
+Edit only ownedPaths. This revision session has no shell, command, code-execution, web or external-service tools. Do not commit or push; the orchestrator runs approved tests after the session. Return only the requested structured report.`;
 }

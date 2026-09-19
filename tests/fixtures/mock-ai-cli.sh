@@ -5,11 +5,30 @@ set -euo pipefail
 prompt="$(cat)"
 : "${prompt:=empty}"
 
+case " $* " in
+  *" --dangerously-bypass-approvals-and-sandbox "*|*" --dangerously-bypass-hook-trust "*|*" --dangerously-skip-permissions "*)
+    printf 'Dangerous bypass flag supplied to mock agent\n' >&2
+    exit 2
+    ;;
+esac
+
+if [[ "${AI_TEAM_PHASE:-}" == "implement" || "${AI_TEAM_PHASE:-}" == "revise" ]]; then
+  if [[ "${AI_TEAM_AGENT:-}" == "codex" ]]; then
+    [[ " $* " == *" --disable shell_tool "* ]] || { printf 'Codex implementation shell is enabled\n' >&2; exit 2; }
+  else
+    [[ " $* " == *" --restricted "* ]] || { printf 'Claude restricted mode is missing\n' >&2; exit 2; }
+    [[ " $* " == *" --safe-mode "* ]] || { printf 'Claude safe mode is missing\n' >&2; exit 2; }
+    [[ " $* " == *" --strict-mcp-config "* ]] || { printf 'Claude strict MCP mode is missing\n' >&2; exit 2; }
+    [[ " $* " == *" --tools Read,Glob,Grep,Edit,Write "* ]] || { printf 'Claude implementation tool list is not exact\n' >&2; exit 2; }
+    [[ " $* " != *"Bash"* ]] || { printf 'Claude Bash tool is enabled\n' >&2; exit 2; }
+  fi
+fi
+
 plan='{"summary":"Two independent fixture documents with cross-agent review.","unresolvedDecisions":[],"tasks":[{"id":"codex-doc","title":"Add Codex fixture","agent":"codex","objective":"Create the Codex fixture document.","dependsOn":[],"ownedPaths":["docs/codex-fixture.md"],"acceptanceCriteria":["Document exists"],"testCommands":[]},{"id":"claude-doc","title":"Add Claude fixture","agent":"claude","objective":"Create the Claude fixture document.","dependsOn":[],"ownedPaths":["docs/claude-fixture.md"],"acceptanceCriteria":["Document exists"],"testCommands":[]}]}'
 
 case "${AI_TEAM_PHASE:-}" in
   plan|plan_revise) result="$plan" ;;
-  plan_review) result='{"approved":true,"feedback":[],"unresolvedDecisions":[]}' ;;
+  plan_review|plan_approval) result='{"approved":true,"feedback":[],"unresolvedDecisions":[]}' ;;
   implement)
     if [[ "${AI_TEAM_AGENT:-}" == "codex" ]]; then
       file="docs/codex-fixture.md"
