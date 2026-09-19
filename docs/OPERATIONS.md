@@ -163,6 +163,33 @@ evidence is provably earlier. Invariants and a dashboard comparison are included
 Output goes to the git-ignored `.audit/ibox-sales-evidence/`; it is read-only in
 the same way as the other audits.
 
+## Read-only IBOX Revenue / Sotuv summasi audit
+
+`npm run audit:ibox-revenue` takes the same arguments as the Sales audit and
+reuses it for the verified populations: period Sales (`wonAt` in range) and
+cohort Sales (`DATE_CREATE` in range). It reproduces the dashboard formula,
+`SUM(OPPORTUNITY)`, over exactly those Deals and reports the exact Deal-value
+set, all-source and CRM-форма totals, per-source and per-currency sums, average
+and median, the created-before-range contribution, and data quality (missing,
+zero, negative, non-numeric amounts, missing currency) with an exact-cents sum
+reconciliation. Output goes to the git-ignored `.audit/ibox-revenue-evidence/`;
+it is read-only in the same way as the other audits.
+
+What the number is: `OPPORTUNITY` is the Deal amount entered on the card or
+summed from product rows. It is not a payment record. The dashboard reads no
+payment, invoice or billing data, so the sum must be labelled a deal value of won
+Deals ("Sotuv summasi"), not cash received or first-payment revenue. True SaaS
+first-payment revenue needs an external Billing/SMPRO source, which is not
+integrated. Amount-like Deal fields are listed for human review only.
+
+Dashboard behaviours the audit exposes (asserted in
+`tests/ibox-revenue-parity.test.ts`): a missing or non-numeric amount is stored
+as 0 and a negative one subtracts; several currencies are added without
+conversion and labelled with the first sale's currency, and an empty currency
+displays as UZS; the D1 snapshot freezes `wonAt` and the seller but not the
+amount, so a stale snapshot date can move a sale out of the period and the amount
+follows the Deal at the last sync.
+
 ## Database and recovery
 
 GitHub stores migrations, not D1 rows. Most analytics data is recoverable from Bitrix with a full selected-funnel sync. Settings must be re-entered on a new database:
