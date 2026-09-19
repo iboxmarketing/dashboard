@@ -87,6 +87,66 @@ are retained so the owner can inspect a blocked or completed run. Remove them
 with normal `git worktree remove` commands only after the work is accepted or
 abandoned.
 
+## Troubleshooting
+
+A run that does not reach `ready_for_owner` exits with a nonzero code and prints
+its `status` and `unresolved` list. The same information is in
+`.ai-team/runs/<run-id>/run.json` and `final-report.md`.
+
+### Blocked before any worktree exists
+
+If the agreed plan or Claude's plan review contains a blocking decision, the run
+ends with status `needs_input` and creates no worktree or integration branch.
+Only the plan artifacts and report exist under `.ai-team/runs/<run-id>/`. An
+invalid plan (for example a dependency cycle or a multi-task plan that does not
+use both agents) also stops the run at this stage, with an `ai-team:` error and
+no `run.json`.
+
+### Blocked after work has started
+
+Once the integration worktree exists, the run ends with status `blocked` when
+any of these fails:
+
+- a task: the implementer or reviewer errors, review findings remain after two
+  revision rounds, the agent commits or rebases, edits fall outside the task's
+  owned paths, or a task test command fails;
+- verification: a declared safe test or the final `npm run verify` fails on the
+  integrated result.
+
+The first blocked task stops the run; later tasks are not started. The blocking
+reason is the last entry in `unresolved` and, for a task, `error` in
+`.ai-team/runs/<run-id>/tasks/<task-id>/task-result.json`.
+
+An integration failure, such as a task commit that does not cherry-pick cleanly,
+is not recorded this way: the CLI prints an `ai-team:` error and `run.json` and
+`final-report.md` are not written. Inspect the retained worktrees instead.
+
+### What to inspect
+
+- `.ai-team/runs/<run-id>/`: agreed plan, per-task implementation, review and
+  revision reports, `run.json` and `final-report.md`.
+- `.ai-team/worktrees/<run-id>/`: the `integration` worktree and one worktree
+  per started task, retained with their `ai-team/<run-id>/...` branches so the
+  uncommitted or committed work can be examined.
+
+### Recover
+
+Blocked runs cannot be resumed; the orchestrator has no resume command.
+
+1. Read the report and correct the blocking cause: answer the decision by
+   sharpening the goal, fix the environment, or narrow the task.
+2. Rerun `npm run ai-team -- doctor` (see [Prerequisites](#prerequisites)) to
+   confirm both CLIs are installed and support the required flags. `run` repeats
+   this check itself.
+3. Confirm the main repository worktree is clean, then start a fresh
+   `npm run ai-team -- run ...` with a new goal or run ID. Reusing a run ID whose
+   branches still exist will fail.
+
+Keep the blocked run's artifacts and worktrees until they have been reviewed.
+Follow the cleanup guidance in [Artifacts](#artifacts): remove retained
+worktrees only after the work is accepted or abandoned, and never bypass agent
+permissions or delete anything unreviewed to get past a blocked run.
+
 ## Safety boundary
 
 The subprocess environment is allowlisted and removes variables whose names may
