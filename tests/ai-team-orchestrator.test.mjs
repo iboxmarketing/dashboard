@@ -113,7 +113,9 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 const counter = ${JSON.stringify(counter)};
 const attempt = existsSync(counter) ? Number(readFileSync(counter, "utf8")) + 1 : 1;
 writeFileSync(counter, String(attempt));
-process.stdout.write(attempt === 1 ? '{"broken":' : '{"structured_output":{"ok":true}}');
+process.stdout.write(attempt === 1
+  ? '{"broken":'
+  : '{"type":"assistant","message":{}}\\n{"type":"result","structured_output":{"ok":true}}\\n');
 `);
   await chmod(command, 0o755);
   const runner = new AgentRunner({ claudeCommand: command, timeoutMs: 20_000 });

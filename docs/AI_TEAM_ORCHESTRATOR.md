@@ -183,7 +183,8 @@ explicit orchestrator option; it rejects `main` as a push target and never
 merges. It does not run deploy, Sync, Backfill, D1, Cloudflare Access or
 force-push operations. A malformed Claude structured response receives one
 bounded retry; a second malformed response blocks the run without persisting the
-raw response payload.
+raw response payload. Claude uses `stream-json`; the orchestrator reads only the
+terminal structured result event and ignores non-terminal stream events.
 
 These controls reduce automation risk; they do not turn an AI-generated change
 into trusted code. The owner must inspect the agreed plan, diff, reviews and

@@ -4,12 +4,26 @@ import path from "node:path";
 import { runCommand, safeEnvironment } from "./process.mjs";
 
 function extractClaudeResult(stdout) {
-  const parsed = JSON.parse(stdout);
-  if (parsed.structured_output) return parsed.structured_output;
-  if (parsed.result && typeof parsed.result === "string") {
-    try { return JSON.parse(parsed.result); } catch { /* fall through */ }
+  const extract = (parsed) => {
+    if (parsed?.structured_output) return parsed.structured_output;
+    if (parsed?.result && typeof parsed.result === "string") {
+      try { return JSON.parse(parsed.result); } catch { return undefined; }
+    }
+    return undefined;
+  };
+  try {
+    const parsed = JSON.parse(stdout);
+    return extract(parsed) ?? parsed;
+  } catch {
+    const lines = stdout.trim().split(/\r?\n/).filter(Boolean);
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      try {
+        const value = extract(JSON.parse(lines[index]));
+        if (value !== undefined) return value;
+      } catch { /* Ignore incomplete non-terminal stream events. */ }
+    }
   }
-  return parsed;
+  throw new SyntaxError("Claude output did not contain a valid terminal structured result.");
 }
 
 export function agentEnvironment(agent, isolatedHome, extra = {}, source = process.env) {
@@ -46,7 +60,7 @@ export function codexInvocationArgs({ cwd, schemaPath, outputPath, readOnly }) {
 export function claudeInvocationArgs({ schema, readOnly }) {
   const tools = readOnly ? "Read,Glob,Grep" : "Read,Glob,Grep,Edit,Write";
   return [
-    "--print", "--output-format", "json", "--json-schema", JSON.stringify(schema),
+    "--print", "--output-format", "stream-json", "--verbose", "--json-schema", JSON.stringify(schema),
     "--no-session-persistence", "--restricted", "--safe-mode", "--strict-mcp-config",
     "--disable-slash-commands", "--no-chrome", "--permission-prompts", "none",
     "--permission-mode", readOnly ? "plan" : "dontAsk", "--tools", tools,
