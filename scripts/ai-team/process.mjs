@@ -22,6 +22,22 @@ export function redact(value) {
     .replace(/((?:api[_-]?key|token|secret|password)\s*[:=]\s*)[^\s,"']+/gi, "$1[REDACTED]");
 }
 
+export function commandFailureMessage(command, result) {
+  if (result.timedOut) return `${command} failed: timed out.`;
+  const diagnostic = redact(result.stderr || result.stdout)
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+  if (/usage limit/i.test(diagnostic)) {
+    const retry = diagnostic.match(/try again at (\d{1,2}:\d{2}\s?(?:AM|PM)|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z?)\b/i)?.[1];
+    return `${command} failed: local CLI usage limit reached${retry ? `; retry after ${retry}` : ""}.`;
+  }
+  if (/not logged in|unauthenticated|authentication (?:failed|required)|unauthorized/i.test(diagnostic)) {
+    return `${command} failed: local CLI authentication is unavailable.`;
+  }
+  if (result.signal) return `${command} failed after signal ${result.signal}.`;
+  return `${command} failed with exit code ${result.code}.`;
+}
+
 export async function runCommand(command, args, options = {}) {
   const timeoutMs = options.timeoutMs ?? 120_000;
   const maxOutput = options.maxOutput ?? 1_000_000;
@@ -52,7 +68,7 @@ export async function runCommand(command, args, options = {}) {
       clearTimeout(timer);
       const result = { code: code ?? -1, signal, stdout: redact(stdout), stderr: redact(stderr), timedOut };
       if (code === 0 && !timedOut) resolve(result);
-      else reject(Object.assign(new Error(`${command} failed${timedOut ? " (timeout)" : ""}: ${result.stderr.slice(-4000)}`), { result }));
+      else reject(Object.assign(new Error(commandFailureMessage(command, result)), { result }));
     });
     child.stdin.end(options.input ?? "");
   });

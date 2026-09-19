@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { AgentRunner } from "../scripts/ai-team/agents.mjs";
 import { pathOwned } from "../scripts/ai-team/git.mjs";
 import { Orchestrator } from "../scripts/ai-team/orchestrator.mjs";
-import { redact, runCommand, safeEnvironment } from "../scripts/ai-team/process.mjs";
+import { commandFailureMessage, redact, runCommand, safeEnvironment } from "../scripts/ai-team/process.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const mock = path.join(root, "tests/fixtures/mock-ai-cli.sh");
@@ -59,4 +59,76 @@ test("subprocess environment excludes sensitive variables and output redacts cre
     if (previous === undefined) delete process.env.BITRIX24_WEBHOOK_URL;
     else process.env.BITRIX24_WEBHOOK_URL = previous;
   }
+});
+
+test("subprocess failure summaries do not copy agent prompts into run artifacts", () => {
+  const message = commandFailureMessage("codex", {
+    code: 1,
+    timedOut: false,
+    stdout: "",
+    stderr: "generated implementation payload that must not be repeated\nERROR: You've hit your usage limit. Try again at 3:21 PM.\ntokens used 32,344\n",
+  });
+  assert.equal(message, "codex failed: local CLI usage limit reached; retry after 3:21 PM.");
+  assert.doesNotMatch(message, /implementation payload/);
+});
+
+test("usage-limit retry hints reject arbitrary payload text", () => {
+  const message = commandFailureMessage("codex", {
+    code: 1,
+    timedOut: false,
+    stdout: "",
+    stderr: `usage limit; try again at ${"customer-payload-".repeat(1_000)}`,
+  });
+  assert.equal(message, "codex failed: local CLI usage limit reached.");
+  assert.doesNotMatch(message, /customer-payload/);
+});
+
+test("subprocess timeout summaries are explicit and bounded", () => {
+  const message = commandFailureMessage("claude", {
+    code: -1,
+    timedOut: true,
+    stdout: "",
+    stderr: "x".repeat(10_000),
+  });
+  assert.equal(message, "claude failed: timed out.");
+});
+
+test("generic subprocess failures do not persist arbitrary stderr payloads", () => {
+  const message = commandFailureMessage("git", {
+    code: 17,
+    signal: null,
+    timedOut: false,
+    stdout: "",
+    stderr: "customer payload with an unrecognized sensitive shape",
+  });
+  assert.equal(message, "git failed with exit code 17.");
+});
+
+test("authentication and signal subprocess summaries are classified without raw output", () => {
+  assert.equal(commandFailureMessage("codex", {
+    code: 1,
+    signal: null,
+    timedOut: false,
+    stdout: "",
+    stderr: "authentication required: arbitrary details",
+  }), "codex failed: local CLI authentication is unavailable.");
+  assert.equal(commandFailureMessage("claude", {
+    code: -1,
+    signal: "SIGTERM",
+    timedOut: false,
+    stdout: "",
+    stderr: "arbitrary details",
+  }), "claude failed after signal SIGTERM.");
+});
+
+test("runCommand keeps redacted process details off the thrown message", async () => {
+  await assert.rejects(
+    runCommand(process.execPath, ["-e", "process.stderr.write('Authorization: Bearer abcdef'); process.exit(23)"]),
+    (error) => {
+      assert.equal(error.message, `${process.execPath} failed with exit code 23.`);
+      assert.equal(error.result.code, 23);
+      assert.equal(error.result.stderr, "Authorization: Bearer [REDACTED]");
+      return true;
+    },
+  );
 });
