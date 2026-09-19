@@ -390,7 +390,7 @@ export type StoredSyncJob = {
   selectedPipelines: { id: string; name: string }[];
   scopePipelineId: string;
   reportingPipelines: { id: string; name: string }[];
-  dealScope: "main" | "postSale";
+  dealScope: "main" | "paymentHistory" | "currentPayment" | "postSale";
   counts: Record<string, number>;
   permissions: Record<string, string>;
   safeError: string | null;

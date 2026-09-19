@@ -122,6 +122,26 @@ GitHub stores migrations, not D1 rows. Most analytics data is recoverable from B
 
 Capture these values in an internal password manager/runbook, never in a public or AI-readable repository.
 
+## Repairing Period Sales coverage
+
+After deploying sale-event discovery, run one Full Sync for a history window
+that covers the required `wonAt` dates. Full Sync keeps Lead discovery based on
+`DATE_CREATE`, but also scans configured payment-stage entries, current payment
+stages by `MOVED_TIME`, and matching post-sale transitions inside that window.
+This discovers older-created Deals such as a prior-month Lead paid this month.
+
+Backfill alone cannot repair a missing Period Sale: it performs no Bitrix calls
+and only rebuilds raw Deals already stored in D1. A normal incremental Sync will
+cover new sale events after its checkpoint, but cannot recover an event that is
+already older than that checkpoint. Use Full Sync once for historical repair;
+do not run Backfill as a substitute.
+
+API-volume impact is bounded by the selected time window. Sync adds one paged
+payment-history scan and one paged current-payment scan; the existing paged
+post-sale transition scan remains. Candidate Deal IDs are deduplicated against
+the current run before Deal details and full history are fetched, so payment
+plus post-sale evidence does not multiply analytics rows.
+
 ## Rolling back a release that changed stored analytics semantics
 
 `qualified` and the fields derived from it are **computed during sync and stored

@@ -166,6 +166,23 @@ A deal is counted once even when both signals exist. Payment/post-sale outcome c
 
 Sales count for a date range uses the recorded `wonAt` date. Lead cohort count uses `createdAt`. These are different populations and must be labeled accordingly.
 
+The analytics cache must therefore discover sale events independently from the
+Lead import's `DATE_CREATE` window. A Deal created before the synchronized Lead
+cohort but entering a configured payment stage or the matching post-sale funnel
+inside the sync window is loaded through that event and then follows the same
+raw/history/analytics path as every other Deal. A current payment stage may use
+`MOVED_TIME`; `DATE_MODIFY` is never a payment timestamp.
+
+Current project location still controls canonical Lead/cohort membership. It
+does not erase an already proven IBOX sale from the outcome-date Period Sales
+population: a later move outside IBOX excludes that Deal from Leadlar and cohort
+Sales, while trustworthy IBOX payment/post-sale history can still place it in
+Period Sales exactly once.
+
+Verified live reference for 2026-09-01 — 2026-09-19 inclusive in
+`Asia/Tashkent`: cohort Sales = 41 and Period Sales = 42. Deal 40099 is the one
+Period Sale created before the selected range.
+
 ## 5. Seller attribution
 
 The goal is to attribute performance to the seller responsible at the sales outcome, not to a later support/customer-care assignee.

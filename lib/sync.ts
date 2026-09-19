@@ -18,6 +18,11 @@ import {
   stageHistoryRowKey,
   type StageHistoryPersistenceRow,
 } from "./stage-history-persistence";
+import {
+  buildPeriodSalesDiscoveryRequest,
+  nextDealDiscoveryScope,
+  uniqueDiscoveryIds,
+} from "./period-sales-coverage";
 
 const stageDealBatchSize = 25;
 const analyticsDealBatchSize = 80;
@@ -195,6 +200,31 @@ async function clearPipelineScope(categoryIds: string[]) {
   ]);
 }
 
+async function idsNotFetchedInRun(runId: string, dealIds: string[]) {
+  if (!dealIds.length) return [];
+  const placeholders = dealIds.map(() => "?").join(", ");
+  const existing = await getD1()
+    .prepare(`SELECT deal_id FROM raw_deals WHERE synced_at = ? AND deal_id IN (${placeholders})`)
+    .bind(runId, ...dealIds)
+    .all<{ deal_id: string }>();
+  const seen = new Set((existing.results ?? []).map((row) => String(row.deal_id)));
+  return dealIds.filter((id) => !seen.has(id));
+}
+
+function advanceDealDiscovery(job: StoredSyncJob, paymentStageIds: string[]) {
+  const next = nextDealDiscoveryScope(job.dealScope, {
+    hasPaymentStages: paymentStageIds.length > 0,
+    hasPostSale: job.reportingPipelines.length > 0,
+  });
+  if (!next) return move(job, "stageHistory", "Deal stage history ma’lumotlari yuklanmoqda…", job.counts.deals ?? 0);
+  const messages = {
+    paymentHistory: "Tanlangan davrdagi payment-stage kirishlari tekshirilmoqda…",
+    currentPayment: "Joriy payment stage Deal’lari MOVED_TIME bo‘yicha tekshirilmoqda…",
+    postSale: "Tanlangan davrdagi post-sale kirishlari tekshirilmoqda…",
+  } as const;
+  return { ...job, dealScope: next, cursor: 0, processed: 0, total: 0, message: messages[next] };
+}
+
 export async function startSync(options: { days?: number; full?: boolean; pipelineId?: string } = {}) {
   let settings = await getSettings();
   const pipelines = await listPipelines();
@@ -253,9 +283,10 @@ export async function startSync(options: { days?: number; full?: boolean; pipeli
 }
 
 async function dealStep(job: StoredSyncJob) {
-  const ids = (job.dealScope === "postSale" ? job.reportingPipelines : job.selectedPipelines).map((item) => item.id);
-  if (!ids.length && job.dealScope === "postSale") return move(job, "stageHistory", "Deal stage history ma’lumotlari yuklanmoqda…", job.counts.deals ?? 0);
   const settings = await getSettings();
+  const salesCategoryIds = job.selectedPipelines.map((item) => item.id);
+  const postSaleCategoryIds = job.reportingPipelines.map((item) => item.id);
+  const paymentStageIds = [...new Set(settings.paymentStageIds.map(String).filter(Boolean))];
   // Source comes from SOURCE_ID; the legacy marketing-channel field is no longer read.
   const customFields = [...new Set([settings.failureReasonField, ...Object.values(settings.failureReasonFieldByPipeline ?? {}), settings.salesManagerField])]
     .filter((field): field is string => Boolean(field)).map(canonicalDealFieldKey);
@@ -264,51 +295,53 @@ async function dealStep(job: StoredSyncJob) {
   // nothing derives salesStatus from this flag.
   const select = ["ID", "TITLE", "DATE_CREATE", "DATE_MODIFY", "CLOSED", "CLOSEDATE", "MOVED_TIME", "MOVED_BY_ID", "ASSIGNED_BY_ID", "CATEGORY_ID", "STAGE_ID", "SOURCE_ID", "CONTACT_ID", "CONTACT_IDS", "COMPANY_ID", "OPPORTUNITY", "CURRENCY_ID", ...customFields];
 
-  if (job.dealScope === "postSale") {
-    // TYPE_ID=5 is the exact Bitrix event for a funnel change. Querying these
-    // transitions avoids scanning every old card merely moved inside support.
-    const historyPage = await bitrixPage<RawStageHistory>("crm.stagehistory.list", {
-      entityTypeId: 2,
-      order: { ID: "ASC" },
-      filter: {
-        ...(ids.length === 1 ? { CATEGORY_ID: ids[0] } : { "@CATEGORY_ID": ids }),
-        TYPE_ID: 5,
-        ">=CREATED_TIME": job.fromIso,
-        "<=CREATED_TIME": job.toIso,
-      },
-      select: ["ID", "OWNER_ID", "CATEGORY_ID", "STAGE_ID", "TYPE_ID", "CREATED_TIME"],
-    }, job.cursor);
-    const ownerIds = [...new Set(historyPage.items.map((row) => value(row, "OWNER_ID")).filter(Boolean))];
-    let pendingIds = ownerIds;
-    if (ownerIds.length) {
-      const placeholders = ownerIds.map(() => "?").join(", ");
-      const existing = await getD1().prepare(`SELECT deal_id FROM raw_deals WHERE synced_at = ? AND deal_id IN (${placeholders})`).bind(job.runId, ...ownerIds).all<{ deal_id: string }>();
-      const seen = new Set((existing.results ?? []).map((row) => String(row.deal_id)));
-      pendingIds = ownerIds.filter((id) => !seen.has(id));
-    }
-    let deals: RawDeal[] = [];
-    if (pendingIds.length) {
+  if (job.dealScope !== "main") {
+    const request = buildPeriodSalesDiscoveryRequest({
+      scope: job.dealScope,
+      salesCategoryIds,
+      postSaleCategoryIds,
+      paymentStageIds,
+      fromIso: job.fromIso,
+      toIso: job.toIso,
+      dealSelect: select,
+    });
+    if (!request) return advanceDealDiscovery(job, paymentStageIds);
+    const page = await bitrixPage<Record<string, unknown>>(request.method, request.params, job.cursor);
+    const candidateIds = uniqueDiscoveryIds(page.items, request.idField);
+    const pendingIds = await idsNotFetchedInRun(job.runId, candidateIds);
+    let deals: RawDeal[];
+    if (request.kind === "deals") {
+      const pending = new Set(pendingIds);
+      deals = page.items.filter((deal) => pending.has(value(deal, "ID")));
+    } else if (pendingIds.length) {
       const dealPage = await bitrixPage<RawDeal>("crm.deal.list", {
         order: { ID: "ASC" }, filter: { "@ID": pendingIds }, select,
       }, 0);
       deals = dealPage.items;
-      await upsertRaw("raw_deals", deals.map((deal) => [value(deal, "ID"), value(deal, "CATEGORY_ID") || "0", value(deal, "DATE_CREATE"), JSON.stringify(deal), job.runId]));
+    } else {
+      deals = [];
     }
-    const counts = { ...job.counts, deals: (job.counts.deals ?? 0) + deals.length, postSaleDeals: (job.counts.postSaleDeals ?? 0) + deals.length };
-    if (historyPage.next === null) return move({ ...job, counts }, "stageHistory", "Deal stage history ma’lumotlari yuklanmoqda…", counts.deals);
-    const total = historyPage.total ?? Math.max(job.processed + historyPage.items.length, historyPage.next + 50);
+    await upsertRaw("raw_deals", deals.map((deal) => [value(deal, "ID"), value(deal, "CATEGORY_ID") || "0", value(deal, "DATE_CREATE"), JSON.stringify(deal), job.runId]));
+    const scopeCount = `${job.dealScope}Deals`;
+    const counts = {
+      ...job.counts,
+      deals: (job.counts.deals ?? 0) + deals.length,
+      [scopeCount]: (job.counts[scopeCount] ?? 0) + deals.length,
+    };
+    if (page.next === null) return advanceDealDiscovery({ ...job, counts }, paymentStageIds);
+    const total = page.total ?? Math.max(job.processed + page.items.length, page.next + 50);
     return {
       ...job,
-      cursor: historyPage.next,
-      processed: job.processed + historyPage.items.length,
+      cursor: page.next,
+      processed: job.processed + page.items.length,
       total,
       counts,
-      progress: phaseProgress("deals", job.processed + historyPage.items.length, total),
-      message: `${counts.postSaleDeals ?? 0} ta sotilgan Deal topildi; post-sale kirishlari tekshirilmoqda…`,
+      progress: phaseProgress("deals", job.processed + page.items.length, total),
+      message: `${counts.deals} ta noyob Deal topildi; davr sotuvlari tekshirilmoqda…`,
     };
   }
 
-  const filter: Record<string, unknown> = { CATEGORY_ID: ids };
+  const filter: Record<string, unknown> = { CATEGORY_ID: salesCategoryIds };
   if (job.mode === "full") {
     filter[">=DATE_CREATE"] = job.fromIso;
     filter["<=DATE_CREATE"] = job.toIso;
@@ -325,8 +358,7 @@ async function dealStep(job: StoredSyncJob) {
     await upsertRaw("raw_deals", page.items.map((deal) => [value(deal, "ID"), value(deal, "CATEGORY_ID") || "0", value(deal, "DATE_CREATE"), JSON.stringify(deal), job.runId]));
   const counts = { ...job.counts, deals: (job.counts.deals ?? 0) + page.items.length };
   if (page.next === null) {
-    if (job.dealScope === "main" && job.reportingPipelines.length) return { ...job, dealScope: "postSale" as const, cursor: 0, processed: counts.deals, total: 0, counts, progress: phaseProgress("deals", counts.deals, Math.max(counts.deals, 1)), message: "Sotilgan Deal’lar post-sale funnel’dan tekshirilmoqda…" };
-    return move({ ...job, counts }, "stageHistory", "Deal stage history ma’lumotlari yuklanmoqda…", counts.deals);
+    return advanceDealDiscovery({ ...job, counts }, paymentStageIds);
   }
   const total = page.total ?? Math.max(counts.deals, page.next + 50);
   return { ...job, cursor: page.next, processed: counts.deals, total, counts, progress: phaseProgress("deals", counts.deals, total), message: `${counts.deals} / ${total} ta Deal yuklandi` };

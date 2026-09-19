@@ -46,7 +46,10 @@ This separation prevents historical import limits from understating current work
 
 ## Sync phases
 
-1. `deals` — selected Sales scope, then matching post-sale outcome scope.
+1. `deals` — selected Sales Lead scope, plus bounded sale-event discovery:
+   configured payment-stage history, current payment-stage `MOVED_TIME`, and
+   matching post-sale transitions. The event streams are independent of a
+   Deal's `DATE_CREATE` and converge on the same `raw_deals` row by Deal ID.
 2. `activities` — activity data in bounded deal batches.
 3. `stageHistory` — stage movement per deal.
 4. `telephony` — call-result enrichment.
@@ -55,6 +58,12 @@ This separation prevents historical import limits from understating current work
 7. `done` — stable sync state saved.
 
 Jobs are resumable and stored in D1. Sync is scoped to one selected Sales pipeline at a time to avoid loading all Bitrix funnels.
+
+This split is intentional: the main Full Sync query remains `DATE_CREATE`-based
+for historical Lead cohorts, while payment/post-sale discovery uses event time
+so Period Sales and revenue can include an older-created Deal sold during the
+window. Analytics still derives `wonAt` only from full stage history or current
+payment-stage `MOVED_TIME`; discovery does not itself invent a sale date.
 
 ## Persistence
 
