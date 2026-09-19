@@ -166,7 +166,9 @@ the shell tool disabled. User configuration, hooks, apps, web search and nested
 agents are disabled, and approval requests are denied. Claude implementation and
 revision sessions use restricted and safe modes with an explicit tool list of
 `Read`, `Glob`, `Grep`, `Edit` and `Write`; Bash, PowerShell, REPL, web, MCP and
-other command/code execution tools are unavailable. Therefore implementation
+other command/code execution tools are unavailable. The same five file tools
+are preauthorized so noninteractive `dontAsk` sessions can edit without opening
+a permission path to any command tool. Therefore implementation
 agents cannot run deploy, Sync, Backfill, Wrangler/D1, Cloudflare Access, Git
 push, force-push, destructive shell commands or any equivalent command wrapper.
 

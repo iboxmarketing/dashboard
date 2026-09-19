@@ -66,8 +66,15 @@ export async function runCommand(command, args, options = {}) {
     }, timeoutMs);
     child.on("close", (code, signal) => {
       clearTimeout(timer);
-      const result = { code: code ?? -1, signal, stdout: redact(stdout), stderr: redact(stderr), timedOut };
-      if (code === 0 && !timedOut) resolve(result);
+      const succeeded = code === 0 && !timedOut;
+      const result = {
+        code: code ?? -1,
+        signal,
+        stdout: succeeded && options.preserveStdout === true ? stdout : redact(stdout),
+        stderr: redact(stderr),
+        timedOut,
+      };
+      if (succeeded) resolve(result);
       else reject(Object.assign(new Error(commandFailureMessage(command, result)), { result }));
     });
     child.stdin.end(options.input ?? "");

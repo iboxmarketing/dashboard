@@ -76,6 +76,7 @@ test("implementation invocations expose file editing but no command execution", 
   const claude = claudeInvocationArgs({ schema: { type: "object" }, readOnly: false });
   const tools = claude[claude.indexOf("--tools") + 1];
   assert.equal(tools, "Read,Glob,Grep,Edit,Write");
+  assert.equal(claude[claude.indexOf("--allowedTools") + 1], tools);
   assert.doesNotMatch(tools, /Bash|PowerShell|REPL/);
   assert.ok(claude.includes("--restricted"));
   assert.ok(claude.includes("--safe-mode"));
@@ -115,7 +116,7 @@ const attempt = existsSync(counter) ? Number(readFileSync(counter, "utf8")) + 1 
 writeFileSync(counter, String(attempt));
 process.stdout.write(attempt === 1
   ? '{"broken":'
-  : '{"type":"assistant","message":{}}\\n{"type":"result","structured_output":{"ok":true}}\\n');
+  : '{"type":"assistant","message":{}}\\n{"type":"result","structured_output":{"ok":true,"note":"SOME_TOKEN: fixture-value"}}\\n');
 `);
   await chmod(command, 0o755);
   const runner = new AgentRunner({ claudeCommand: command, timeoutMs: 20_000 });
@@ -125,13 +126,13 @@ process.stdout.write(attempt === 1
     schema: {
       type: "object",
       additionalProperties: false,
-      required: ["ok"],
-      properties: { ok: { type: "boolean" } },
+      required: ["ok", "note"],
+      properties: { ok: { type: "boolean" }, note: { type: "string" } },
     },
     readOnly: true,
     phase: "retry_test",
   });
-  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(result, { ok: true, note: "SOME_TOKEN: [REDACTED]" });
   assert.equal(await readFile(counter, "utf8"), "2");
 });
 

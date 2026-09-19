@@ -16,7 +16,7 @@ const capabilities = {
   claude: [
     "--print", "--json-schema", "--permission-mode", "--permission-prompts",
     "--no-session-persistence", "--restricted", "--tools", "--safe-mode",
-    "--strict-mcp-config", "--disable-slash-commands", "--no-chrome", "--verbose",
+    "--strict-mcp-config", "--disable-slash-commands", "--no-chrome", "--verbose", "--allowedTools",
   ],
 };
 

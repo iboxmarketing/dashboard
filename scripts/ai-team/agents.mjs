@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { runCommand, safeEnvironment } from "./process.mjs";
+import { redact, runCommand, safeEnvironment } from "./process.mjs";
 
 function extractClaudeResult(stdout) {
   const extract = (parsed) => {
@@ -24,6 +24,15 @@ function extractClaudeResult(stdout) {
     }
   }
   throw new SyntaxError("Claude output did not contain a valid terminal structured result.");
+}
+
+function redactStructured(value) {
+  if (typeof value === "string") return redact(value);
+  if (Array.isArray(value)) return value.map(redactStructured);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactStructured(item)]));
+  }
+  return value;
 }
 
 export function agentEnvironment(agent, isolatedHome, extra = {}, source = process.env) {
@@ -59,12 +68,14 @@ export function codexInvocationArgs({ cwd, schemaPath, outputPath, readOnly }) {
 
 export function claudeInvocationArgs({ schema, readOnly }) {
   const tools = readOnly ? "Read,Glob,Grep" : "Read,Glob,Grep,Edit,Write";
-  return [
+  const args = [
     "--print", "--output-format", "stream-json", "--verbose", "--json-schema", JSON.stringify(schema),
     "--no-session-persistence", "--restricted", "--safe-mode", "--strict-mcp-config",
     "--disable-slash-commands", "--no-chrome", "--permission-prompts", "none",
     "--permission-mode", readOnly ? "plan" : "dontAsk", "--tools", tools,
   ];
+  if (!readOnly) args.push("--allowedTools", tools);
+  return args;
 }
 
 export class AgentRunner {
@@ -98,7 +109,7 @@ export class AgentRunner {
           AI_TEAM_AGENT: "codex", AI_TEAM_PHASE: phase, AI_TEAM_MOCK: this.mock ? "1" : "0",
         }),
       });
-      return JSON.parse(await readFile(outputPath, "utf8"));
+      return redactStructured(JSON.parse(await readFile(outputPath, "utf8")));
     } finally {
       await rm(temp, { recursive: true, force: true });
     }
@@ -115,12 +126,13 @@ export class AgentRunner {
           cwd,
           input: attempt === 1 ? prompt : `${prompt}\n\nYour previous response was not valid JSON. Preserve any allowed file edits already made and return only one object matching the requested schema.`,
           timeoutMs: this.timeoutMs,
+          preserveStdout: true,
           env: agentEnvironment("claude", isolatedHome, {
             AI_TEAM_AGENT: "claude", AI_TEAM_PHASE: phase, AI_TEAM_MOCK: this.mock ? "1" : "0",
           }),
         });
         try {
-          return extractClaudeResult(result.stdout);
+          return redactStructured(extractClaudeResult(result.stdout));
         } catch (error) {
           if (!(error instanceof SyntaxError) || attempt === 2) {
             throw new Error("Claude returned invalid structured output after one bounded retry.");

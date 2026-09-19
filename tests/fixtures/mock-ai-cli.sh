@@ -20,6 +20,7 @@ if [[ "${AI_TEAM_PHASE:-}" == "implement" || "${AI_TEAM_PHASE:-}" == "revise" ]]
     [[ " $* " == *" --safe-mode "* ]] || { printf 'Claude safe mode is missing\n' >&2; exit 2; }
     [[ " $* " == *" --strict-mcp-config "* ]] || { printf 'Claude strict MCP mode is missing\n' >&2; exit 2; }
     [[ " $* " == *" --tools Read,Glob,Grep,Edit,Write "* ]] || { printf 'Claude implementation tool list is not exact\n' >&2; exit 2; }
+    [[ " $* " == *" --allowedTools Read,Glob,Grep,Edit,Write "* ]] || { printf 'Claude safe file tools are not preauthorized\n' >&2; exit 2; }
     [[ " $* " != *"Bash"* ]] || { printf 'Claude Bash tool is enabled\n' >&2; exit 2; }
   fi
 fi
