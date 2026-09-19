@@ -142,6 +142,24 @@ post-sale transition scan remains. Candidate Deal IDs are deduplicated against
 the current run before Deal details and full history are fetched, so payment
 plus post-sale evidence does not multiply analytics rows.
 
+## Repairing seller attribution semantics
+
+Seller attribution is stored in each analytics payload, so after deploying the
+version-9 seller rule run the analytics Backfill to rebuild existing records
+from the raw Deals, histories, configured Sales Manager field and snapshots
+already in D1. A Full Sync is not required for this rule change and cannot
+manufacture a historical sale-transition actor: Bitrix stage history does not
+provide one.
+
+The Backfill ignores legacy snapshots sourced only from
+`CURRENT_RESPONSIBLE`; those records resolve from stronger evidence or move to
+the explicit Unknown seller bucket. Correct `CUSTOM_FIELD` and `STAGE_MOVER`
+snapshots remain frozen. An old `STAGE_MOVER` snapshot captured after the Deal
+had already entered post-sale cannot be distinguished from one captured in the
+payment stage with the current schema. Those exceptional rows require an
+evidence-led audit/correction; neither Backfill nor Full Sync can safely guess
+them. Do not delete or bulk-rewrite snapshots merely to remove Unknown values.
+
 ## Rolling back a release that changed stored analytics semantics
 
 `qualified` and the fields derived from it are **computed during sync and stored

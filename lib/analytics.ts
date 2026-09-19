@@ -36,8 +36,12 @@ import type { AnalyticsRecord, DashboardSettings, ProcessingSource, SalesManager
  * 8 — Canonical project Lead membership is persisted independently from source
  *     and failure reason. Entry into selected Sales plus the current project
  *     category decides the population; ambiguous history remains unresolved.
+ * 9 — Won-deal seller attribution no longer guesses from a post-sale/current
+ *     owner. A won Deal may use MOVED_BY_ID only while its current stage is the
+ *     payment stage; otherwise it needs a stable custom field or an already
+ *     frozen snapshot and remains Unknown when neither exists.
  */
-export const ANALYTICS_VERSION = 8;
+export const ANALYTICS_VERSION = 9;
 
 export type RawDeal = Record<string, unknown>;
 export type RawActivity = Record<string, unknown>;
@@ -244,13 +248,31 @@ export function buildAnalyticsRecords(input: {
     // snapshot exists, but seller attribution is frozen only once a real seller
     // was actually resolved: a snapshot holding an UNKNOWN seller must not block
     // the fallback chain forever, otherwise the deal can never be attributed.
-    const snapshotManagerId = snapshot?.managerId ?? "";
+    // Legacy snapshots written from CURRENT_RESPONSIBLE never proved a seller:
+    // that value may already have been the post-sale owner. Keep their wonAt,
+    // but let trustworthy evidence repair their manager. CUSTOM_FIELD and
+    // STAGE_MOVER snapshots stay immutable because they may have been captured
+    // at the actual payment transition and no later field is stronger.
+    const snapshotManagerId = snapshot?.attributionSource === "CURRENT_RESPONSIBLE" ? "" : snapshot?.managerId ?? "";
     let salesManagerId = snapshotManagerId;
     let salesManager = snapshotManagerId ? snapshot?.managerName ?? "" : "";
     let salesManagerAttribution: SalesManagerAttribution = snapshotManagerId ? (snapshot?.attributionSource as SalesManagerAttribution) : "UNKNOWN";
     if (!snapshotManagerId && customManagerId) { salesManagerId = customManagerId; salesManagerAttribution = "CUSTOM_FIELD"; }
-    else if (!snapshotManagerId && moverId) { salesManagerId = moverId; salesManagerAttribution = "STAGE_MOVER"; }
-    else if (!snapshotManagerId && assignedManagerId) { salesManagerId = assignedManagerId; salesManagerAttribution = "CURRENT_RESPONSIBLE"; }
+    // Bitrix stage history has stage/category/time but no historical actor.
+    // MOVED_BY_ID is only the actor who moved the Deal into its CURRENT stage,
+    // so it is sale-time evidence only while that current stage is payment.
+    // Once a won Deal has moved to post-sale, both MOVED_BY_ID and
+    // ASSIGNED_BY_ID can belong to onboarding/support and must never be frozen
+    // as the seller. Unknown is an honest, reportable result in that case.
+    else if (!snapshotManagerId && moverId && (salesStatus !== "WON" || currentStageIsPayment) && mainIds.has(currentCategoryId)) {
+      salesManagerId = moverId; salesManagerAttribution = "STAGE_MOVER";
+    }
+    // Current responsibility remains useful for not-yet-won Sales-funnel work
+    // (including ordinary Sales Lost), but is operational evidence, never a
+    // fallback for a completed sale.
+    else if (!snapshotManagerId && salesStatus !== "WON" && assignedManagerId && mainIds.has(currentCategoryId)) {
+      salesManagerId = assignedManagerId; salesManagerAttribution = "CURRENT_RESPONSIBLE";
+    }
     if (!salesManager && salesManagerId) salesManager = managerName(salesManagerId, input.users);
 
     // Source is the standard Bitrix SOURCE_ID resolved through the live SOURCE

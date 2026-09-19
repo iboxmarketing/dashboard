@@ -197,9 +197,14 @@ under more than one group.
 
 ## Manager attribution
 
-Seller priority: stored snapshot (only when it resolved a real seller) →
-configured Sales manager field → stage mover (`MOVED_BY_ID`) → current
-`ASSIGNED_BY_ID` → unknown. Calls were removed from this chain in Sprint 16. Current-stage workload uses current
+Seller priority: trustworthy stored snapshot → configured stable Sales Manager
+field → `MOVED_BY_ID` while the Deal is currently in payment → unknown. For a
+not-yet-won Deal still in the Sales funnel, current-stage mover and then current
+`ASSIGNED_BY_ID` remain labelled fallbacks. Bitrix stage history does not carry
+the historical transition actor, so after a Deal moves to post-sale its current
+mover/assignee must never be guessed as the seller. Historical filters and all
+manager performance, Sales Lost, conversion, Sales and Revenue grouping use
+`salesManagerId` only. Current-stage workload separately uses current
 `ASSIGNED_BY_ID`. Unattributed deals go to an explicit unknown bucket that is
 reported, never dropped. Per-manager denominators sum back to the total.
 

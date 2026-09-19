@@ -20,6 +20,18 @@ test("joriy stage snapshot DATE_CREATE eski bo‘lsa ham ochiq dealni saqlaydi",
   assert.equal(rows[0].stageOverdue, true);
 });
 
+test("joriy workload hozirgi assigned manager Madinani ko‘rsatishda davom etadi", () => {
+  const rows = buildCurrentStageRecords({
+    deals: [{ ID: "43", TITLE: "Madinadagi aktiv Deal", DATE_CREATE: "2026-09-01T09:00:00+05:00", MOVED_TIME: "2026-09-02T09:00:00+05:00", ASSIGNED_BY_ID: "20", CATEGORY_ID: "3", STAGE_ID: "PROCESS" }],
+    settings: { ...defaultSettings, selectedPipelineIds: ["3"] },
+    pipelines: new Map([["3", "IBOX Sales"]]), stages: new Map([["3:PROCESS", "ОБРАБОТКА"]]),
+    users: new Map([["20", "Madina"]]), domain: null,
+    now: new Date("2026-09-03T09:00:00+05:00"),
+  });
+  assert.equal(rows[0].assignedManagerId, "20");
+  assert.equal(rows[0].assignedManager, "Madina");
+});
+
 test("reconciliation Bitrix 91 va cache 57 orasidagi 34 ta farqni ko‘rsatadi", () => {
   const live = Array.from({ length: 91 }, (_, index) => ({ dealId: String(index + 1), stageId: "PROCESS" }) as CurrentStageRecord);
   const cached = Array.from({ length: 57 }, (_, index) => ({ dealId: String(index + 1), stageId: "PROCESS" }) as AnalyticsRecord);

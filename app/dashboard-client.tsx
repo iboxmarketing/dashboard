@@ -16,7 +16,7 @@ import {
 } from "@/lib/stage-control-analytics";
 import { DASHBOARD_HEADLINE_CARD_IDS, headlineCardLabel, resolveHeadlineCardIds, type HeadlineCardId } from "@/lib/dashboard-cards";
 import { BUCKET_COUNT, DEFAULT_LEAD_FLOW_METRIC, LEAD_FLOW_METRICS, WEEKDAY_LABELS, bucketLabel, buildLeadFlow, higherIsHealthier, leadFlowValue, type LeadFlowMetricId } from "@/lib/lead-flow-analytics";
-import { buildManagerProfile, notRelevantRecords, reasonBreakdown, salesLostRecords, sourceFunnelRows, stageWorkloadRows, teamMedian } from "@/lib/manager-profile";
+import { buildManagerProfile, notRelevantRecords, reasonBreakdown, salesLostRecords, salesManagerOptions, sourceFunnelRows, stageWorkloadRows, teamMedian } from "@/lib/manager-profile";
 import { buildQualityAnalytics, type MarketingManagerDiagnostic, type SalesManagerDiagnostic } from "@/lib/quality-analytics";
 import { DEFAULT_TREND_METRIC, TREND_METRICS, buildTrendSeries, supportsMovingAverage, trendBarHeight, trendMetric, type TrendBounds, type TrendMetricId, type TrendPoint } from "@/lib/trend-series";
 import { initialStageFunnelState, stageFunnelNext, type StageFunnelAction, type StageFunnelState, type StageFunnelStatus } from "@/lib/stage-funnel-cache";
@@ -414,7 +414,7 @@ function FiltersBar({ filters, setFilters, records, currentStages, mode = "cohor
   const [expanded, setExpanded] = useState(false);
   const managers = mode === "current"
     ? [...new Map((currentStages ?? []).map((row) => [row.assignedManagerId, row.assignedManager] as const)).entries()]
-    : [...new Map(records.flatMap((row) => [[row.assignedManagerId, row.assignedManager] as const, ...(row.salesManagerId ? [[row.salesManagerId, row.salesManager ?? "Aniqlanmagan"] as const] : [])])).entries()];
+    : salesManagerOptions(records);
   const pipelines = mode === "current" ? [...new Set((currentStages ?? []).map((row) => row.pipeline))].sort() : [...new Set(records.map((row) => row.originPipeline))].sort();
   const sources = [...new Set(records.map((row) => row.source))].sort();
   const stages = mode === "current" ? [...new Set((currentStages ?? []).map((row) => row.stage))].sort() : [...new Set(records.map((row) => row.stage))].sort();
@@ -2268,7 +2268,7 @@ export default function DashboardClient() {
     const from = bounds.from ? boundsFromKeys({ from: bounds.from, to: bounds.from }).from : -Infinity;
     const to = bounds.to ? boundsFromKeys({ from: bounds.to, to: bounds.to }).to : Infinity;
     const base = records.filter((row) => {
-      if (filters.manager && row.assignedManagerId !== filters.manager && row.salesManagerId !== filters.manager) return false;
+      if (filters.manager && salesManagerKey(row) !== filters.manager) return false;
       if (filters.pipeline && row.originPipeline !== filters.pipeline) return false;
       if (filters.source && row.source !== filters.source) return false;
       if (filters.stage && row.stage !== filters.stage) return false;
@@ -2321,7 +2321,7 @@ export default function DashboardClient() {
   const stageHistoricalRecords = useMemo(() => {
     const search = filters.search.trim().toLowerCase();
     return stageFunnelRecords.filter((row) => {
-      if (filters.manager && row.assignedManagerId !== filters.manager && row.salesManagerId !== filters.manager) return false;
+      if (filters.manager && row.assignedManagerId !== filters.manager) return false;
       if (filters.pipeline && row.originPipeline !== filters.pipeline) return false;
       if (search && !`${row.dealId} ${row.title}`.toLowerCase().includes(search)) return false;
       return true;
@@ -2458,6 +2458,11 @@ export default function DashboardClient() {
   const openPage = pages.find((page) => page.id === openPageId) ?? null;
   const openPageWidgets = openPage ? pageWidgets(widgets, openPage.id) : [];
   const hasLegacyData = records.some((record) => record.analyticsVersion < ANALYTICS_VERSION);
+  // v8 already has the raw Deal/history coverage needed for the v9 seller
+  // correction, so an analytics-only Backfill is sufficient. Older persisted
+  // semantics may still require the broader Full Sync path documented for
+  // their release; do not overstate v9's API requirement in the banner.
+  const sellerBackfillOnly = hasLegacyData && records.every((record) => record.analyticsVersion >= 8);
   const syncOptions = settings.selectedPipelineIds.map((id, index) => ({ id, name: settings.selectedPipelineNames[index] ?? `Sales funnel #${id}` }));
   const activeSyncPipelineId = syncOptions.some((pipeline) => pipeline.id === syncPipelineId) ? syncPipelineId : syncOptions[0]?.id ?? "";
 
@@ -2473,7 +2478,9 @@ export default function DashboardClient() {
       <header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)}><Menu size={20} /></button><div><span>Bitrix24</span><small>/</small><strong>{title}</strong></div><div className="top-actions">{!isManagementView(view) && <><span className="sync-time">Oxirgi sinxronizatsiya: <strong>{fmtDate(sync.lastSyncAt)}</strong></span><Select label="Sinxronizatsiya funnel" value={activeSyncPipelineId} onChange={setSyncPipelineId}>{syncOptions.map((pipeline) => <option key={pipeline.id} value={pipeline.id}>{pipeline.name}</option>)}</Select><button className="button secondary refresh" onClick={refresh}>{sync.status === "running" ? <TimerReset size={17} /> : refreshing ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}{sync.status === "running" ? "Pauza" : "Tanlangan funnelni sinxronlash"}</button></>}<div className="avatar">IM</div></div></header>
       <div className="content-inner">
         {loadError && <div className="notice error page-notice"><XCircle size={18} />{loadError}<button onClick={() => setLoadError(null)}><X size={14} /></button></div>}
-        {hasLegacyData && sync.status !== "running" && <div className="notice warning page-notice"><AlertTriangle size={18} /><span>Eski sync ma’lumotlari bor. Yangi sales analytics to‘liq ishlashi uchun Sozlamalarda CRM field’larini tekshirib, <strong>“To‘liq qayta sync”</strong>ni bosing.</span><button onClick={() => setView("settings")}>Sozlamalar</button></div>}
+        {hasLegacyData && sync.status !== "running" && <div className="notice warning page-notice"><AlertTriangle size={18} /><span>{sellerBackfillOnly
+          ? <>Seller attribution yangilanishi uchun <strong>Analytics Backfill</strong> talab qilinadi; Full Sync shart emas.</>
+          : <>Eski sync ma’lumotlari bor. Yangi sales analytics to‘liq ishlashi uchun Sozlamalarda CRM field’larini tekshirib, <strong>“To‘liq qayta sync”</strong>ni bosing.</>}</span>{!sellerBackfillOnly && <button onClick={() => setView("settings")}>Sozlamalar</button>}</div>}
         {["running", "paused", "error"].includes(sync.status) && <SyncProgress sync={sync} busy={refreshing} onPause={() => void pauseCurrentSync()} onResume={() => void syncLoop("resume")} />}
         {isSalesView(view) && <FiltersBar filters={filters} setFilters={setFilters} records={records} currentStages={effectiveCurrentStages} mode={view === "stages" ? "current" : "cohort"} />}
         {isSalesView(view) && <CoverageNotice records={records} filters={filters} />}

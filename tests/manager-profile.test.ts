@@ -5,7 +5,7 @@ import { buildDashboardMetrics } from "../lib/dashboard-metrics";
 import { isPreSqlClosed, isSalesLost, salesManagerKey } from "../lib/sales-logic";
 import {
   buildManagerProfile, medianOf, notRelevantRecords, notRelevantSemanticMismatches,
-  reasonBreakdown, reasonTextMismatches, salesLostRecords, sourceFunnelRows, stageWorkloadRows, teamMedian,
+  reasonBreakdown, reasonTextMismatches, salesLostRecords, salesManagerOptions, sourceFunnelRows, stageWorkloadRows, teamMedian,
 } from "../lib/manager-profile";
 import type { AnalyticsRecord } from "../lib/types";
 
@@ -45,6 +45,31 @@ const COHORT = [
 ];
 const WON = COHORT.filter((r) => r.salesStatus === "WON");
 const { cohort, metrics } = buildManagerProfile(COHORT, WON, "7");
+
+test("Ali sotgan post-sale Deal Ali revenue/conversionida qoladi, Madina seller qatoriga kirmaydi", () => {
+  const sold = deal({
+    dealId: "post-sale", salesManagerId: "7", salesManager: "Ali",
+    assignedManagerId: "20", assignedManager: "Madina",
+    qualified: true, salesStatus: "WON", wonAt: "2026-08-10T09:00:00.000Z", opportunity: 1_200,
+  });
+  const aliProfile = buildManagerProfile([sold], [sold], "7");
+  const madinaProfile = buildManagerProfile([sold], [sold], "20");
+  assert.equal(aliProfile.metrics.counts.leads, 1);
+  assert.equal(aliProfile.metrics.counts.cohort_sales, 1);
+  assert.equal(aliProfile.metrics.counts.period_sales, 1);
+  assert.equal(aliProfile.metrics.money.revenue, 1_200);
+  assert.equal(aliProfile.metrics.rates.lead_to_sale, 100);
+  assert.equal(madinaProfile.metrics.counts.leads, 0);
+  assert.equal(madinaProfile.metrics.counts.period_sales, 0);
+  assert.deepEqual(salesManagerOptions([sold]), [["7", "Ali"]], "current post-sale owner is absent from seller selector");
+  assert.match(client, /: salesManagerOptions\(records\)/, "historical selector uses seller identity only");
+  assert.match(client, /filters\.manager && salesManagerKey\(row\) !== filters\.manager/, "historical filter uses seller identity only");
+});
+
+test("unknown seller historical selector’da Unknown bo‘lib qoladi", () => {
+  const unknown = deal({ salesManagerId: null, salesManager: null, assignedManagerId: "20", assignedManager: "Madina" });
+  assert.deepEqual(salesManagerOptions([unknown]), [["unknown", "Aniqlanmagan"]]);
+});
 
 test("A: profile counts equal the clicked row's canonical values", () => {
   const rowMetrics = buildDashboardMetrics(COHORT.filter((r) => salesManagerKey(r) === "7"), WON.filter((r) => salesManagerKey(r) === "7"));

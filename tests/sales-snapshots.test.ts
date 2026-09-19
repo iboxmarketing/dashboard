@@ -7,6 +7,7 @@ import { SALES_SNAPSHOT_UPSERT } from "../lib/sales-snapshots";
 import type { SalesSnapshot } from "../lib/storage";
 
 const MAIN = "3";
+const POST_SALE = "13";
 const CREATED = "2026-01-01T09:00:00+05:00";
 const JAN_10 = new Date("2026-01-10T12:00:00+05:00").toISOString();
 const JAN_12 = new Date("2026-01-12T12:00:00+05:00").toISOString();
@@ -20,6 +21,10 @@ function snapshot(managerId: string | null, wonAt = JAN_10): Map<string, SalesSn
   }]]);
 }
 
+function attributedSnapshot(managerId: string, attributionSource: string): Map<string, SalesSnapshot> {
+  return new Map([["1", { dealId: "1", wonAt: JAN_10, managerId, managerName: `Menejer ${managerId}`, attributionSource }]]);
+}
+
 /** Real analytics build for a deal whose current stage proves payment. */
 function build(deal: Record<string, unknown>, snapshots?: Map<string, SalesSnapshot>, activities: Record<string, unknown>[] = []) {
   return buildAnalyticsRecords({
@@ -31,6 +36,22 @@ function build(deal: Record<string, unknown>, snapshots?: Map<string, SalesSnaps
     users: new Map([["7", "Aziz"], ["9", "Bobur"], ["12", "Doston"], ["5", "Call"]]),
     pipelines: new Map([[MAIN, "IBOX Sales"]]), stages: new Map([["PAYMENT", "Оплата получена"]]),
     sources: new Map(), snapshots, domain: null, activitiesAvailable: true, stageHistoryAvailable: true,
+  })[0];
+}
+
+/** Real analytics build for a Deal first observed after it reached post-sale. */
+function buildPostSale(deal: Record<string, unknown>, snapshots?: Map<string, SalesSnapshot>) {
+  return buildAnalyticsRecords({
+    deals: [{ ID: "1", TITLE: "T", DATE_CREATE: CREATED, CATEGORY_ID: POST_SALE, STAGE_ID: "SUPPORT", MOVED_TIME: JAN_12, ...deal }],
+    stageHistories: [
+      { OWNER_ID: "1", CATEGORY_ID: MAIN, STAGE_ID: "PAYMENT", CREATED_TIME: JAN_10 },
+      { OWNER_ID: "1", CATEGORY_ID: POST_SALE, STAGE_ID: "SUPPORT", CREATED_TIME: JAN_12 },
+    ],
+    settings: { ...defaultSettings, selectedPipelineIds: [MAIN], postSalePipelineIds: [POST_SALE], salesManagerField: SELLER_FIELD },
+    users: new Map([["7", "Ali"], ["20", "Madina"]]),
+    pipelines: new Map([[MAIN, "IBOX Sales"], [POST_SALE, "IBOX Обучение/Сопровождение"]]),
+    stages: new Map([["PAYMENT", "Оплата получена"], ["SUPPORT", "Сопровождение"]]),
+    sources: new Map(), snapshots, domain: null, stageHistoryAvailable: true,
   })[0];
 }
 
@@ -92,6 +113,29 @@ test("Case 4: ta’mirlangan sotuvchi keyin qayta yozilmaydi", { skip: !Database
   assert.equal(row.won_at, JAN_10);
 });
 
+test("Case 4a: legacy current-owner snapshot kuchli custom-field dalili bilan ta’mirlanadi", { skip: !DatabaseSync }, () => {
+  // Seed directly so the legacy attribution_source is controlled precisely.
+  const raw = new DatabaseSync!(":memory:");
+  raw.exec(readFileSync(new URL("../drizzle/0002_flawless_king_cobra.sql", import.meta.url), "utf8").replace(/-->.*$/gm, ""));
+  raw.prepare("INSERT INTO deal_sales_snapshots(deal_id, won_at, manager_id, manager_name, attribution_source, created_at) VALUES(?, ?, ?, ?, ?, ?)")
+    .run("1", JAN_10, "20", "Madina", "CURRENT_RESPONSIBLE", "2026-01-10T13:00:00.000Z");
+  raw.prepare(SALES_SNAPSHOT_UPSERT).run("1", JAN_12, "7", "Ali", "CUSTOM_FIELD", "2026-06-01T00:00:00.000Z");
+  const row = raw.prepare("SELECT * FROM deal_sales_snapshots").get()! as Record<string, string>;
+  assert.equal(row.manager_id, "7");
+  assert.equal(row.attribution_source, "CUSTOM_FIELD");
+  assert.equal(row.won_at, JAN_10);
+  assert.equal(row.created_at, "2026-01-10T13:00:00.000Z");
+});
+
+test("Case 4b: legacy current-owner snapshot analytics’da hokim emas", () => {
+  const repaired = buildPostSale({ [SELLER_FIELD]: "7", MOVED_BY_ID: "20", ASSIGNED_BY_ID: "20" }, attributedSnapshot("20", "CURRENT_RESPONSIBLE"));
+  assert.equal(repaired.salesManagerId, "7");
+  assert.equal(repaired.salesManagerAttribution, "CUSTOM_FIELD");
+  const unknown = buildPostSale({ MOVED_BY_ID: "20", ASSIGNED_BY_ID: "20" }, attributedSnapshot("20", "CURRENT_RESPONSIBLE"));
+  assert.equal(unknown.salesManagerId, null, "onboarding employee is removed, not preserved as seller");
+  assert.equal(unknown.salesManagerAttribution, "UNKNOWN");
+});
+
 test("Case 5: manba topilmasa null xavfsiz saqlanadi, soxta atribut yaratilmaydi", { skip: !DatabaseSync }, () => {
   const db = withDb({ managerId: null, wonAt: JAN_10, createdAt: "2026-01-10T13:00:00.000Z" });
   db.save(null, JAN_12, "UNKNOWN");
@@ -117,14 +161,38 @@ test("Case 6: wonAt manager holatidan qat’i nazar o‘zgarmas", { skip: !Datab
   }
 });
 
-test("Case 7: fallback tartibi o‘zgarmagan", () => {
+test("Case 7: won fallback faqat joriy payment mover’ini sale-time dalil deb oladi", () => {
   const nullSnap = () => snapshot(null);
   assert.equal(build({ [SELLER_FIELD]: "9", MOVED_BY_ID: "12", ASSIGNED_BY_ID: "7" }, nullSnap(), [call("5")]).salesManagerAttribution, "CUSTOM_FIELD");
   // CALL was removed from the chain in Sprint 16: a call no longer wins here.
   assert.equal(build({ MOVED_BY_ID: "12", ASSIGNED_BY_ID: "7" }, nullSnap(), [call("5")]).salesManagerAttribution, "STAGE_MOVER");
   assert.equal(build({ MOVED_BY_ID: "12", ASSIGNED_BY_ID: "7" }, nullSnap()).salesManagerAttribution, "STAGE_MOVER");
-  assert.equal(build({ ASSIGNED_BY_ID: "7" }, nullSnap()).salesManagerAttribution, "CURRENT_RESPONSIBLE");
+  assert.equal(build({ ASSIGNED_BY_ID: "7" }, nullSnap()).salesManagerAttribution, "UNKNOWN", "current assignee is not sale-time evidence");
   assert.equal(build({}, nullSnap()).salesManagerAttribution, "UNKNOWN");
+});
+
+test("Case 7a: Ali sotadi, post-sale’da Madina owner bo‘ladi — Ali saqlanadi", () => {
+  const row = buildPostSale({ [SELLER_FIELD]: "7", MOVED_BY_ID: "20", ASSIGNED_BY_ID: "20" });
+  assert.equal(row.salesStatus, "WON");
+  assert.equal(row.salesManagerId, "7");
+  assert.equal(row.salesManager, "Ali");
+  assert.equal(row.salesManagerAttribution, "CUSTOM_FIELD");
+  assert.equal(row.assignedManagerId, "20");
+  assert.equal(row.assignedManager, "Madina");
+});
+
+test("Case 7b: first sync post-sale’dan keyin bo‘lsa onboarding owner sotuvchi deb taxmin qilinmaydi", () => {
+  const row = buildPostSale({ MOVED_BY_ID: "20", ASSIGNED_BY_ID: "20" });
+  assert.equal(row.salesManagerId, null);
+  assert.equal(row.salesManager, null);
+  assert.equal(row.salesManagerAttribution, "UNKNOWN");
+  assert.equal(row.assignedManagerId, "20", "operational owner alohida saqlanadi");
+});
+
+test("Case 7c: oldin to‘g‘ri muzlatilgan Ali post-sale owner bilan qayta yozilmaydi", () => {
+  const row = buildPostSale({ MOVED_BY_ID: "20", ASSIGNED_BY_ID: "20" }, snapshot("7"));
+  assert.equal(row.salesManagerId, "7");
+  assert.equal(row.salesManagerAttribution, "CUSTOM_FIELD");
 });
 
 test("Case 8: Full Sync eski A5 qatorlarini ta’mirlaydi (uchtan-uchi)", { skip: !DatabaseSync }, () => {
@@ -162,10 +230,9 @@ test("Case 9: sotuv summasi va sanasi ta’mirdan ta’sirlanmaydi", () => {
   assert.equal(before.salesCycleHours, after.salesCycleHours);
 });
 
-test("manager id “0” hozircha aniqlangan qiymat sifatida qabul qilinadi", () => {
-  // Documented, deliberately unchanged in this sprint: "0" is truthy, so it
-  // resolves as CURRENT_RESPONSIBLE and would also block snapshot repair.
-  assert.equal(build({ ASSIGNED_BY_ID: "0" }, snapshot(null)).salesManagerId, "0");
-  assert.equal(build({ ASSIGNED_BY_ID: "0" }, snapshot(null)).salesManagerAttribution, "CURRENT_RESPONSIBLE");
+test("manager id “0” faqat current payment mover bo‘lsa qabul qilinadi", () => {
+  assert.equal(build({ MOVED_BY_ID: "0", ASSIGNED_BY_ID: "7" }, snapshot(null)).salesManagerId, "0");
+  assert.equal(build({ MOVED_BY_ID: "0", ASSIGNED_BY_ID: "7" }, snapshot(null)).salesManagerAttribution, "STAGE_MOVER");
+  assert.equal(buildPostSale({ MOVED_BY_ID: "0", ASSIGNED_BY_ID: "0" }, snapshot(null)).salesManagerId, null);
   assert.equal(build({ ASSIGNED_BY_ID: "" }, snapshot(null)).salesManagerId, null);
 });

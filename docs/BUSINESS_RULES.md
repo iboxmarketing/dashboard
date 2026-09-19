@@ -189,14 +189,27 @@ The goal is to attribute performance to the seller responsible at the sales outc
 
 Priority order:
 
-1. stored sale snapshot;
+1. stored sale snapshot that resolved a seller from trustworthy evidence;
 2. configured Sales manager custom field;
-3. first outgoing call responsible;
-4. stage mover;
-5. current `ASSIGNED_BY_ID` fallback;
-6. unknown.
+3. `MOVED_BY_ID` only while the Deal is currently in the payment stage, where
+   it is the actor for that sale transition;
+4. for a not-yet-won Deal still in the Sales funnel, current-stage mover and
+   then current `ASSIGNED_BY_ID` may attribute the commercial workload;
+5. unknown.
 
-When a deal becomes won, its seller snapshot must remain stable. When no sale exists, current responsibility may be shown operationally but must be labeled as a fallback.
+Bitrix stage history exposes stage, funnel and transition time, but not the
+historical transition actor. After a Deal moves to post-sale, current
+`MOVED_BY_ID` and `ASSIGNED_BY_ID` describe that post-sale stage/owner and are
+not seller evidence. A won Deal first observed there therefore stays Unknown
+unless a configured stable Sales Manager field or a trustworthy snapshot
+identifies the seller. Legacy snapshots whose only source was
+`CURRENT_RESPONSIBLE` are treated as unresolved and may be repaired by stronger
+evidence; correctly resolved snapshots remain immutable.
+
+Historical Sales analytics, Sales Lost, conversion, sales/revenue attribution,
+manager rows and historical manager filters use `salesManagerId` only.
+`assignedManagerId` is a separate current operational owner and must not add a
+person to the seller selector.
 
 Current stage workload uses current Bitrix `ASSIGNED_BY_ID`, because it answers who owns the deal now.
 

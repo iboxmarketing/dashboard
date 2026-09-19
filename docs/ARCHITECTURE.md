@@ -73,7 +73,9 @@ Important tables:
 - `raw_deals`, `raw_activities`, `raw_stage_history`, `raw_call_stats` — synchronized inputs;
 - `crm_dictionaries` — cached Bitrix lookup values;
 - `analytics_records` — flattened report records;
-- `deal_sales_snapshots` — stable won date and seller attribution;
+- `deal_sales_snapshots` — stable won date and seller attribution; resolved
+  seller values are immutable, while legacy `CURRENT_RESPONSIBLE` guesses may
+  be upgraded only by stronger custom-field/current-payment evidence;
 - `sync_jobs`, `sync_state` — resumable job and visible progress;
 - `provider_rules`, `provider_diagnostics` — telephony filtering and diagnostics.
 
