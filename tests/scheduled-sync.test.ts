@@ -140,7 +140,7 @@ const record = (over: Partial<AnalyticsRecord> = {}): AnalyticsRecord => ({
   ...over,
 } as unknown as AnalyticsRecord);
 
-test("marking a deal out of scope does not remove it from historical cohorts", () => {
+test("marking a deal out of scope removes it from the current canonical Lead cohort", () => {
   const from = new Date("2026-08-01T00:00:00.000Z").getTime();
   const to = new Date("2026-08-31T23:59:59.999Z").getTime();
   const inScope = [record({ dealId: "a" }), record({ dealId: "b" })];
@@ -148,27 +148,14 @@ test("marking a deal out of scope does not remove it from historical cohorts", (
 
   const before = buildDashboardMetrics(...Object.values(selectPeriodPopulations(inScope, from, to)) as [AnalyticsRecord[], AnalyticsRecord[]]);
   const after = buildDashboardMetrics(...Object.values(selectPeriodPopulations(movedOut, from, to)) as [AnalyticsRecord[], AnalyticsRecord[]]);
-  assert.equal(after.counts.leads, before.counts.leads, "Leadlar unchanged");
-  assert.equal(after.counts.sql, before.counts.sql, "SQL unchanged");
+  assert.equal(after.counts.leads, before.counts.leads - 1, "Leadlar follows current canonical membership");
+  assert.equal(after.counts.sql, before.counts.sql - 1, "SQL uses the same Lead base");
   assert.equal(after.counts.sales_lost, before.counts.sales_lost, "Sotilmadi unchanged");
   assert.equal(after.counts.cohort_sales, before.counts.cohort_sales);
   assert.equal(after.money.revenue, before.money.revenue, "Sotuv summasi unchanged");
 
-  // Sprint 27.1 gave Aktiv leadlar an approved operational filter, so the file
-  // does reference currentScope — but only there. Every cohort figure must
-  // still ignore where the deal sits today.
-  const metrics = readFileSync(new URL("../lib/dashboard-metrics.ts", import.meta.url), "utf8");
-  const counts = metrics.slice(metrics.indexOf("counts: {"), metrics.indexOf("rates: {"));
-  const cohortLines = counts.split("\n")
-    .filter((line) => !line.trim().startsWith("//"))          // comments explain the rule, they are not the rule
-    .filter((line) => !line.includes("active_cohort"));
-  assert.equal(cohortLines.some((line) => line.includes("currentScope")), false,
-    "no cohort count reads current location");
-  const rates = metrics.slice(metrics.indexOf("rates: {"), metrics.indexOf("money: {"));
-  assert.doesNotMatch(rates, /currentScope/, "no rate reads current location");
-  assert.doesNotMatch(metrics.slice(metrics.indexOf("money: {")), /currentScope/, "money and timing unaffected");
   const salesLogic = readFileSync(new URL("../lib/sales-logic.ts", import.meta.url), "utf8");
-  assert.doesNotMatch(salesLogic, /currentScope/);
+  assert.match(salesLogic, /currentScope/);
 });
 
 test("an out-of-scope deal stops being reported stale, an in-scope one does not", () => {

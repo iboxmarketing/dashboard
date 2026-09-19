@@ -3,6 +3,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { decideCanonicalLeadMembership } from "../lib/canonical-lead-membership.js";
 
 export const TIMEZONE = "Asia/Tashkent";
 export const TRANSFER_OUT_REASONS = Object.freeze([
@@ -402,13 +403,21 @@ export function classifyDealEvidence({
   bounds,
 }) {
   if (!lookup || lookup.kind === "UNRESOLVED") {
-    return classification("UNRESOLVED", dealId, `LOOKUP_${lookup?.code ?? "MISSING"}`, {
+    const membership = decideCanonicalLeadMembership({
+      lookupStatus: "UNRESOLVED", enteredSalesCategory: undefined,
+      salesCategoryIds: [categoryId], postSaleCategoryIds: [postSaleCategoryId],
+    });
+    return classification(membership, dealId, `LOOKUP_${lookup?.code ?? "MISSING"}`, {
       errorCode: lookup?.code ?? "MISSING",
       ...(lookup?.retryExhausted ? { retryExhausted: true, attempts: lookup.attempts } : {}),
     });
   }
   if (lookup.kind === "DELETED") {
-    return classification("EXCLUDED", dealId, "DELETED_NOT_FOUND");
+    const membership = decideCanonicalLeadMembership({
+      lookupStatus: "DELETED", enteredSalesCategory: true,
+      salesCategoryIds: [categoryId], postSaleCategoryIds: [postSaleCategoryId],
+    });
+    return classification(membership, dealId, "DELETED_NOT_FOUND");
   }
 
   const deal = lookup.deal;
@@ -426,21 +435,20 @@ export function classifyDealEvidence({
   }
 
   const currentCategoryId = scalar(deal.CATEGORY_ID);
-  if (!currentCategoryId) {
-    return classification("UNRESOLVED", dealId, "CURRENT_CATEGORY_MISSING", { createdAt });
-  }
-  if (!history?.length) {
-    return classification("UNRESOLVED", dealId, "IBOX_HISTORY_MISSING", { createdAt, currentCategoryId });
-  }
-
   const evidence = { createdAt, currentCategoryId, ...failureReasonSupport(deal, failureReasonField, failureReasonOptions) };
-  // History proves the Deal entered IBOX Sales. Where the Deal is now decides
-  // whether it still belongs: IBOX Sales (never left, or returned) and the
-  // matching post-sale funnel stay in; any other funnel means it left.
-  if (currentCategoryId === String(categoryId)) {
+  const membership = decideCanonicalLeadMembership({
+    enteredSalesCategory: history?.length ? true : undefined,
+    currentCategoryId,
+    salesCategoryIds: [categoryId],
+    postSaleCategoryIds: [postSaleCategoryId],
+  });
+  if (membership === "UNRESOLVED") {
+    return classification("UNRESOLVED", dealId, currentCategoryId ? "IBOX_HISTORY_MISSING" : "CURRENT_CATEGORY_MISSING", evidence);
+  }
+  if (membership === "INCLUDED" && currentCategoryId === String(categoryId)) {
     return classification("INCLUDED", dealId, "IBOX_STAGE_ENTRY", { ...evidence, ...sourceEvidence(deal, sourceLabels) });
   }
-  if (currentCategoryId === String(postSaleCategoryId)) {
+  if (membership === "INCLUDED") {
     return classification("INCLUDED", dealId, "IBOX_ENTRY_NOW_POST_SALE", { ...evidence, ...sourceEvidence(deal, sourceLabels) });
   }
   return classification("EXCLUDED", dealId, "MOVED_TO_OTHER_FUNNEL_NO_RETURN", evidence);

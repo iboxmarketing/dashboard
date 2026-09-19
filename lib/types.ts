@@ -152,10 +152,12 @@ export type AnalyticsRecord = {
   originCategoryId: string;
   originPipeline: string;
   operationalPipeline: boolean;
+  /** Canonical Sales-entry + current-project membership; source/reason never decide it. */
+  projectLeadMembership?: "INCLUDED" | "EXCLUDED" | "UNRESOLVED";
   /**
    * Where the deal sits *now*, as opposed to which cohort it belongs to.
-   * Additive and optional: absent means IN_SCOPE, so every existing record
-   * keeps its current meaning and no historical metric shifts.
+   * Additive and optional: absent means IN_SCOPE. A definitive move or deletion
+   * overrides stored membership; ambiguous lookups leave this field untouched.
    */
   currentScope?: "IN_SCOPE" | "OUT_OF_SCOPE" | "UNAVAILABLE";
   stageId: string;

@@ -242,11 +242,18 @@ export function isSqlOrDownstreamStage(input: {
 }
 
 /**
- * Deals routed to another project (Idokon / SD) are stored and diagnosable but
- * leave the IBOX eligible cohort: they never had a chance to convert here, so
- * counting them would depress every IBOX conversion denominator.
+ * Canonical project Lead membership. New records carry the shared audit
+ * decision; currentScope applies later live reconciliation (a confirmed move or
+ * deletion). UNRESOLVED is retained rather than silently excluded. The legacy
+ * reason fallback exists only for pre-version-8 records until they are rebuilt.
  */
-export function isEligibleCohortDeal(row: { lossReasonGroup?: LossReasonGroup | null }) {
+export function isEligibleCohortDeal(row: {
+  projectLeadMembership?: "INCLUDED" | "EXCLUDED" | "UNRESOLVED" | null;
+  currentScope?: "IN_SCOPE" | "OUT_OF_SCOPE" | "UNAVAILABLE" | null;
+  lossReasonGroup?: LossReasonGroup | null;
+}) {
+  if (row.currentScope === "OUT_OF_SCOPE" || row.currentScope === "UNAVAILABLE") return false;
+  if (row.projectLeadMembership) return row.projectLeadMembership !== "EXCLUDED";
   return row.lossReasonGroup !== "ROUTING";
 }
 

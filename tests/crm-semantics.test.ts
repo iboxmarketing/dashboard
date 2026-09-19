@@ -45,12 +45,12 @@ function settings(over: Partial<DashboardSettings> = {}): DashboardSettings {
   };
 }
 
-function build(o: { stageId: string; history?: { stageId: string; clock: string }[]; deal?: Record<string, unknown>; categoryId?: string; over?: Partial<DashboardSettings>; stages?: Map<string, string> }) {
+function build(o: { stageId: string; history?: { stageId: string; clock: string; categoryId?: string }[]; deal?: Record<string, unknown>; categoryId?: string; over?: Partial<DashboardSettings>; stages?: Map<string, string> }) {
   const categoryId = o.categoryId ?? IBOX;
   return buildAnalyticsRecords({
     deals: [{ ID: "1", TITLE: "T", DATE_CREATE: CREATED, ASSIGNED_BY_ID: "7", CATEGORY_ID: categoryId, STAGE_ID: o.stageId, MOVED_TIME: at("12:00"), ...o.deal }],
     activities: [], callStats: [],
-    stageHistories: (o.history ?? []).map((row) => ({ OWNER_ID: "1", CATEGORY_ID: categoryId, STAGE_ID: row.stageId, CREATED_TIME: at(row.clock) })),
+    stageHistories: (o.history ?? []).map((row) => ({ OWNER_ID: "1", CATEGORY_ID: row.categoryId ?? categoryId, STAGE_ID: row.stageId, CREATED_TIME: at(row.clock) })),
     providerRules: {}, settings: settings(o.over), users: new Map([["7", "Aziz"]]),
     pipelines: new Map([[IBOX, "IBOX Sales"], [SD, "SD Sales"]]),
     stages: o.stages ?? STAGE_NAMES, stageMeta: STAGE_META, sources: SOURCES,
@@ -71,6 +71,26 @@ test("2: Source filtri bo‘yicha ajratish — faqat mos deal’lar", () => {
   ];
   assert.deepEqual(rows.filter((r) => r.source === "CRM-форма").map((r) => r.source), ["CRM-форма"]);
   assert.equal(rows.filter((r) => r.source === "Холодный звонок").length, 1);
+});
+
+test("canonical membership analytics yozuviga Sales tarixi va joriy funnel orqali saqlanadi", () => {
+  const onlyIbox = { selectedPipelineIds: [IBOX], postSalePipelineIds: ["13"] };
+  const currentSales = build({ stageId: "C3:NEW", over: onlyIbox });
+  const currentPostSale = build({
+    categoryId: "13", stageId: "C13:NEW", over: onlyIbox,
+    history: [{ categoryId: IBOX, stageId: "C3:NEW", clock: "10:00" }],
+  });
+  const otherProject = build({
+    categoryId: "5", stageId: "C5:SQL", over: onlyIbox,
+    history: [{ categoryId: IBOX, stageId: "C3:NEW", clock: "10:00" }],
+  });
+  const postSaleWithoutIboxEntry = build({ categoryId: "13", stageId: "C13:NEW", over: onlyIbox });
+
+  assert.equal(currentSales.projectLeadMembership, "INCLUDED");
+  assert.equal(currentPostSale.projectLeadMembership, "INCLUDED");
+  assert.equal(otherProject.projectLeadMembership, "EXCLUDED");
+  assert.equal(postSaleWithoutIboxEntry.projectLeadMembership, "EXCLUDED",
+    "post-sale location alone cannot invent IBOX Sales entry");
 });
 
 test("3: SOURCE_ID yo‘q bo‘lsa Aniqlanmagan", () => {

@@ -114,6 +114,8 @@ export type DashboardMetrics = ReturnType<typeof buildDashboardMetrics>;
  * @param periodSales   deals whose trustworthy wonAt falls inside the selected range
  */
 export function buildDashboardMetrics(cohortRecords: MetricRecord[], periodSales: MetricRecord[]) {
+  // D1's analytics_records primary key and the audit's discovered-ID Map both
+  // guarantee one row per Deal ID before this calculation boundary.
   const eligible = cohortRecords.filter(isEligibleCohortDeal);
   const sql = eligible.filter((row) => row.qualified);
   const notRelevant = eligible.filter((row) => row.lossReasonGroup === "MARKETING");
@@ -170,10 +172,8 @@ export function buildDashboardMetrics(cohortRecords: MetricRecord[], periodSales
       classified_leads: classified.length,
       unclassified_leads: unclassified.length,
       // Aktiv leadlar is a *current operational* figure, so it excludes deals
-      // that have left the sync scope or vanished from Bitrix. Every other
-      // metric here is historical-cohort based and deliberately ignores
-      // currentScope — a lead still belongs to its creation month's population
-      // regardless of where the card sits today.
+      // that have left the sync scope or vanished from Bitrix. Canonical Lead
+      // membership has already applied the same current-location evidence.
       active_cohort: eligible.filter((row) => row.salesStatus === "ACTIVE" && countsAsOperational(row.currentScope)).length,
     },
     rates: {

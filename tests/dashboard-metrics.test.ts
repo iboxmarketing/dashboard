@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DASHBOARD_METRICS, DEFAULT_DASHBOARD_METRIC_IDS, buildDashboardMetrics, resolveDashboardMetricIds } from "../lib/dashboard-metrics";
+import { DASHBOARD_METRICS, DEFAULT_DASHBOARD_METRIC_IDS, buildDashboardMetrics, resolveDashboardMetricIds, selectPeriodPopulations } from "../lib/dashboard-metrics";
+import { decideCanonicalLeadMembership } from "../lib/canonical-lead-membership.js";
 import { defaultSettings } from "../lib/business-time";
 import type { AnalyticsRecord } from "../lib/types";
 
@@ -190,4 +191,53 @@ test("25: klassifikatsiya konflikti bo‘lsa, mos yozuv o‘rniga mustaqil foiz 
   // Independent rounding, not 100 - quality_accepted_rate (which would be 0).
   assert.equal(m.rates.quality_accepted_rate, 100);
   assert.equal(m.rates.low_quality_rate, 50);
+});
+
+test("canonical IBOX Lead membership dashboardning haqiqiy Leadlar bazasini belgilaydi", () => {
+  const membership = (currentCategoryId: string, enteredSalesCategory = true) => decideCanonicalLeadMembership({
+    enteredSalesCategory,
+    currentCategoryId,
+    salesCategoryIds: ["3"],
+    postSaleCategoryIds: ["13"],
+  });
+
+  assert.equal(membership("3"), "INCLUDED", "1: current category 3 included");
+  assert.equal(membership("13"), "INCLUDED", "2: category 13 included");
+  assert.equal(membership("1"), "EXCLUDED", "3: category 1 excluded");
+  assert.equal(membership("5"), "EXCLUDED", "3: category 5 excluded");
+
+  const returned = deal({ dealId: "return", projectLeadMembership: membership("3"), categoryId: "3" });
+  assert.equal(buildDashboardMetrics([returned], []).counts.leads, 1,
+    "4: the one persisted Deal row is included again after returning to IBOX");
+
+  const orphanReason = deal({
+    dealId: "43205", categoryId: "3", projectLeadMembership: membership("3"),
+    lossReason: "11151", lossReasonGroup: "ROUTING",
+  });
+  assert.equal(buildDashboardMetrics([orphanReason], []).counts.leads, 1,
+    "5: failure reason, including an orphan-like value, cannot exclude membership");
+
+  const createdInside = deal({
+    dealId: "inside", createdAt: "2026-09-19T18:59:59.999Z",
+    stageEnteredAt: "2026-09-20T10:00:00.000Z", projectLeadMembership: membership("3"),
+  });
+  const createdOutside = deal({
+    dealId: "outside", createdAt: "2026-09-19T19:00:00.000Z",
+    stageEnteredAt: "2026-09-10T10:00:00.000Z", projectLeadMembership: membership("3"),
+  });
+  const population = selectPeriodPopulations(
+    [createdInside, createdOutside],
+    Date.parse("2026-08-31T19:00:00.000Z"),
+    Date.parse("2026-09-19T18:59:59.999Z"),
+  );
+  assert.deepEqual(population.cohort.map((row) => row.dealId), ["inside"],
+    "6: original DATE_CREATE, not a later stage timestamp, controls the cohort");
+
+  const allSources = [
+    deal({ dealId: "form", source: "CRM-форма", projectLeadMembership: membership("3") }),
+    deal({ dealId: "referral", source: "Recommendation", projectLeadMembership: membership("13") }),
+  ];
+  assert.equal(buildDashboardMetrics(allSources, []).counts.leads, 2, "7: source is not membership authority");
+  assert.equal(buildDashboardMetrics(allSources.filter((row) => row.source === "CRM-форма"), []).counts.leads, 1,
+    "7: CRM-форма remains a separate dashboard filter/breakdown");
 });

@@ -45,7 +45,7 @@ export type DashboardRecord =
 /** Minimal row the Stage Control funnel needs: its own filters plus the timeline. */
 export type StageFunnelRecord = Pick<AnalyticsRecord,
   "dealId" | "title" | "assignedManagerId" | "salesManagerId" | "originPipeline" | "originCategoryId"
-  | "salesStatus" | "qualified" | "lossReasonGroup" | "stageTimeline">;
+  | "salesStatus" | "qualified" | "lossReasonGroup" | "projectLeadMembership" | "currentScope" | "stageTimeline">;
 
 /**
  * `qualified` and `lossReasonGroup` are carried so the historical outcome
@@ -55,7 +55,8 @@ export type StageFunnelRecord = Pick<AnalyticsRecord,
  */
 export const STAGE_FUNNEL_FIELDS = [
   "dealId", "title", "assignedManagerId", "salesManagerId",
-  "originPipeline", "originCategoryId", "salesStatus", "qualified", "lossReasonGroup", "stageTimeline",
+  "originPipeline", "originCategoryId", "salesStatus", "qualified", "lossReasonGroup",
+  "projectLeadMembership", "currentScope", "stageTimeline",
 ] as const;
 
 /** SQLite JSON path list for the fields the dashboard response drops. */

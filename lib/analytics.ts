@@ -3,6 +3,7 @@ import { resolveSlaState } from "./sla";
 import { classifyLossReasonGroup, MISSING_LOSS_REASON, classifySalesStatus, fieldDisplayValue, isLowQualityStage, isPaymentStage, isSqlOrDownstreamStage } from "./sales-logic";
 import { sqlThresholdsByCategory, type StageMeta, type StageSemantics } from "./stage-config";
 import { canonicalDealFieldKey } from "./crm-fields";
+import { decideCanonicalLeadMembership } from "./canonical-lead-membership.js";
 import type { SalesSnapshot } from "./storage";
 import type { AnalyticsRecord, DashboardSettings, ProcessingSource, SalesManagerAttribution } from "./types";
 
@@ -32,8 +33,11 @@ import type { AnalyticsRecord, DashboardSettings, ProcessingSource, SalesManager
  *     SQL, Sales Lost or Saralangan. A version 6 record was written under the
  *     old exclusion and reports different SQL and Sotilmadi numbers, and a
  *     different Saralangan, until it is rebuilt.
+ * 8 — Canonical project Lead membership is persisted independently from source
+ *     and failure reason. Entry into selected Sales plus the current project
+ *     category decides the population; ambiguous history remains unresolved.
  */
-export const ANALYTICS_VERSION = 7;
+export const ANALYTICS_VERSION = 8;
 
 export type RawDeal = Record<string, unknown>;
 export type RawActivity = Record<string, unknown>;
@@ -125,6 +129,16 @@ export function buildAnalyticsRecords(input: {
     const histories = orderedHistory(historiesByDeal.get(dealId) ?? []); const currentCategoryId = string(deal.CATEGORY_ID || "0"); const currentStageId = string(deal.STAGE_ID);
     const currentStage = stageName(currentStageId, input.stages);
     const firstMainHistory = histories.find((row) => mainIds.has(string(row.CATEGORY_ID)));
+    const projectLeadMembership = decideCanonicalLeadMembership({
+      enteredSalesCategory: mainIds.has(currentCategoryId) || firstMainHistory
+        ? true
+        : input.stageHistoryAvailable
+          ? false
+          : undefined,
+      currentCategoryId,
+      salesCategoryIds: mainIds,
+      postSaleCategoryIds: postSaleIds,
+    });
     const originCategoryId = string(firstMainHistory?.CATEGORY_ID) || (mainIds.has(currentCategoryId) ? currentCategoryId : string(histories.find((row) => !postSaleIds.has(string(row.CATEGORY_ID)))?.CATEGORY_ID)) || currentCategoryId;
     const paymentHistory = histories.find((row) => isPaymentStage(stageName(string(row.STAGE_ID), input.stages), string(row.STAGE_ID), stageSemantics));
     const postSaleHistory = histories.find((row) => postSaleIds.has(string(row.CATEGORY_ID)));
@@ -253,7 +267,7 @@ export function buildAnalyticsRecords(input: {
     return [{
       analyticsVersion: ANALYTICS_VERSION, dealId, title: string(deal.TITLE) || `Deal #${dealId}`, createdAt: created.toISOString(), creationPeriod: isInsideWorkingTime(created, input.settings) ? "WORK_HOURS" : "AFTER_HOURS", slaStart: slaStart.toISOString(),
       assignedManagerId, assignedManager: managerName(assignedManagerId, input.users), categoryId: currentCategoryId, pipeline: input.pipelines.get(currentCategoryId) ?? `Pipeline #${currentCategoryId}`,
-      originCategoryId, originPipeline: input.pipelines.get(originCategoryId) ?? `Pipeline #${originCategoryId}`, operationalPipeline: mainIds.has(currentCategoryId),
+      originCategoryId, originPipeline: input.pipelines.get(originCategoryId) ?? `Pipeline #${originCategoryId}`, operationalPipeline: mainIds.has(currentCategoryId), projectLeadMembership,
       stageId: currentStageId, stage: currentStage, stageEnteredAt: stageEntered.toISOString(), stageAgeHours, stageLimitHours, stageOverdue: salesStatus === "ACTIVE" && stageAgeHours > stageLimitHours,
       sourceId, source, salesStatus, qualified, qualifiedAt, qualifiedStageId: effectiveQualifiedEvent?.stageId ?? null, qualifiedStage: effectiveQualifiedEvent?.stage ?? null,
       wonAt: effectiveWonAt, salesCycleHours, opportunity: Number.isFinite(opportunity) ? opportunity : 0, currencyId: string(deal.CURRENCY_ID), lossReason: effectiveLossReason, lossReasonGroup,

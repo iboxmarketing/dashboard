@@ -45,21 +45,21 @@ vaqti, SLA.
 
 | Card | Numerator | Denominator | Selected date means | Exclusions | Bitrix source |
 | --- | --- | --- | --- | --- | --- |
-| **Leadlar** | eligible cohort deals | — | `createdAt` in range | routing | `crm.deal.list` `DATE_CREATE` |
-| **SQL** | `qualified === true` | Leadlar | `createdAt` | routing | stage history + live stage `SORT` |
-| **Not Relevant** | `lossReasonGroup === "MARKETING"` | **Saralangan leadlar** for the quality rate | `createdAt` | routing | current stage = configured low-quality stage |
-| **Saralangan leadlar** | `qualified === true \|\| lossReasonGroup === "MARKETING"` | — | `createdAt` | routing | canonical fields, never stage names |
-| **Saralanmagan leadlar** | eligible − Saralangan | — | `createdAt` | routing | canonical fields |
-| **Saralash qamrovi** | Saralangan | Leadlar | `createdAt` | routing | — |
-| **Sifatli lead %** | SQL | **Saralangan leadlar** | `createdAt` | routing | — |
-| **Sifatsiz lead %** | Not Relevant | **Saralangan leadlar** | `createdAt` | routing | — |
-| **Umumiy leadlardan Not Relevant %** | Not Relevant | Leadlar | `createdAt` | routing | full-funnel share, *not* a quality rate |
-| **Sotilmadi** | `lossReasonGroup === "SALES"` **and** `qualified === true` | **SQL** | `createdAt` | routing, pre-SQL closures | closed-lost stage, non-routing reason |
-| **SQLgacha yopilgan** | `LOST` + `SALES` + `qualified !== true` | — | `createdAt` | routing | diagnostic only; inside Saralanmagan |
-| **Kelgan leadlardan sotuv** | eligible cohort `salesStatus === "WON"` | Leadlar (and SQL for the second rate) | `createdAt` — sale may land later | routing | payment stage / history / post-sale funnel |
+| **Leadlar** | unique Deal IDs that entered selected Sales and are currently in Sales or matching post-sale | — | original `createdAt` in range | other project funnel; confirmed deletion | stage history + current Deal category |
+| **SQL** | `qualified === true` inside canonical Leadlar | Leadlar | `createdAt` | non-members | stage history + live stage `SORT` |
+| **Not Relevant** | `lossReasonGroup === "MARKETING"` inside canonical Leadlar | **Saralangan leadlar** for the quality rate | `createdAt` | non-members | current stage = configured low-quality stage |
+| **Saralangan leadlar** | canonical Lead with `qualified === true \|\| lossReasonGroup === "MARKETING"` | — | `createdAt` | non-members | canonical fields, never stage names |
+| **Saralanmagan leadlar** | Leadlar − Saralangan | — | `createdAt` | non-members | canonical fields |
+| **Saralash qamrovi** | Saralangan | Leadlar | `createdAt` | non-members | — |
+| **Sifatli lead %** | SQL | **Saralangan leadlar** | `createdAt` | non-members | — |
+| **Sifatsiz lead %** | Not Relevant | **Saralangan leadlar** | `createdAt` | non-members | — |
+| **Umumiy leadlardan Not Relevant %** | Not Relevant | Leadlar | `createdAt` | non-members | full-funnel share, *not* a quality rate |
+| **Sotilmadi** | canonical Lead with `lossReasonGroup === "SALES"` **and** `qualified === true` | **SQL** | `createdAt` | non-members, pre-SQL closures | closed-lost stage, non-routing reason |
+| **SQLgacha yopilgan** | canonical Lead with `LOST` + `SALES` + `qualified !== true` | — | `createdAt` | non-members | diagnostic only; inside Saralanmagan |
+| **Kelgan leadlardan sotuv** | canonical cohort `salesStatus === "WON"` | Leadlar (and SQL for the second rate) | `createdAt` — sale may land later | non-members | payment stage / history / post-sale funnel |
 | **Shu davrdagi sotuvlar** | `salesStatus === "WON" && wonAt` in range | — | **`wonAt`** — creation date irrelevant | needs a trustworthy `wonAt` | as above |
 | **Sotuv summasi** | Σ `OPPORTUNITY` over *Shu davrdagi sotuvlar* | — | `wonAt` | — | `OPPORTUNITY` |
-| **Leadni saralash vaqti** | avg business minutes `slaStart` → first SQL-or-downstream **or** Not Relevant entry | — | `createdAt` | routing | stage history; **never calls** |
+| **Leadni saralash vaqti** | avg business minutes `slaStart` → first SQL-or-downstream **or** Not Relevant entry | — | `createdAt` | non-members | stage history; **never calls** |
 | **SLA** | `ON_TIME` | `ON_TIME + LATE + OVERDUE_UNPROCESSED` | `createdAt` | PENDING, UNKNOWN_EVIDENCE | stage history |
 
 ## Quality is not funnel
@@ -68,7 +68,7 @@ Three questions, three denominators, and they must never be mixed:
 
 | Question | Metric | Formula |
 | --- | --- | --- |
-| How many real leads came in? | Leadlar | eligible cohort (routing excluded) |
+| How many real leads came in? | Leadlar | canonical Sales-entry/current-project population |
 | Of the leads we have judged, how many were good? | Sifatli / Sifatsiz lead % | SQL ÷ **Saralangan**, Not Relevant ÷ **Saralangan** |
 | Of everything that arrived, how much progressed? | Lead → SQL, Lead → Sotuv | SQL ÷ **Leadlar**, Cohort sotuv ÷ **Leadlar** |
 
@@ -84,9 +84,11 @@ from "we have barely judged this cohort yet". A young cohort with 40% coverage
 and 75% Sifatli is a different situation from a mature one with 95% coverage and
 75% Sifatli, and no threshold is imposed on it — the percentage is shown as-is.
 
-Membership is decided by the canonical `qualified` and `lossReasonGroup` fields
-via `isClassifiedLead()` in `lib/sales-logic.ts`, never by matching a display
-stage name, so new or renamed pre-SQL stages stay unclassified automatically.
+Lead membership is decided by `projectLeadMembership` plus definitive live
+`currentScope` evidence via `isEligibleCohortDeal()` in `lib/sales-logic.ts`.
+Source and failure reason never decide membership. Quality classification is a
+separate decision over `qualified` and `lossReasonGroup` via
+`isClassifiedLead()`, never by matching a display stage name.
 
 SQL is evidence-based: a lead is qualified by explicit configured SQL-stage
 evidence, by downstream same-pipeline evidence at or after the SQL threshold, or
@@ -105,7 +107,7 @@ rolling the *code* back after a backfill does not roll the *data* back. See
 Invariants, enforced by `tests/lead-classification.test.ts` and `tests/sql-evidence.test.ts`:
 
 ```
-raw cohort  = Leadlar + Routing
+raw cohort  = Leadlar + canonical exclusions
 Leadlar     = Saralangan + Saralanmagan
 Saralangan  = Sifatli (SQL) + Sifatsiz (Not Relevant)
 Sales Lost <= SQL                       (Sales Lost is a post-SQL outcome)
@@ -129,11 +131,11 @@ appears only in *Kelgan leadlardan sotuv*. Never expect them to match.
 
 | Metric | Numerator | Denominator | Date basis | Bitrix source | Exclusions |
 | --- | --- | --- | --- | --- | --- |
-| Yangi lead | eligible cohort deals | — | `createdAt` | `crm.deal.list` `DATE_CREATE` | routing |
-| Qabul qilingan SQL | `qualified === true` | eligible cohort | `createdAt` | stage history + live stage SORT | routing |
-| Marketing sifatsiz (Not Relevant) | `lossReasonGroup === "MARKETING"` | eligible cohort | `createdAt` | current stage = configured low-quality stage | routing |
-| Sotilmadi | `lossReasonGroup === "SALES"` | **SQL** (`qualified === true`) | `createdAt` | closed-lost stage, non-routing reason | routing |
-| Routing | `lossReasonGroup === "ROUTING"` | — (count only) | `createdAt` | failure reason matches a routing pattern | — |
+| Yangi lead | canonical project Leads | — | `createdAt` | Sales-entry history + current category | non-members |
+| Qabul qilingan SQL | `qualified === true` | canonical cohort | `createdAt` | stage history + live stage SORT | non-members |
+| Marketing sifatsiz (Not Relevant) | `lossReasonGroup === "MARKETING"` | canonical cohort | `createdAt` | current stage = configured low-quality stage | non-members |
+| Sotilmadi | `lossReasonGroup === "SALES"` | **SQL** (`qualified === true`) | `createdAt` | closed-lost stage, non-routing reason | non-members |
+| Routing evidence | `lossReasonGroup === "ROUTING"` | — (diagnostic only) | `createdAt` | failure reason matches a routing pattern | never membership authority |
 | Takroriy lead | `duplicateOfDealId !== null` | cohort | `createdAt` | Contact ID, then Company ID | — |
 
 **SQL / quality acceptance.** A deal is qualified when it enters the configured
@@ -204,22 +206,18 @@ reported, never dropped. Per-manager denominators sum back to the total.
 ## Current stage inventory
 
 Live `crm.deal.list` with `CLOSED=N` on the selected Sales funnels, no
-`DATE_CREATE` filter. Reconciliation compares that live set against cached
-records scoped by funnel only — sales classification never decides cache
-membership — while staleness uses the subset the cache still believes is open.
+`DATE_CREATE` filter powers the current-stage board. Separately, membership
+reconciliation compares an all-status live snapshot of the selected Sales and
+paired post-sale funnels against cached project records. A missing row gets a
+direct by-ID lookup; only a definitive move or deletion changes membership.
 
-## Aktiv leadlar (`active_cohort`) — Sprint 27.1
+## Aktiv leadlar (`active_cohort`)
 
 Historical eligible cohort records that are still `ACTIVE` **and** operationally
 `IN_SCOPE`.
 
-A deal that has left the synced funnels — moved to an unrelated pipeline, or
-deleted from Bitrix — can never be refreshed again, so counting it as an active
-lead overstates the working pipeline. `currentScope` records that fact, and this
-metric alone consults it.
-
-Every other metric is unaffected and remains historical-cohort based: Leadlar,
-SQL, Not Relevant, Sotilmadi, Kelgan leadlardan sotuv, Shu davrdagi sotuvlar,
-Sotuv summasi, Lead → SQL, Lead → Sotuv, SQL → Sotuv and SLA all ignore
-`currentScope` entirely. A record with no `currentScope` counts as `IN_SCOPE`,
-so nothing changes for data written before this sprint.
+A deal that has left the project funnels or is confirmed deleted is outside the
+current canonical Lead population. `currentScope` records this definitive live
+evidence, so Leadlar and every cohort metric derived from it exclude the row;
+`active_cohort` additionally requires `salesStatus === "ACTIVE"`. An ambiguous
+lookup does not write an exclusion and therefore cannot silently remove a Deal.

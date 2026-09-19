@@ -49,10 +49,12 @@ population:
   population;
 - if it later returns to IBOX Sales — included again, counted once by Deal ID.
 
-Verified benchmark, `DATE_CREATE` 2026-09-01 — 2026-09-19 in `Asia/Tashkent`,
-source `CRM-форма`: 423 Deals currently in IBOX Sales (category 3) plus 25 in
-IBOX Обучение (category 13) give 448 canonical IBOX Leads. Deals 43281 and
-44071 sit in IDOKON (category 1) without having returned and are excluded.
+Verified live benchmark, `DATE_CREATE` 2026-09-01 — 2026-09-19 inclusive in
+`Asia/Tashkent`: 429 Deals currently in IBOX Sales (category 3) plus 41 in IBOX
+Обучение (category 13) give 470 all-source canonical IBOX Leads. Filtering that
+same canonical population to source `CRM-форма` gives 448. Source is a
+breakdown/filter, never part of the Lead definition. The audit completed with
+zero unresolved Deals.
 
 The failure reason is supporting routing evidence, never the only source of
 truth. The labels `передано Idokon (Not relevant)` and

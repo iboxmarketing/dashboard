@@ -136,12 +136,13 @@ test("G: Not Relevant after historical SQL stays unqualified and is never Sales 
   assert.equal(isPreSqlClosed(row), false);
 });
 
-test("H: routed after SQL is excluded from every eligible metric", () => {
+test("H: routing reason does not exclude a Deal still currently in IBOX", () => {
   const row = build({ path: ["C3:NEW", "C3:PREPARATION", "C3:LOSE"], reason: "peredano Idokon" });
   assert.equal(row.lossReasonGroup, "ROUTING");
   const metrics = buildDashboardMetrics([row], []);
-  assert.equal(metrics.counts.leads, 0);
-  assert.equal(metrics.counts.sql, 0);
+  assert.equal(row.projectLeadMembership, "INCLUDED");
+  assert.equal(metrics.counts.leads, 1);
+  assert.equal(metrics.counts.sql, 1, "prior SQL evidence is unchanged");
   assert.equal(metrics.counts.pre_sql_closed, 0);
   assert.equal(metrics.counts.sales_lost, 0);
 });
@@ -181,7 +182,8 @@ test("12: invariants hold over a mixed cohort", () => {
   assert.equal(m.preSqlClosed.every((row) => row.qualified === true), true, "preSqlClosed rows are still SQL");
   assert.equal(m.preSqlClosed.every((row) => isSalesLost(row)), true, "preSqlClosed rows are still Sales Lost");
   assert.equal(m.sql.some((row) => row.lossReasonGroup === "MARKETING"), false, "no Not Relevant is SQL");
-  assert.equal(m.sql.some((row) => row.lossReasonGroup === "ROUTING"), false, "no Routing in SQL");
+  assert.equal(m.sql.some((row) => row.lossReasonGroup === "ROUTING"), true,
+    "supporting reason metadata cannot remove an included current IBOX Deal");
   assert.equal(m.eligible.filter((row) => row.salesStatus === "WON").every((row) => row.qualified), true, "every eligible WON is qualified");
   // c and d never showed real SQL/Обработка evidence — the diagnostic isolates
   // exactly them, independent of their (now unconditional) qualified status.
@@ -216,14 +218,14 @@ test("12/13/14/15/16: canonical formulas hold over a cohort mixing every outcome
     { ...build({ path: ["C3:NEW", "C3:UC_9SUEMM", "C3:UC_C0725V"] }), dealId: "nr" },
     // Direct close — a seller process error, still qualified/Sales Lost/Saralangan.
     { ...build({ path: ["C3:NEW", "C3:UC_05P04E", "C3:LOSE"], reason: "ignorit" }), dealId: "direct-close" },
-    // Routing — excluded from the eligible cohort entirely.
+    // Routing reason while still in IBOX — supporting metadata, not membership.
     { ...build({ path: ["C3:NEW", "C3:LOSE"], reason: "peredano Idokon" }), dealId: "routed" },
     // Untouched, active pre-SQL lead — the one row that stays Saralanmagan.
     { ...build({ path: ["C3:NEW"] }), dealId: "fresh" },
   ];
   const m = buildDashboardMetrics(rows, rows.filter((row) => row.salesStatus === "WON"));
 
-  assert.equal(m.counts.leads, 6, "routing excluded, six eligible leads");
+  assert.equal(m.counts.leads, 7, "all seven current IBOX Deals are canonical Leads");
   // Qualified: sql-open, sql-lost, won (downstream-of-SQL evidence via the
   // paid stage) and direct-close. "nr" is not (MARKETING precedence) and
   // "fresh" never reached any evidence, so it stays undecided.
@@ -237,7 +239,7 @@ test("12/13/14/15/16: canonical formulas hold over a cohort mixing every outcome
   assert.equal(m.counts.classified_leads, 5, "4 SQL + 1 Not Relevant");
   // 13: Leadlar = Saralangan + Saralanmagan.
   assert.equal(m.counts.leads, m.counts.classified_leads + m.counts.unclassified_leads, "13: Leadlar = Saralangan + Saralanmagan");
-  assert.equal(m.counts.unclassified_leads, 1, "only \"fresh\" is still undecided: 6 = 5 + 1");
+  assert.equal(m.counts.unclassified_leads, 2, "fresh and routing-reason-only Deals are undecided: 7 = 5 + 2");
 
   // 15: Sifatli % + Sifatsiz % use the Saralangan denominator and sum to 100%.
   assert.equal(m.rates.quality_accepted_rate, Math.round((4 / 5) * 100), "Sifatli % = SQL / Saralangan");

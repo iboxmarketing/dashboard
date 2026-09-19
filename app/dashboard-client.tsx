@@ -465,7 +465,7 @@ function DashboardView({ records, salesRecords, previousRecords, previousSalesRe
   const cards: Record<HeadlineCardId, { value: string; detail: React.ReactNode; tone: string; icon: typeof Activity }> = {
     leads: {
       value: String(metrics.counts.leads),
-      detail: <><MetricDelta current={metrics.counts.leads} previous={previousMetrics.counts.leads} /> · routing chiqarilgan</>,
+      detail: <><MetricDelta current={metrics.counts.leads} previous={previousMetrics.counts.leads} /> · canonical IBOX a’zoligi</>,
       tone: "blue", icon: Database },
     classified_leads: {
       value: String(metrics.counts.classified_leads),
@@ -764,7 +764,7 @@ function LeadFlowView({ records }: { records: DashboardRecord[] }) {
 
     <section className="panel"><SectionHeader
         title="Hafta kuni × 2 soat heatmap"
-        subtitle={`${definition.label}${definition.unit === "percent" ? " (%)" : definition.unit === "minutes" ? " (vaqt)" : " (ta)"} · vaqt Asia/Tashkent · routing hisobga olinmaydi`}
+        subtitle={`${definition.label}${definition.unit === "percent" ? " (%)" : definition.unit === "minutes" ? " (vaqt)" : " (ta)"} · vaqt Asia/Tashkent · canonical Leadlar`}
         action={<Select label="Ko‘rsatkich" value={metric} onChange={(value) => setMetric(value as LeadFlowMetricId)}>
           {groups.map((group) => <optgroup key={group} label={group}>
             {LEAD_FLOW_METRICS.filter((entry) => entry.group === group).map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
@@ -1144,7 +1144,7 @@ function CoverageNotice({ records, filters }: { records: DashboardRecord[]; filt
 }
 
 function ClassificationDiagnostics({ records }: { records: DashboardRecord[] }) {
-  const routing = records.filter((row) => !isEligibleCohortDeal(row));
+  const excluded = records.filter((row) => !isEligibleCohortDeal(row));
   const eligible = records.filter(isEligibleCohortDeal);
   const classified = eligible.filter(isClassifiedLead);
   const unclassified = eligible.filter(isUnclassifiedLead);
@@ -1154,18 +1154,18 @@ function ClassificationDiagnostics({ records }: { records: DashboardRecord[] }) 
   const conflicts = countClassificationConflicts(eligible);
   const stageRows = groupedCount(unclassified, (row) => row.stage || "Stage ko‘rsatilmagan");
   const rows: { label: string; value: string; hint: string }[] = [
-    { label: "Xom cohort", value: String(records.length), hint: `${eligible.length} eligible + ${routing.length} routing` },
-    { label: "Leadlar", value: String(eligible.length), hint: "Routing chiqarilgan" },
+    { label: "Xom cohort", value: String(records.length), hint: `${eligible.length} canonical + ${excluded.length} chiqarilgan` },
+    { label: "Leadlar", value: String(eligible.length), hint: "Sales kirishi + joriy loyiha funneli" },
     { label: "Saralangan", value: String(classified.length), hint: `${sql.length} SQL + ${notRelevant.length} Not Relevant` },
     { label: "Saralanmagan", value: String(unclassified.length), hint: "Aktiv pre-SQL + SQLgacha yopilgan" },
     { label: "SQLgacha yopilgan", value: String(preSql.length), hint: "Sales’da yopilgan, SQL dalili yo‘q" },
     { label: "Saralash qamrovi", value: `${pct(classified.length, eligible.length)}%`, hint: "Saralangan / Leadlar" },
-    { label: "Takroriy (xom cohort)", value: String(countDuplicates(records)), hint: "Routing ham kiradi — tarixiy ta’rif" },
+    { label: "Takroriy (xom cohort)", value: String(countDuplicates(records)), hint: "Canonical tashqarisidagi yozuvlar ham kiradi" },
     { label: "Takroriy (Leadlar ichida)", value: String(countDuplicates(eligible)), hint: "Leadlar bilan solishtirish uchun" },
   ];
-  return <section className="panel"><SectionHeader title="Lead saralash diagnostikasi" subtitle="Xom cohort = Leadlar + Routing · Saralangan = Sifatli + Sifatsiz" />
+  return <section className="panel"><SectionHeader title="Lead saralash diagnostikasi" subtitle="Xom cohort = canonical Leadlar + chiqarilganlar · Saralangan = Sifatli + Sifatsiz" />
     <div className="quality-grid">{rows.map((row) => <div key={row.label}><span>{row.label}</span><strong>{row.value}</strong><small>{row.hint}</small></div>)}</div>
-    {records.length !== eligible.length + routing.length && <div className="notice warning page-notice"><AlertTriangle size={17} /><span>Xom cohort Leadlar + Routing yig‘indisiga teng emas.</span></div>}
+    {records.length !== eligible.length + excluded.length && <div className="notice warning page-notice"><AlertTriangle size={17} /><span>Xom cohort canonical Leadlar + chiqarilgan yozuvlar yig‘indisiga teng emas.</span></div>}
     {conflicts > 0 && <div className="notice warning page-notice"><AlertTriangle size={17} /><span>{conflicts} ta yozuv bir vaqtda ham Sifatli, ham Sifatsiz deb belgilangan. Saralangan = Sifatli + Sifatsiz tenglamasi shu yozuvlarda buziladi.</span></div>}
     {Boolean(unclassified.length) && <div className="table-wrap"><table className="data-table"><thead><tr><th>Saralanmagan stage</th><th>Soni</th><th>Saralanmaganlarning %</th></tr></thead><tbody>{stageRows.map((row) => <tr key={row.label}><td><strong>{row.label}</strong></td><td>{row.value}</td><td>{pct(row.value, unclassified.length)}%</td></tr>)}</tbody></table></div>}
     {Boolean(preSql.length) && <><SectionHeader title="SQLgacha yopilgan sabablar" subtitle="Sales’da yopilgan, lekin SQL bosqichiga yetmagan — workflow signali, KPI emas" /><div className="table-wrap"><table className="data-table"><thead><tr><th>Sabab</th><th>Soni</th><th>%</th></tr></thead><tbody>{groupedCount(preSql, (row) => row.lossReason || "Sabab ko‘rsatilmagan").slice(0, 12).map((row) => <tr key={row.label}><td><strong>{row.label}</strong></td><td>{row.value}</td><td>{pct(row.value, preSql.length)}%</td></tr>)}</tbody></table></div></>}

@@ -21,7 +21,7 @@ function deal(over: Partial<AnalyticsRecord> = {}): AnalyticsRecord {
  * below is asserted against a named business situation rather than a synthetic
  * shape. `expected` is the quality verdict each row must land on.
  */
-const FIXTURES: { name: string; row: AnalyticsRecord; expected: "SIFATLI" | "SIFATSIZ" | "SARALANMAGAN" | "ROUTING" }[] = [
+const FIXTURES: { name: string; row: AnalyticsRecord; expected: "SIFATLI" | "SIFATSIZ" | "SARALANMAGAN" | "ROUTING" | "EXCLUDED" }[] = [
   { name: "1 NEW / Распределение", row: deal({ dealId: "f1", stage: "Распределение" }), expected: "SARALANMAGAN" },
   { name: "2 Нет ответа", row: deal({ dealId: "f2", stage: "Нет ответа" }), expected: "SARALANMAGAN" },
   { name: "3 Первое касание", row: deal({ dealId: "f3", stage: "Первое касаниe" }), expected: "SARALANMAGAN" },
@@ -33,8 +33,8 @@ const FIXTURES: { name: string; row: AnalyticsRecord; expected: "SIFATLI" | "SIF
   { name: "9 WON moved to post-sale", row: deal({ dealId: "f9", stage: "Внедрение", salesStatus: "WON", qualified: true, wonAt: "2026-08-11T09:00:00.000Z", opportunity: 700 }), expected: "SIFATLI" },
   { name: "10 routed lead", row: deal({ dealId: "f10", salesStatus: "LOST", lossReasonGroup: "ROUTING" }), expected: "ROUTING" },
   { name: "11 duplicate lead", row: deal({ dealId: "f11", customerKey: "c1", duplicateOfDealId: "f4", qualified: true }), expected: "SIFATLI" },
-  { name: "12 deleted / UNAVAILABLE", row: deal({ dealId: "f12", qualified: true, currentScope: "UNAVAILABLE" }), expected: "SIFATLI" },
-  { name: "13 OUT_OF_SCOPE", row: deal({ dealId: "f13", qualified: true, currentScope: "OUT_OF_SCOPE" }), expected: "SIFATLI" },
+  { name: "12 deleted / UNAVAILABLE", row: deal({ dealId: "f12", qualified: true, currentScope: "UNAVAILABLE" }), expected: "EXCLUDED" },
+  { name: "13 OUT_OF_SCOPE", row: deal({ dealId: "f13", qualified: true, currentScope: "OUT_OF_SCOPE" }), expected: "EXCLUDED" },
   { name: "14 Not Relevant after previous SQL", row: deal({ dealId: "f14", stage: "Not Relevant", salesStatus: "LOW_QUALITY", qualified: false, lossReasonGroup: "MARKETING" }), expected: "SIFATSIZ" },
   { name: "15 WON, incomplete SQL history", row: deal({ dealId: "f15", salesStatus: "WON", qualified: true, wonAt: "2026-08-12T09:00:00.000Z", opportunity: 300, processingBusinessMinutes: null }), expected: "SIFATLI" },
   { name: "16 LOST, incomplete SQL history", row: deal({ dealId: "f16", salesStatus: "LOST", qualified: true, lossReasonGroup: "SALES", processingBusinessMinutes: null }), expected: "SIFATLI" },
@@ -44,8 +44,8 @@ const FIXTURES: { name: string; row: AnalyticsRecord; expected: "SIFATLI" | "SIF
 test("24: har bir fixture kutilgan sifat populyatsiyasiga tushadi", () => {
   for (const { name, row, expected } of FIXTURES) {
     const eligible = isEligibleCohortDeal(row);
-    if (expected === "ROUTING") {
-      assert.equal(eligible, false, `${name}: routing Leadlardan chiqarilishi kerak`);
+    if (expected === "ROUTING" || expected === "EXCLUDED") {
+      assert.equal(eligible, false, `${name}: canonical Leadlardan chiqarilishi kerak`);
       continue;
     }
     assert.equal(eligible, true, `${name}: eligible bo‘lishi kerak`);
@@ -67,21 +67,21 @@ test("23: Leadlar = Saralangan + Saralanmagan, Saralangan = Sifatli + Sifatsiz",
   assert.equal(leads, classified_leads + unclassified_leads, "Leadlar tenglamasi");
   assert.equal(classified_leads, sql + not_relevant, "Saralangan tenglamasi");
   assert.equal(metrics.classificationConflicts, 0, "kanonik yozuvlarda ziddiyat bo‘lmaydi");
-  // 17 fixtures, one of which is routing.
+  // 17 fixtures: routing plus two definitive current-scope exclusions.
   assert.equal(rows.length, 17);
-  assert.equal(leads, 16);
+  assert.equal(leads, 14);
   assert.equal(unclassified_leads, 3, "Распределение, Нет ответа, Первое касание");
-  assert.equal(classified_leads, 13);
-  assert.equal(sql, 11);
+  assert.equal(classified_leads, 11);
+  assert.equal(sql, 9);
   assert.equal(not_relevant, 2);
 });
 
-test("23: xom cohort = eligible + routing", () => {
+test("23: xom cohort = canonical eligible + excluded", () => {
   const rows = FIXTURES.map((fixture) => fixture.row);
   const routing = rows.filter((row) => !isEligibleCohortDeal(row));
   const eligible = rows.filter(isEligibleCohortDeal);
   assert.equal(rows.length, eligible.length + routing.length);
-  assert.equal(routing.length, 1);
+  assert.equal(routing.length, 3);
 });
 
 test("4-5: sifat va funnel foizlari boshqa maxrajdan hisoblanadi", () => {
@@ -152,18 +152,16 @@ test("11: routing hech bir sifat yoki funnel populyatsiyasiga kirmaydi", () => {
   assert.equal(metrics.rates.classification_coverage, 100);
 });
 
-test("17: currentScope tarixiy sifat populyatsiyasini o‘zgartirmaydi", () => {
+test("17: definitive currentScope canonical Lead populyatsiyasidan chiqaradi", () => {
   const base = { qualified: true, salesStatus: "ACTIVE" as const };
   const live = buildDashboardMetrics([deal({ dealId: "1", ...base })], []);
   const gone = buildDashboardMetrics([deal({ dealId: "1", ...base, currentScope: "UNAVAILABLE" })], []);
   const moved = buildDashboardMetrics([deal({ dealId: "1", ...base, currentScope: "OUT_OF_SCOPE" })], []);
   for (const metrics of [gone, moved]) {
-    assert.equal(metrics.counts.leads, live.counts.leads);
-    assert.equal(metrics.counts.classified_leads, live.counts.classified_leads);
-    assert.equal(metrics.counts.sql, live.counts.sql);
-    assert.equal(metrics.rates.quality_accepted_rate, live.rates.quality_accepted_rate);
+    assert.equal(metrics.counts.leads, 0);
+    assert.equal(metrics.counts.classified_leads, 0);
+    assert.equal(metrics.counts.sql, 0);
   }
-  // Only the current operational card reacts to scope.
   assert.equal(live.counts.active_cohort, 1);
   assert.equal(gone.counts.active_cohort, 0);
   assert.equal(moved.counts.active_cohort, 0);

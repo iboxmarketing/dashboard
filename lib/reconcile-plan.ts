@@ -32,11 +32,13 @@ export function emptyReconcileState(now: Date = new Date()): ReconcileState {
 }
 
 /**
- * Which cached deals deserve a by-id lookup: historically in the synced funnel,
- * still believed ACTIVE, not already decided, and absent from the live snapshot.
+ * Which cached canonical candidates deserve a by-id lookup: stored in one of
+ * the project funnels, not already definitively decided, and absent from the
+ * live all-status Sales + post-sale membership snapshot. Closed and post-sale
+ * rows must participate because either can later move to another project.
  */
 export function selectStaleCandidates(
-  records: { dealId: string; categoryId: string; salesStatus?: string | null; currentScope?: CurrentScope }[],
+  records: { dealId: string; categoryId: string; currentScope?: CurrentScope }[],
   liveIds: Set<string>,
   categoryIds: string[],
   limit = RECONCILE_BATCH_LIMIT,
@@ -44,7 +46,6 @@ export function selectStaleCandidates(
   const scoped = new Set(categoryIds.map(String));
   const all = records
     .filter((row) => scoped.has(String(row.categoryId)))
-    .filter((row) => (row.salesStatus ?? "ACTIVE") === "ACTIVE")
     // Already-decided records are not re-examined on every run.
     .filter((row) => (row.currentScope ?? "IN_SCOPE") === "IN_SCOPE")
     .filter((row) => !liveIds.has(row.dealId))

@@ -335,9 +335,9 @@ test("orphan failure-reason IDs stay visible in the report and summary", async (
   assert.match(renderHumanSummary(report), /43205: INCLUDED \(orphan failure-reason ID 11151\)/);
 });
 
-test("verified CRM-форма benchmark: 423 IBOX Sales + 25 post-sale resolve to 448, IDOKON deals excluded", async () => {
-  const salesIds = ["43205", ...Array.from({ length: 422 }, (_, index) => String(50001 + index))];
-  const postSaleIds = Array.from({ length: 25 }, (_, index) => String(60001 + index));
+test("verified benchmark: 429 IBOX Sales + 41 post-sale = 470 all-source, CRM-форма is a 448 subset", async () => {
+  const salesIds = ["43205", ...Array.from({ length: 428 }, (_, index) => String(50001 + index))];
+  const postSaleIds = Array.from({ length: 41 }, (_, index) => String(60001 + index));
   const idokonIds = ["43281", "44071"];
   const currentCategory = new Map([
     ...salesIds.map((id) => [id, categoryId]),
@@ -354,7 +354,7 @@ test("verified CRM-форма benchmark: 423 IBOX Sales + 25 post-sale resolve t
       return { result: foundDeal(params.id, {
         DATE_CREATE: "2026-09-10T12:00:00+05:00",
         CATEGORY_ID: currentCategory.get(params.id),
-        SOURCE_ID: "CRM_FORM",
+        SOURCE_ID: [...salesIds, ...postSaleIds].indexOf(params.id) < 448 ? "CRM_FORM" : "REFERRAL",
         [failureReasonField]: params.id === "43205" ? "11151" : "",
       }).deal };
     }
@@ -366,21 +366,21 @@ test("verified CRM-форма benchmark: 423 IBOX Sales + 25 post-sale resolve t
   });
 
   assert.equal(report.result, "COMPLETE");
-  assert.equal(report.counts.discovered, 450);
-  assert.equal(report.counts.included, 448);
+  assert.equal(report.counts.discovered, 472);
+  assert.equal(report.counts.included, 470);
   assert.equal(report.counts.excluded, 2);
   assert.equal(report.counts.unresolved, 0);
-  assert.equal(new Set(report.includedIds).size, 448);
+  assert.equal(new Set(report.includedIds).size, 470);
   assert.deepEqual(report.currentCategoryBreakdown, {
-    included: { [categoryId]: 423, [postSaleCategoryId]: 25 },
+    included: { [categoryId]: 429, [postSaleCategoryId]: 41 },
     excluded: { [idokonCategoryId]: 2 },
   });
   assert.ok(report.includedIds.includes("43205"));
   assert.deepEqual(report.excluded.map((row) => row.dealId).sort(), idokonIds);
-  assert.deepEqual(report.includedBySource, [{
-    sourceId: "CRM_FORM", sourceLabel: "CRM-форма", count: 448, dealIds: [...report.includedIds].sort((a, b) => a.length - b.length || a.localeCompare(b)),
-  }]);
-  assert.match(renderHumanSummary(report), /Included: 448 \(by current category — 3: 423, 13: 25\)/);
+  assert.equal(report.includedBySource.reduce((sum, group) => sum + group.count, 0), 470);
+  assert.equal(report.includedBySource.find((group) => group.sourceId === "CRM_FORM")?.count, 448);
+  assert.equal(report.includedBySource.find((group) => group.sourceId === "REFERRAL")?.count, 22);
+  assert.match(renderHumanSummary(report), /Included: 470 \(by current category — 3: 429, 13: 41\)/);
 });
 
 test("NOT_FOUND is excluded while ACCESS_DENIED and ambiguous failures are unresolved", () => {

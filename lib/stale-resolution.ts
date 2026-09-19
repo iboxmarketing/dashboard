@@ -1,14 +1,12 @@
 import type { DealLookup } from "./deal-lookup";
 
 /**
- * Classifies a cached-ACTIVE deal that has vanished from the live open-sales
- * snapshot, using a direct by-id lookup.
+ * Classifies a cached project Deal that has vanished from the live all-status
+ * Sales + post-sale membership snapshot, using a direct by-ID lookup.
  *
- * The distinction that matters: *where a deal is now* is not *which cohort it
- * belongs to*. A lead created in IBOX Sales stays in the historical Lead / SQL
- * / Sales population for its creation month no matter where the card sits
- * today. So nothing here rewrites cohort identity — it only records current
- * operational state.
+ * Historical identity (especially original DATE_CREATE) is never rewritten.
+ * Current location is nevertheless canonical Lead-membership evidence, so this
+ * records only definitive moves/deletions and leaves ambiguous lookups alone.
  */
 
 export type StaleResolution =
@@ -20,7 +18,7 @@ export type StaleResolution =
   | "LOOKUP_ERROR";         // no answer — decide nothing, retry on a later sync
 
 /**
- * Current operational location, stored additively on the analytics record.
+ * Current location, stored additively on the analytics record.
  *
  * `IN_SCOPE` covers selected sales and paired post-sale funnels — everything
  * the sync passes actually cover. Anything else can never be refreshed again
@@ -67,11 +65,7 @@ export function impliesRouting(_resolution: StaleResolution): false {
 }
 
 /**
- * Whether a record should still count towards *current operational* views —
- * the live stage board and the stale reconciliation.
- *
- * Historical cohort metrics deliberately do not consult this: they are keyed on
- * creation date and origin funnel, which this never touches.
+ * Whether a record still sits in the canonical project's operational scope.
  */
 export function countsAsOperational(scope: CurrentScope | undefined): boolean {
   return (scope ?? "IN_SCOPE") === "IN_SCOPE";

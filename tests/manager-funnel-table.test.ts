@@ -130,7 +130,7 @@ test("N: active uses the canonical active_cohort, including currentScope", () =>
   const gone = buildRows([deal({ dealId: "x", ...ALI, currentScope: "UNAVAILABLE" })], [])[0];
   assert.equal(live.active, 1);
   assert.equal(gone.active, 0, "an out-of-scope deal is not current workload");
-  assert.equal(gone.leads, 1, "but it is still a historical lead");
+  assert.equal(gone.leads, 0, "confirmed deletion is outside canonical Lead membership");
   assert.match(client, /active: metrics\.counts\.active_cohort/);
   assert.doesNotMatch(client, /rows\.filter\(\(row\) => row\.salesStatus === "ACTIVE"\)\.length/, "no independent ACTIVE count");
 });

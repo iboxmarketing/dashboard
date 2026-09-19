@@ -27,9 +27,10 @@ test("1: analyticsVersion 4 yozuvi eskirgan deb hisoblanadi", () => {
   assert.equal(isStale(3), true);
 });
 
-test("2: analyticsVersion 7 joriy, 6 esa eskirgan deb belgilanadi", () => {
-  assert.equal(ANALYTICS_VERSION, 7);
-  assert.equal(isStale(7), false);
+test("2: analyticsVersion 8 joriy, 7 esa eskirgan deb belgilanadi", () => {
+  assert.equal(ANALYTICS_VERSION, 8);
+  assert.equal(isStale(8), false);
+  assert.equal(isStale(7), true, "version 7 has no persisted canonical Lead membership");
   // Version 6 was written under the old pre-SQL exclusion — a direct close
   // was unqualified there, so it reports different SQL, Sotilmadi and
   // Saralangan numbers until it is rebuilt.
@@ -37,9 +38,10 @@ test("2: analyticsVersion 7 joriy, 6 esa eskirgan deb belgilanadi", () => {
   assert.equal(isStale(5), true);
 });
 
-test("3: yangi qurilgan yozuvlar 7-versiya bilan saqlanadi", () => {
-  assert.equal(record().analyticsVersion, 7);
+test("3: yangi qurilgan yozuvlar 8-versiya bilan saqlanadi", () => {
+  assert.equal(record().analyticsVersion, 8);
   assert.equal(record().analyticsVersion, ANALYTICS_VERSION);
+  assert.equal(record().projectLeadMembership, "INCLUDED");
 });
 
 test("4: Full Sync yo‘li yozuvlarni aynan shu builder orqali qayta quradi", () => {

@@ -123,7 +123,7 @@ const rec = (over: Partial<AnalyticsRecord> = {}) => ({
   dealId: "1", categoryId: "3", salesStatus: "ACTIVE", ...over,
 } as unknown as AnalyticsRecord);
 
-test("candidate selection is bounded and skips already-decided records", () => {
+test("canonical membership candidate selection covers closed and post-sale records", () => {
   const records = [
     rec({ dealId: "stale" }),
     rec({ dealId: "live" }),
@@ -131,8 +131,9 @@ test("candidate selection is bounded and skips already-decided records", () => {
     rec({ dealId: "other", categoryId: "13" }),
     rec({ dealId: "decided", currentScope: "UNAVAILABLE" } as Partial<AnalyticsRecord>),
   ];
-  const { batch } = selectStaleCandidates(records, new Set(["live"]), ["3"]);
-  assert.deepEqual(batch, ["stale"], "only an ACTIVE, in-scope, undecided, absent deal is a candidate");
+  const { batch } = selectStaleCandidates(records, new Set(["live"]), ["3", "13"]);
+  assert.deepEqual(batch, ["stale", "closed", "other"],
+    "every undecided project member absent from current project categories is checked");
 
   const many = Array.from({ length: 40 }, (_, i) => rec({ dealId: `d${i}` }));
   const bounded = selectStaleCandidates(many, new Set(), ["3"]);
@@ -180,7 +181,7 @@ const metricsFor = (records: AnalyticsRecord[]) => {
   return buildDashboardMetrics(p.cohort, p.periodSales);
 };
 
-test("Aktiv leadlar excludes unavailable and out-of-scope deals only", () => {
+test("canonical Leadlar and Aktiv leadlar exclude unavailable and out-of-scope deals", () => {
   const inScope = cohort({ dealId: "a" });
   const undecided = cohort({ dealId: "b" });                                            // no currentScope
   const movedOut = cohort({ dealId: "c", currentScope: "OUT_OF_SCOPE" } as Partial<AnalyticsRecord>);
@@ -188,31 +189,26 @@ test("Aktiv leadlar excludes unavailable and out-of-scope deals only", () => {
   const m = metricsFor([inScope, undecided, movedOut, gone]);
 
   assert.equal(m.counts.active_cohort, 2, "only the IN_SCOPE and the unmarked (backward-compatible) deals count");
-  assert.equal(m.counts.leads, 4, "Leadlar unchanged — all four remain in the historical cohort");
-  assert.equal(m.counts.sql, 4, "SQL unchanged for qualified deals");
+  assert.equal(m.counts.leads, 2, "only canonical current project members remain");
+  assert.equal(m.counts.sql, 2, "downstream metrics use the same canonical base");
 });
 
-test("marking a deal changes Aktiv leadlar and nothing else", () => {
+test("confirmed deletion changes canonical cohort metrics, not period-sales money", () => {
   const before = metricsFor([cohort({ dealId: "a" }), cohort({ dealId: "b" })]);
   const after = metricsFor([cohort({ dealId: "a" }), cohort({ dealId: "b", currentScope: "UNAVAILABLE" } as Partial<AnalyticsRecord>)]);
 
   assert.equal(before.counts.active_cohort - after.counts.active_cohort, 1, "Aktiv leadlar drops by exactly one");
-  for (const key of ["leads", "sql", "not_relevant", "sales_lost", "cohort_sales", "period_sales", "duplicates"] as const) {
-    assert.equal(after.counts[key], before.counts[key], `${key} unchanged`);
-  }
-  for (const key of ["lead_to_sql", "lead_to_sale", "sql_to_sale", "not_relevant", "sales_lost", "sla"] as const) {
-    assert.equal(after.rates[key], before.rates[key], `rate ${key} unchanged`);
-  }
+  assert.equal(before.counts.leads - after.counts.leads, 1);
+  assert.equal(before.counts.sql - after.counts.sql, 1);
   assert.equal(after.money.revenue, before.money.revenue, "Sotuv summasi unchanged");
-  assert.deepEqual(after.timing, before.timing, "processing and cycle timing unchanged");
 });
 
-test("only the active-leads metric reads currentScope", () => {
+test("canonical cohort predicate and active-leads metric both read currentScope", () => {
   const metrics = readFileSync(new URL("../lib/dashboard-metrics.ts", import.meta.url), "utf8");
   assert.equal((metrics.match(/countsAsOperational\(/g) ?? []).length, 1, "exactly one consumer");
   assert.match(metrics, /active_cohort: eligible\.filter\(\(row\) => row\.salesStatus === "ACTIVE" && countsAsOperational\(row\.currentScope\)\)/);
   const salesLogic = readFileSync(new URL("../lib/sales-logic.ts", import.meta.url), "utf8");
-  assert.doesNotMatch(salesLogic, /currentScope/, "cohort and loss classification never consult it");
+  assert.match(salesLogic, /row\.currentScope === "OUT_OF_SCOPE"/);
   const docs = readFileSync(new URL("../docs/METRICS.md", import.meta.url), "utf8");
   assert.match(docs, /operationally\s+`IN_SCOPE`/);
 });
@@ -239,7 +235,7 @@ test("reconciliation selects candidates without loading full analytics payloads"
   const recon = readFileSync(new URL("../lib/post-sync-reconciliation.ts", import.meta.url), "utf8");
   assert.doesNotMatch(recon, /listAnalyticsRecords/,
     "the full-table parse must not run inside the sync's final step");
-  assert.match(recon, /listReconcileCandidates\(categoryIds\)/);
+  assert.match(recon, /listReconcileCandidates\(projectCategoryIds\)/);
 
   const storage = readFileSync(new URL("../lib/storage.ts", import.meta.url), "utf8");
   const fn = storage.slice(storage.indexOf("export async function listReconcileCandidates"), storage.indexOf("export async function setAnalyticsCurrentScope"));

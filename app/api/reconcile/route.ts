@@ -8,9 +8,9 @@ import { currentScopeFor, resolveStaleDeal } from "@/lib/stale-resolution";
 /**
  * Internal reconciliation diagnostics.
  *
- * Read-only by design: it classifies stale cached-ACTIVE deals via a direct
- * by-id lookup and reports what it found. It writes nothing — applying a
- * resolution is a separate, deliberate step.
+ * Read-only by design: it classifies cached project Deals missing from the
+ * current membership snapshot via a direct by-ID lookup and reports what it
+ * found. It writes nothing — applying a resolution is a separate step.
  *
  * Not public. In production the whole Worker except /share/* sits behind
  * Cloudflare Access, which is what keeps this authenticated.
@@ -21,25 +21,26 @@ export async function GET(request: Request) {
     const requested = (url.searchParams.get("ids") ?? "").split(",").map((id) => id.trim()).filter(Boolean);
 
     const [settings, records] = await Promise.all([getSettings(), listAnalyticsRecords()]);
-    const categoryIds = [...new Set((settings.selectedPipelineIds ?? []).map(String).filter(Boolean))];
-    // Same live query the stage board uses, reduced to ids.
+    const salesCategoryIds = [...new Set((settings.selectedPipelineIds ?? []).map(String).filter(Boolean))];
+    const projectCategoryIds = [...new Set([...salesCategoryIds, ...(settings.postSalePipelineIds ?? []).map(String)].filter(Boolean))];
+    // Membership snapshot: all statuses in Sales + matching post-sale. This is
+    // intentionally broader than the open-Sales current-stage inventory.
     const live = await bitrixList<RawCurrentStageDeal>("crm.deal.list", {
       order: { ID: "ASC" },
       filter: {
-        ...(categoryIds.length === 1 ? { CATEGORY_ID: categoryIds[0] } : { "@CATEGORY_ID": categoryIds }),
-        CLOSED: "N",
+        ...(projectCategoryIds.length === 1 ? { CATEGORY_ID: projectCategoryIds[0] } : { "@CATEGORY_ID": projectCategoryIds }),
       },
       select: ["ID"],
     }, { maxPages: 100 });
     const liveIds = new Set(live.map((row) => String((row as Record<string, unknown>).ID ?? "")));
 
-    // Either the explicitly requested ids, or every deal the cache still
-    // believes is an open sales deal but the live snapshot no longer lists.
+    // Either the explicitly requested ids, or every cached project Deal the
+    // current membership snapshot no longer lists.
     const staleIds = requested.length
       ? requested
       : records
-        .filter((row) => categoryIds.includes(String(row.categoryId)))
-        .filter((row) => (row.salesStatus ?? "ACTIVE") === "ACTIVE" && !liveIds.has(row.dealId))
+        .filter((row) => projectCategoryIds.includes(String(row.categoryId)))
+        .filter((row) => !liveIds.has(row.dealId))
         .filter((row) => (row.currentScope ?? "IN_SCOPE") === "IN_SCOPE")
         .map((row) => row.dealId);
 

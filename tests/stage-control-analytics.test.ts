@@ -506,10 +506,13 @@ test("historical progression L: a direct Sales Lost outcome is drop-off", () => 
 test("AO: the stage-funnel projection stays lazy and the dashboard payload carries no timeline", () => {
   assert.equal(DASHBOARD_OMITTED_FIELDS.includes("stageTimeline" as never), false);
   assert.equal(DASHBOARD_TIMELINE_FIELD, "stageTimeline", "the dashboard strips the timeline separately");
-  // The funnel DTO gained exactly the two scalars canonical outcomes need.
+  // The funnel DTO carries outcome fields plus the two canonical-membership
+  // fields needed to keep this lazy view aligned with Dashboard Leadlar.
   assert.ok(STAGE_FUNNEL_FIELDS.includes("qualified"));
   assert.ok(STAGE_FUNNEL_FIELDS.includes("lossReasonGroup"));
-  assert.equal(STAGE_FUNNEL_FIELDS.length, 10, "still a projection, not the full record");
+  assert.ok(STAGE_FUNNEL_FIELDS.includes("projectLeadMembership"));
+  assert.ok(STAGE_FUNNEL_FIELDS.includes("currentScope"));
+  assert.equal(STAGE_FUNNEL_FIELDS.length, 12, "still a projection, not the full record");
   assert.ok(Object.keys(funnel()).length < 20);
 });
 
