@@ -10,6 +10,50 @@ This document records the product owner's current rules. If a request conflicts 
 - Call-center and unrelated funnels are excluded.
 - The same Bitrix card moves between funnels. Count its `dealId` once.
 
+### Canonical IBOX Lead membership
+
+The canonical IBOX Lead population uses the Deal's original Bitrix
+`DATE_CREATE`, interpreted as an inclusive calendar-date range in
+`Asia/Tashkent`. One unique Bitrix Deal ID is one Lead; Contact, phone or
+company duplication never merges different Deal IDs.
+
+A Deal becomes an IBOX Lead when its stage history records entry into the
+configured IBOX Sales category, regardless of the funnel where the Deal was
+created. The IBOX Sales stages are, in order:
+
+1. РАСПРЕДЕЛЁННЫЕ СДЕЛКИ
+2. НЕТ ОТВЕТА
+3. Первое касание
+4. ОБРАБОТКА
+5. ВСТРЕЧА НАЗНАЧЕНА
+6. ВСТРЕЧА ПРОВЕДЕНА
+7. СОГЛАСИЕ
+8. ПОЛУЧЕНИЕ ДАННЫХ/ОПЛАТА
+9. Сделка провалена
+10. Not relevant
+11. Оплата получена
+
+There are no routing-only stages inside IBOX Sales. Entry into any stage above
+is legitimate IBOX membership evidence. `Not relevant` and
+`Сделка провалена` remain membership evidence and must not be treated as
+routing stages.
+
+Transfer out of IBOX is identified only by either exact failure-reason value:
+
+- `передано Idokon (Not relevant)`
+- `передано SD (Not relevant)`
+
+Other failure reasons do not remove IBOX membership. A Deal transferred out
+with one of the exact reasons and later entering any IBOX Sales stage is again
+included and counted once by Deal ID. A Deal created outside IBOX and later
+entering IBOX Sales is included. A Deal that reaches `Оплата получена` and then
+moves to IBOX Обучение/post-sale remains included.
+
+A Deal confirmed deleted from Bitrix is excluded. Access-denied, unreadable or
+otherwise ambiguous lookups are unresolved evidence and must never be treated
+as deletion. This canonical ID set is the future base population for downstream
+IBOX metrics; those metric formulas are approved separately.
+
 ## 2. Lead quality
 
 ### Marketing low quality

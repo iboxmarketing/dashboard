@@ -77,6 +77,34 @@ Rules:
 - rotate the Bitrix incoming webhook immediately if a real URL reaches GitHub, an AI prompt or logs;
 - run `npm run secrets:check` before pushing.
 
+## Read-only IBOX Lead evidence extraction
+
+The standalone audit CLI discovers every Deal ID returned by Bitrix stage
+history for one explicitly supplied IBOX Sales category. It then performs a
+current read of every discovered Deal, applies the original `DATE_CREATE` in
+`Asia/Tashkent`, and writes `INCLUDED`, `EXCLUDED`, and `UNRESOLVED` evidence.
+It does not read or write D1 and does not invoke dashboard Sync or Backfill.
+
+Run it only from an authorized environment where `BITRIX24_WEBHOOK_URL` is
+already configured. Never put the webhook on the command line:
+
+```bash
+npm run audit:ibox-leads -- \
+  --category-id <IBOX_SALES_CATEGORY_ID> \
+  --failure-reason-field <UF_CRM_FAILURE_REASON_FIELD> \
+  --from YYYY-MM-DD \
+  --to YYYY-MM-DD
+```
+
+Both JSON and text results are written with local-only permissions under
+`.audit/ibox-lead-evidence/`, which is git-ignored. The output deliberately
+contains Deal IDs and audit classifications but no webhook URL or customer
+payloads. Stage-history pages and Deal lookups use bounded backoff only for
+rate limits, temporary network errors and HTTP 502/503/504 responses. Permanent
+errors are not retried. The summary groups unresolved Deal IDs by error code.
+A result of `COMPLETE_WITH_UNRESOLVED` must not be accepted as a
+fully reconciled ID set until each unresolved lookup or field value is resolved.
+
 ## Database and recovery
 
 GitHub stores migrations, not D1 rows. Most analytics data is recoverable from Bitrix with a full selected-funnel sync. Settings must be re-entered on a new database:
