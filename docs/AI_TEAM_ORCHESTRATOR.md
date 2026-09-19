@@ -181,7 +181,9 @@ shaped Bitrix URLs and shell test commands outside a narrow test/build allowlist
 It imposes explicit process timeouts and caps captured output. PR creation is an
 explicit orchestrator option; it rejects `main` as a push target and never
 merges. It does not run deploy, Sync, Backfill, D1, Cloudflare Access or
-force-push operations.
+force-push operations. A malformed Claude structured response receives one
+bounded retry; a second malformed response blocks the run without persisting the
+raw response payload.
 
 These controls reduce automation risk; they do not turn an AI-generated change
 into trusted code. The owner must inspect the agreed plan, diff, reviews and

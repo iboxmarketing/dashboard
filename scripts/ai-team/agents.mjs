@@ -96,15 +96,24 @@ export class AgentRunner {
     await mkdir(isolatedHome);
     const args = claudeInvocationArgs({ schema, readOnly });
     try {
-      const result = await runCommand(this.commands.claude, args, {
-        cwd,
-        input: prompt,
-        timeoutMs: this.timeoutMs,
-        env: agentEnvironment("claude", isolatedHome, {
-          AI_TEAM_AGENT: "claude", AI_TEAM_PHASE: phase, AI_TEAM_MOCK: this.mock ? "1" : "0",
-        }),
-      });
-      return extractClaudeResult(result.stdout);
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        const result = await runCommand(this.commands.claude, args, {
+          cwd,
+          input: attempt === 1 ? prompt : `${prompt}\n\nYour previous response was not valid JSON. Preserve any allowed file edits already made and return only one object matching the requested schema.`,
+          timeoutMs: this.timeoutMs,
+          env: agentEnvironment("claude", isolatedHome, {
+            AI_TEAM_AGENT: "claude", AI_TEAM_PHASE: phase, AI_TEAM_MOCK: this.mock ? "1" : "0",
+          }),
+        });
+        try {
+          return extractClaudeResult(result.stdout);
+        } catch (error) {
+          if (!(error instanceof SyntaxError) || attempt === 2) {
+            throw new Error("Claude returned invalid structured output after one bounded retry.");
+          }
+        }
+      }
+      throw new Error("Claude returned no structured output.");
     } finally {
       await rm(temp, { recursive: true, force: true });
     }

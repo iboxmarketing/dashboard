@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -101,6 +101,36 @@ test("agent launchers receive an isolated HOME and only their own auth directory
   assert.equal(claude.CLAUDE_CONFIG_DIR, "/real-home/.claude");
   assert.equal(claude.CODEX_HOME, undefined);
   assert.equal(claude.BITRIX24_WEBHOOK_URL, undefined);
+});
+
+test("Claude retries malformed structured output once and returns the valid response", async (t) => {
+  const repo = await mkdtemp(path.join(tmpdir(), "ai-team-claude-retry-"));
+  t.after(() => rm(repo, { recursive: true, force: true }));
+  const command = path.join(repo, "claude-fixture.mjs");
+  const counter = path.join(repo, "attempts");
+  await writeFile(command, `#!${process.execPath}
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+const counter = ${JSON.stringify(counter)};
+const attempt = existsSync(counter) ? Number(readFileSync(counter, "utf8")) + 1 : 1;
+writeFileSync(counter, String(attempt));
+process.stdout.write(attempt === 1 ? '{"broken":' : '{"structured_output":{"ok":true}}');
+`);
+  await chmod(command, 0o755);
+  const runner = new AgentRunner({ claudeCommand: command, timeoutMs: 20_000 });
+  const result = await runner.invoke("claude", {
+    cwd: repo,
+    prompt: "Return the fixture result.",
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["ok"],
+      properties: { ok: { type: "boolean" } },
+    },
+    readOnly: true,
+    phase: "retry_test",
+  });
+  assert.deepEqual(result, { ok: true });
+  assert.equal(await readFile(counter, "utf8"), "2");
 });
 
 test("path ownership supports exact files and bounded glob patterns", () => {

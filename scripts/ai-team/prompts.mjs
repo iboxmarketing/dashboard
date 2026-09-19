@@ -29,7 +29,7 @@ Approve only if the revision resolves every blocking concern, has safe non-overl
 
 export function implementationPrompt(goal, task, plan) {
   return `[AI_TEAM_PHASE:IMPLEMENT]\nYou are ${task.agent}. Implement only this assigned task in the current isolated worktree.\nOriginal goal:\n${goal}\n\nTask:\n${JSON.stringify(task, null, 2)}\n\nAgreed plan summary:\n${plan.summary}\n${SAFETY}
-You may edit only ownedPaths. Your implementation session has no shell, command, code-execution, web or external-service tools. Do not commit, push, create worktrees, or edit orchestration artifacts. Make file changes with the provided edit tools; the orchestrator runs approved tests after your session. Report testsRun as empty unless a non-command tool performed a real check. Return only the requested structured report.`;
+You may edit only ownedPaths. Your implementation session has no shell, command, code-execution, web or external-service tools. The read-only planning sequence already inspected the repository; do not stop solely because a command-based read tool is unavailable. Use any provided file-reading tools and the approved task context, and never invent missing details. Do not commit, push, create worktrees, or edit orchestration artifacts. Make file changes with the provided edit tools; the orchestrator runs approved tests after your session. Report testsRun as empty unless a non-command tool performed a real check. Return only the requested structured report.`;
 }
 
 export function reviewPrompt(goal, task, implementation, baseSha) {
