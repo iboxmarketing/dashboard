@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { AgentRunner, agentEnvironment, claudeInvocationArgs, codexInvocationArgs } from "../scripts/ai-team/agents.mjs";
-import { pathOwned } from "../scripts/ai-team/git.mjs";
+import { pathOwned, taskFileContext } from "../scripts/ai-team/git.mjs";
 import { Orchestrator } from "../scripts/ai-team/orchestrator.mjs";
 import { commandFailureMessage, redact, runCommand, safeEnvironment } from "../scripts/ai-team/process.mjs";
 
@@ -17,6 +17,7 @@ async function fixtureRepo() {
   await mkdir(path.join(repo, "docs"));
   await writeFile(path.join(repo, "AGENTS.md"), "Do not access external systems.\n");
   await writeFile(path.join(repo, "CLAUDE.md"), "Follow AGENTS.md.\n");
+  await writeFile(path.join(repo, "docs/existing.md"), "Existing owned context.\n");
   await writeFile(path.join(repo, "package.json"), JSON.stringify({ type: "module", scripts: { verify: "node --test" } }));
   await writeFile(path.join(repo, "smoke.test.js"), "import test from 'node:test'; import assert from 'node:assert/strict'; test('fixture',()=>assert.equal(1,1));\n");
   await runCommand("git", ["init", "-b", "main"], { cwd: repo, env: safeEnvironment() });
@@ -143,6 +144,17 @@ test("path ownership supports exact files and bounded glob patterns", () => {
   assert.equal(pathOwned("docs/guide.md", ["docs/**"]), true);
   assert.equal(pathOwned("tests/unit/a.test.ts", ["tests/**/*.test.ts"]), true);
   assert.equal(pathOwned("lib/analytics.ts", ["docs/**"]), false);
+});
+
+test("implementation context includes mandatory guidance and current owned files within a hard size bound", async () => {
+  const repo = await fixtureRepo();
+  await writeFile(path.join(repo, "docs/new-owned.md"), "Uncommitted owned context.\n");
+  const context = JSON.parse(await taskFileContext(repo, ["docs/existing.md", "docs/new-owned.md"]));
+  assert.deepEqual(context.files.map((file) => file.path), ["AGENTS.md", "CLAUDE.md", "docs/existing.md", "docs/new-owned.md"]);
+  assert.match(context.files.find((file) => file.path === "docs/new-owned.md").content, /Uncommitted owned context/);
+  await assert.rejects(taskFileContext(repo, ["docs/**"], { maxBytes: 10 }), /split the task/);
+  await writeFile(path.join(repo, ".dev.vars"), "fixture only\n");
+  await assert.rejects(taskFileContext(repo, ["**"]), /refuses a sensitive path: \.dev\.vars/);
 });
 
 test("subprocess environment excludes sensitive variables and output redacts credentials", () => {

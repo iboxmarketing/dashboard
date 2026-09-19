@@ -1,9 +1,29 @@
 import path from "node:path";
-import { access, mkdir, readFile, symlink } from "node:fs/promises";
+import { access, lstat, mkdir, readFile, realpath, symlink } from "node:fs/promises";
 import { constants } from "node:fs";
 import { runCommand, safeEnvironment } from "./process.mjs";
 
 const gitEnv = safeEnvironment({ GIT_TERMINAL_PROMPT: "0" });
+const INSTRUCTION_FILES = [
+  "AGENTS.md", "CLAUDE.md", "docs/HANDOFF.md", "docs/BUSINESS_RULES.md",
+  "docs/ARCHITECTURE.md", "docs/OPERATIONS.md",
+];
+const DEFAULT_CONTEXT_BYTES = 600_000;
+const FORBIDDEN_CONTEXT_PARTS = new Set([
+  ".git", ".ai-team", ".vscode", ".wrangler", ".codex", ".claude",
+  ".ssh", ".aws", ".kube", ".docker", ".gcloud", "node_modules",
+]);
+
+function forbiddenContextPath(file) {
+  const parts = file.replaceAll("\\", "/").split("/");
+  const base = parts.at(-1)?.toLowerCase() ?? "";
+  return parts.some((part) => FORBIDDEN_CONTEXT_PARTS.has(part.toLowerCase()))
+    || base === ".npmrc" || base === ".netrc"
+    || base === ".dev.vars" || base.startsWith(".dev.vars.")
+    || base === ".env" || base.startsWith(".env.")
+    || /^id_(?:rsa|ed25519)/.test(base)
+    || /\.(?:p12|pfx|kdbx|sqlite3?|db)$/i.test(base);
+}
 
 export async function git(cwd, args, options = {}) {
   return await runCommand("git", args, { cwd, env: gitEnv, timeoutMs: options.timeoutMs ?? 120_000, input: options.input });
@@ -51,6 +71,37 @@ function globRegex(glob) {
 
 export function pathOwned(file, patterns) {
   return patterns.some((pattern) => globRegex(pattern).test(file));
+}
+
+export async function taskFileContext(worktree, ownedPaths, { maxBytes = DEFAULT_CONTEXT_BYTES } = {}) {
+  const tracked = (await git(worktree, ["ls-files", "-z"])).stdout.split("\0").filter(Boolean);
+  const changed = await changedFiles(worktree);
+  const candidates = [...new Set([
+    ...INSTRUCTION_FILES.filter((file) => tracked.includes(file)),
+    ...tracked.filter((file) => pathOwned(file, ownedPaths)),
+    ...changed.filter((file) => pathOwned(file, ownedPaths)),
+  ])].sort();
+  const root = await realpath(worktree);
+  const files = [];
+  let bytes = 0;
+  for (const file of candidates) {
+    if (forbiddenContextPath(file)) throw new Error(`Task context refuses a sensitive path: ${file}`);
+    const absolute = path.resolve(root, file);
+    if (absolute !== root && !absolute.startsWith(`${root}${path.sep}`)) {
+      throw new Error(`Task context path escapes the worktree: ${file}`);
+    }
+    let info;
+    try { info = await lstat(absolute); } catch { continue; }
+    if (!info.isFile()) throw new Error(`Task context accepts regular files only: ${file}`);
+    const content = await readFile(absolute, "utf8");
+    if (content.includes("\0")) throw new Error(`Task context cannot include a binary file: ${file}`);
+    bytes += Buffer.byteLength(file) + Buffer.byteLength(content);
+    if (bytes > maxBytes) {
+      throw new Error(`Task context exceeds ${maxBytes} bytes; split the task into smaller owned paths.`);
+    }
+    files.push({ path: file, content });
+  }
+  return JSON.stringify({ files });
 }
 
 export async function validateTaskChanges(worktree, task) {

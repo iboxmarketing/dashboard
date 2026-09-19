@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   addWorktree, assertClean, changedFiles, cherryPick, commitTask, diffFiles, git,
-  resolveRef, safeBranchPart, validateTaskChanges,
+  resolveRef, safeBranchPart, taskFileContext, validateTaskChanges,
 } from "./git.mjs";
 import { finalPlanApprovalPrompt, implementationPrompt, planningPrompt, planReviewPrompt, planRevisionPrompt, reviewPrompt, revisionPrompt } from "./prompts.mjs";
 import { implementationSchema, planReviewSchema, planSchema, reviewSchema, revisionSchema } from "./schemas.mjs";
@@ -200,8 +200,9 @@ export class Orchestrator {
     const taskDir = path.join(artifactDir, "tasks", task.id);
     const result = { task, branch, worktree: taskWorktree, status: "running", implementation: null, reviews: [], changedFiles: [], commit: null, error: null };
     try {
+      let repositoryContext = await taskFileContext(taskWorktree, task.ownedPaths);
       result.implementation = await this.runner.invoke(task.agent, {
-        cwd: taskWorktree, prompt: implementationPrompt(goal, task, plan), schema: implementationSchema, readOnly: false, phase: "implement",
+        cwd: taskWorktree, prompt: implementationPrompt(goal, task, plan, repositoryContext), schema: implementationSchema, readOnly: false, phase: "implement",
       });
       await jsonFile(path.join(taskDir, "implementation.json"), result.implementation);
       const reviewer = task.agent === "codex" ? "claude" : "codex";
@@ -214,8 +215,9 @@ export class Orchestrator {
         const blockers = review.findings.filter((finding) => REVIEW_BLOCKERS.has(finding.severity));
         if (review.approved && blockers.length === 0) break;
         if (round === 3) throw new Error(`Task ${task.id} still has unresolved review findings after two revision rounds.`);
+        repositoryContext = await taskFileContext(taskWorktree, task.ownedPaths);
         result.implementation = await this.runner.invoke(task.agent, {
-          cwd: taskWorktree, prompt: revisionPrompt(goal, task, review, round), schema: revisionSchema, readOnly: false, phase: "revise",
+          cwd: taskWorktree, prompt: revisionPrompt(goal, task, review, round, repositoryContext), schema: revisionSchema, readOnly: false, phase: "revise",
         });
         await jsonFile(path.join(taskDir, `revision-${round}.json`), result.implementation);
       }

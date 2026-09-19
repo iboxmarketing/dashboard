@@ -188,6 +188,13 @@ bounded retry; a second malformed response blocks the run without persisting the
 raw response payload. Claude uses `stream-json`; the orchestrator reads only the
 terminal structured result event and ignores non-terminal stream events.
 
+Because Codex has no command-based reader in implementation sessions, the
+orchestrator supplies mandatory project guidance and current owned-file contents
+as bounded read-only JSON context. It refreshes that context before every
+revision, including uncommitted files from the previous round. The run stops and
+asks for a smaller task if this context exceeds 600,000 bytes; it never restores
+shell access to work around an oversized task.
+
 These controls reduce automation risk; they do not turn an AI-generated change
 into trusted code. The owner must inspect the agreed plan, diff, reviews and
 test results before accepting the PR.

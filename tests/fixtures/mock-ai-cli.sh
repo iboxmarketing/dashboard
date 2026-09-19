@@ -13,6 +13,7 @@ case " $* " in
 esac
 
 if [[ "${AI_TEAM_PHASE:-}" == "implement" || "${AI_TEAM_PHASE:-}" == "revise" ]]; then
+  [[ "$prompt" == *"[AI_TEAM_REPOSITORY_CONTEXT]"* ]] || { printf 'Repository context is missing\n' >&2; exit 2; }
   if [[ "${AI_TEAM_AGENT:-}" == "codex" ]]; then
     [[ " $* " == *" --disable shell_tool "* ]] || { printf 'Codex implementation shell is enabled\n' >&2; exit 2; }
   else
