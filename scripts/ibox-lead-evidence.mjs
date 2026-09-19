@@ -256,6 +256,20 @@ export async function loadStageCatalog(call, categoryId) {
   return { entityId, byId };
 }
 
+export async function loadSourceCatalog(call) {
+  const entityId = "SOURCE";
+  const rows = await exhaustiveList(call, "crm.status.list", {
+    order: { SORT: "ASC" },
+    filter: { ENTITY_ID: entityId },
+  });
+  const byId = new Map();
+  for (const row of rows) {
+    const id = scalar(row.STATUS_ID || row.ID);
+    if (id) byId.set(id, scalar(row.NAME) || id);
+  }
+  return { entityId, byId };
+}
+
 function optionRows(metadata) {
   if (!metadata || typeof metadata !== "object") return [];
   if (Array.isArray(metadata.items)) return metadata.items;
@@ -278,14 +292,15 @@ export async function loadFailureReasonOptions(call, fieldKey) {
 }
 
 function fieldScalars(raw) {
-  if (raw === null || raw === undefined || raw === "") return [];
+  if (raw === null || raw === undefined) return [];
   if (Array.isArray(raw)) return raw.flatMap(fieldScalars);
   if (typeof raw === "object") {
     const object = raw;
     const candidate = object.VALUE ?? object.value ?? object.ID ?? object.id;
-    return candidate === undefined ? [""] : fieldScalars(candidate);
+    return candidate === undefined ? [] : fieldScalars(candidate);
   }
-  return [scalar(raw)];
+  const value = scalar(raw);
+  return value ? [value] : [];
 }
 
 export function resolveFailureReasons(raw, options) {
@@ -370,6 +385,14 @@ function classification(classificationName, dealId, reason, details = {}) {
   return { classification: classificationName, dealId: String(dealId), reason, ...details };
 }
 
+function sourceEvidence(deal, sourceLabels) {
+  const sourceId = scalar(deal.SOURCE_ID);
+  return {
+    sourceId,
+    sourceLabel: sourceLabels.get(sourceId) ?? (sourceId ? "UNRESOLVED_SOURCE_LABEL" : "Not selected"),
+  };
+}
+
 export function classifyDealEvidence({
   dealId,
   lookup,
@@ -378,6 +401,7 @@ export function classifyDealEvidence({
   failureReasonField,
   failureReasonOptions,
   stageNames,
+  sourceLabels = new Map(),
   bounds,
 }) {
   if (!lookup || lookup.kind === "UNRESOLVED") {
@@ -417,7 +441,10 @@ export function classifyDealEvidence({
   }
   const transferReason = failure.labels.find((label) => TRANSFER_OUT_REASONS.includes(label));
   if (!transferReason) {
-    return classification("INCLUDED", dealId, "IBOX_STAGE_ENTRY", { createdAt });
+    return classification("INCLUDED", dealId, "IBOX_STAGE_ENTRY", {
+      createdAt,
+      ...sourceEvidence(deal, sourceLabels),
+    });
   }
 
   const transferIndex = latestTransferEventIndex(history, stageNames);
@@ -425,12 +452,15 @@ export function classifyDealEvidence({
     return classification("UNRESOLVED", dealId, "TRANSFER_EVENT_NOT_LOCATED", { createdAt });
   }
   if (history.slice(transferIndex + 1).some((row) => scalar(row.CATEGORY_ID) === String(categoryId))) {
-    return classification("INCLUDED", dealId, "RETURNED_TO_IBOX_AFTER_TRANSFER", { createdAt });
+    return classification("INCLUDED", dealId, "RETURNED_TO_IBOX_AFTER_TRANSFER", {
+      createdAt,
+      ...sourceEvidence(deal, sourceLabels),
+    });
   }
   return classification("EXCLUDED", dealId, "TRANSFERRED_OUT_NO_RETURN", { createdAt, transferReason });
 }
 
-function safeConfig(config, bounds, discovery, stageCatalog, retryOptions) {
+function safeConfig(config, bounds, discovery, stageCatalog, sourceCatalog, retryOptions) {
   const retry = normalizedRetryOptions(retryOptions);
   return {
     categoryId: String(config.categoryId),
@@ -454,6 +484,7 @@ function safeConfig(config, bounds, discovery, stageCatalog, retryOptions) {
     dealLookup: { method: "crm.deal.get", oneRequestPerDiscoveredDeal: true },
     failureReasonDictionary: { method: "crm.deal.fields" },
     stageDictionary: { method: "crm.status.list", entityId: stageCatalog.entityId },
+    sourceDictionary: { method: "crm.status.list", entityId: sourceCatalog.entityId },
     retryPolicy: {
       methods: ["crm.stagehistory.list", "crm.deal.get"],
       transientCodes: [...TRANSIENT_ERROR_CODES],
@@ -477,12 +508,32 @@ export function countUnresolvedByCode(rows) {
   return Object.fromEntries([...counts].sort(([left], [right]) => left.localeCompare(right)));
 }
 
+export function buildIncludedSourceBreakdown(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    const sourceId = scalar(row.sourceId);
+    const sourceLabel = scalar(row.sourceLabel) || (sourceId ? "UNRESOLVED_SOURCE_LABEL" : "Not selected");
+    const key = `${sourceId}\u0000${sourceLabel}`;
+    const group = groups.get(key) ?? { sourceId, sourceLabel, dealIds: [] };
+    group.dealIds.push(String(row.dealId));
+    groups.set(key, group);
+  }
+  return [...groups.values()]
+    .map((group) => {
+      const dealIds = [...new Set(group.dealIds)].sort(compareDealIds);
+      return { ...group, count: dealIds.length, dealIds };
+    })
+    .sort((left, right) => left.sourceLabel.localeCompare(right.sourceLabel)
+      || left.sourceId.localeCompare(right.sourceId));
+}
+
 export async function extractIboxLeadEvidence({ call, config, now = () => new Date(), retryOptions = {} }) {
   const bounds = tashkentDateBounds(config.from, config.to);
   const snapshotStartedAt = now().toISOString();
   const discovery = await discoverIboxDealIds(call, config.categoryId, retryOptions);
-  const [stageCatalog, failureReasonOptions, currentDeals] = await Promise.all([
+  const [stageCatalog, sourceCatalog, failureReasonOptions, currentDeals] = await Promise.all([
     loadStageCatalog(call, config.categoryId),
+    loadSourceCatalog(call),
     loadFailureReasonOptions(call, config.failureReasonField),
     fetchCurrentDeals(call, discovery.dealIds, retryOptions),
   ]);
@@ -495,9 +546,12 @@ export async function extractIboxLeadEvidence({ call, config, now = () => new Da
     failureReasonField: config.failureReasonField,
     failureReasonOptions,
     stageNames: stageCatalog.byId,
+    sourceLabels: sourceCatalog.byId,
     bounds,
   }));
-  const includedIds = classified.filter((row) => row.classification === "INCLUDED").map((row) => row.dealId);
+  const included = classified.filter((row) => row.classification === "INCLUDED");
+  const includedIds = included.map((row) => row.dealId);
+  const includedBySource = buildIncludedSourceBreakdown(included);
   const excluded = classified.filter((row) => row.classification === "EXCLUDED")
     .map((row) => {
       const evidence = { ...row };
@@ -516,7 +570,7 @@ export async function extractIboxLeadEvidence({ call, config, now = () => new Da
     schemaVersion: 1,
     result: unresolved.length ? "COMPLETE_WITH_UNRESOLVED" : "COMPLETE",
     snapshot: { startedAt: snapshotStartedAt, completedAt: snapshotCompletedAt },
-    config: safeConfig(config, bounds, discovery, stageCatalog, retryOptions),
+    config: safeConfig(config, bounds, discovery, stageCatalog, sourceCatalog, retryOptions),
     counts: {
       discovered: discovery.dealIds.length,
       historyRows: discovery.historyRowCount,
@@ -527,6 +581,7 @@ export async function extractIboxLeadEvidence({ call, config, now = () => new Da
     },
     discoveredIds: discovery.dealIds,
     includedIds,
+    includedBySource,
     excluded,
     unresolved,
   };
@@ -540,6 +595,13 @@ function unresolvedCountLines(report) {
   const grouped = report.counts.unresolvedByCode ?? countUnresolvedByCode(report.unresolved ?? []);
   const entries = Object.entries(grouped);
   return entries.length ? entries.map(([code, count]) => `- ${code}: ${count}`).join("\n") : "- none";
+}
+
+function sourceBreakdownLines(report) {
+  const groups = report.includedBySource ?? [];
+  return groups.length
+    ? groups.map((group) => `- ${group.sourceId || "(not selected)"} — ${group.sourceLabel}: ${group.count} [${group.dealIds.join(", ")}]`).join("\n")
+    : "- none";
 }
 
 export function renderHumanSummary(report) {
@@ -559,6 +621,9 @@ export function renderHumanSummary(report) {
     "",
     "INCLUDED",
     report.includedIds.length ? report.includedIds.map((id) => `- ${id}`).join("\n") : "- none",
+    "",
+    "INCLUDED BY SOURCE",
+    sourceBreakdownLines(report),
     "",
     "EXCLUDED",
     linesForRows(report.excluded),

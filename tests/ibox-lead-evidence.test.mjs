@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   TRANSFER_OUT_REASONS,
   EvidenceError,
+  buildIncludedSourceBreakdown,
   callWithTransientRetry,
   classifyDealEvidence,
   countUnresolvedByCode,
@@ -35,6 +36,10 @@ const reasonOptions = { fieldFound: true, byId: new Map([
   ["102", TRANSFER_OUT_REASONS[1]],
   ["103", "Other reason"],
 ]) };
+const sourceLabels = new Map([
+  ["CRM_FORM", "CRM-форма"],
+  ["REFERRAL", "Recommendation"],
+]);
 
 function event(dealId, stageId, at, id = `${dealId}-${stageId}-${at}`) {
   return { ID: id, OWNER_ID: dealId, CATEGORY_ID: categoryId, STAGE_ID: stageId, TYPE_ID: "2", CREATED_TIME: at };
@@ -48,6 +53,7 @@ function foundDeal(id, overrides = {}) {
       DATE_CREATE: "2026-08-15T12:00:00+05:00",
       CATEGORY_ID: categoryId,
       STAGE_ID: "NEW",
+      SOURCE_ID: "CRM_FORM",
       [failureReasonField]: "",
       ...overrides,
     },
@@ -63,6 +69,7 @@ function classify(id, lookup, history, overrides = {}) {
     failureReasonField,
     failureReasonOptions: reasonOptions,
     stageNames,
+    sourceLabels,
     bounds,
     ...overrides,
   });
@@ -199,6 +206,17 @@ test("a Deal created outside IBOX but later entering IBOX is included by Deal ID
   assert.equal(result.reason, "IBOX_STAGE_ENTRY");
 });
 
+test("Deal 43205 with an empty or not-selected failure reason and valid IBOX history is included", () => {
+  const history = [event("43205", "NEW", "2026-08-10T10:00:00+05:00")];
+  for (const emptyValue of ["", "   ", null, [], {}]) {
+    const result = classify("43205", foundDeal("43205", {
+      [failureReasonField]: emptyValue,
+    }), history);
+    assert.equal(result.classification, "INCLUDED");
+    assert.equal(result.reason, "IBOX_STAGE_ENTRY");
+  }
+});
+
 test("a transferred Deal with a later IBOX stage event is included once as a return", () => {
   const history = [
     event("201", "NR", "2026-08-10T10:00:00+05:00", "1"),
@@ -286,6 +304,23 @@ test("Asia/Tashkent range includes both boundary instants and excludes adjacent 
   assert.equal(bounds.toExclusive, "2026-08-31T19:00:00.000Z");
 });
 
+test("included source breakdown totals equal the canonical population and CRM-форма remains a subset", () => {
+  const included = [
+    classify("240", foundDeal("240", { SOURCE_ID: "CRM_FORM" }), [event("240", "NEW", "2026-08-01T10:00:00+05:00")]),
+    classify("241", foundDeal("241", { SOURCE_ID: "CRM_FORM" }), [event("241", "NEW", "2026-08-01T10:01:00+05:00")]),
+    classify("242", foundDeal("242", { SOURCE_ID: "REFERRAL" }), [event("242", "NEW", "2026-08-01T10:02:00+05:00")]),
+  ];
+  assert.ok(included.every((row) => row.classification === "INCLUDED"));
+
+  const breakdown = buildIncludedSourceBreakdown(included);
+  assert.equal(breakdown.reduce((sum, group) => sum + group.count, 0), included.length);
+  assert.deepEqual(breakdown.find((group) => group.sourceId === "CRM_FORM"), {
+    sourceId: "CRM_FORM", sourceLabel: "CRM-форма", count: 2, dealIds: ["240", "241"],
+  });
+  assert.ok(breakdown.find((group) => group.sourceId === "CRM_FORM").count < included.length);
+  assert.deepEqual(included.map((row) => row.dealId), ["240", "241", "242"]);
+});
+
 test("full extraction fetches every discovered Deal and reports safe counts and config", async () => {
   const histories = [
     event("301", "NEW", "2026-08-01T10:00:00+05:00", "1"),
@@ -298,7 +333,15 @@ test("full extraction fetches every discovered Deal and reports safe counts and 
   const attempts = new Map();
   const call = async (method, params) => {
     if (method === "crm.stagehistory.list") return { result: histories };
-    if (method === "crm.status.list") return { result: [...stageNames].map(([STATUS_ID, NAME]) => ({ STATUS_ID, NAME })) };
+    if (method === "crm.status.list") {
+      if (params.filter.ENTITY_ID === `DEAL_STAGE_${categoryId}`) {
+        return { result: [...stageNames].map(([STATUS_ID, NAME]) => ({ STATUS_ID, NAME })) };
+      }
+      if (params.filter.ENTITY_ID === "SOURCE") {
+        return { result: [...sourceLabels].map(([STATUS_ID, NAME]) => ({ STATUS_ID, NAME })) };
+      }
+      throw new Error(`unexpected status entity ${params.filter.ENTITY_ID}`);
+    }
     if (method === "crm.deal.fields") return { result: { [failureReasonField]: { items: [] } } };
     if (method === "crm.deal.get") {
       requestedDeals.push(params.id);
@@ -334,6 +377,10 @@ test("full extraction fetches every discovered Deal and reports safe counts and 
     },
   });
   assert.deepEqual(report.includedIds, ["301"]);
+  assert.deepEqual(report.includedBySource, [{
+    sourceId: "CRM_FORM", sourceLabel: "CRM-форма", count: 1, dealIds: ["301"],
+  }]);
+  assert.equal(report.includedBySource.reduce((sum, group) => sum + group.count, 0), report.counts.included);
   assert.equal(report.excluded[0].reason, "DELETED_NOT_FOUND");
   assert.equal(report.unresolved[0].reason, "LOOKUP_ACCESS_DENIED");
   assert.equal(report.unresolved[1].reason, "LOOKUP_HTTP_400");
@@ -341,6 +388,7 @@ test("full extraction fetches every discovered Deal and reports safe counts and 
   assert.deepEqual(countUnresolvedByCode(report.unresolved), report.counts.unresolvedByCode);
   assert.match(renderHumanSummary(report), /QUERY_LIMIT_EXCEEDED after retries: 1/);
   assert.equal(report.config.historyQuery.filter.CATEGORY_ID, categoryId);
+  assert.equal(report.config.sourceDictionary.entityId, "SOURCE");
   assert.equal(Object.hasOwn(report.config.historyQuery.filter, "OWNER_ID"), false);
   assert.equal(report.snapshot.startedAt, "2026-09-01T00:00:00.000Z");
   assert.equal(report.snapshot.completedAt, "2026-09-01T00:00:10.000Z");
