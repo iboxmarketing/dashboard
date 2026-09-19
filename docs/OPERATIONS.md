@@ -147,6 +147,32 @@ Deal ID once, Leads = SQL + Not Relevant + the rest). Output goes to the
 git-ignored `.audit/ibox-not-relevant-evidence/`. It is read-only in the same
 way as the other audits.
 
+## Read-only IBOX Sales Lost audit
+
+`npm run audit:ibox-sales-lost` reuses the same canonical Lead + SQL collection
+pass as the SQL and Not Relevant audits. It reports ordinary IBOX Sales losses,
+the exact Deal IDs, CRM-форма and per-source counts, real SQL/downstream versus
+direct-close (`preSqlClosed`) evidence, failure-reason/missing/orphan
+diagnostics, unresolved evidence, and the required set invariants. Routing and
+Not Relevant outcomes are never Sales Lost. Output goes to the git-ignored
+`.audit/ibox-sales-lost-evidence/` directory.
+
+Run only when `BITRIX24_WEBHOOK_URL` is already configured in the authorized
+environment; never put it on the command line:
+
+```bash
+npm run audit:ibox-sales-lost -- \
+  --category-id <IBOX_SALES_CATEGORY_ID> \
+  --post-sale-category-id <IBOX_POST_SALE_CATEGORY_ID> \
+  --failure-reason-field <UF_CRM_FAILURE_REASON_FIELD> \
+  --from YYYY-MM-DD \
+  --to YYYY-MM-DD
+```
+
+The audit calls only `crm.stagehistory.list`, `crm.deal.get`,
+`crm.deal.fields`, and `crm.status.list`; it never reads or writes D1 and never
+runs Sync or Backfill.
+
 ## Database and recovery
 
 GitHub stores migrations, not D1 rows. Most analytics data is recoverable from Bitrix with a full selected-funnel sync. Settings must be re-entered on a new database:

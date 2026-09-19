@@ -54,8 +54,8 @@ vaqti, SLA.
 | **Sifatli lead %** | SQL | **Saralangan leadlar** | `createdAt` | routing | — |
 | **Sifatsiz lead %** | Not Relevant | **Saralangan leadlar** | `createdAt` | routing | — |
 | **Umumiy leadlardan Not Relevant %** | Not Relevant | Leadlar | `createdAt` | routing | full-funnel share, *not* a quality rate |
-| **Sotilmadi** | `lossReasonGroup === "SALES"` **and** `qualified === true` | **SQL** | `createdAt` | routing, pre-SQL closures | closed-lost stage, non-routing reason |
-| **SQLgacha yopilgan** | `LOST` + `SALES` + `qualified !== true` | — | `createdAt` | routing | diagnostic only; inside Saralanmagan |
+| **Sotilmadi** | `lossReasonGroup === "SALES"` **and** `qualified === true` | **SQL** | `createdAt` | routing | closed-lost stage, non-routing reason; includes direct ordinary closures |
+| **SQLgacha yopilgan** | `LOST` + `SALES` + no recorded `qualifiedStageId` | — | `createdAt` | routing | diagnostic only; remains inside SQL and Sotilmadi |
 | **Kelgan leadlardan sotuv** | eligible cohort `salesStatus === "WON"` | Leadlar (and SQL for the second rate) | `createdAt` — sale may land later | routing | payment stage / history / post-sale funnel |
 | **Shu davrdagi sotuvlar** | `salesStatus === "WON" && wonAt` in range | — | **`wonAt`** — creation date irrelevant | needs a trustworthy `wonAt` | as above |
 | **Sotuv summasi** | Σ `OPPORTUNITY` over *Shu davrdagi sotuvlar* | — | `wonAt` | — | `OPPORTUNITY` |
@@ -88,11 +88,11 @@ Membership is decided by the canonical `qualified` and `lossReasonGroup` fields
 via `isClassifiedLead()` in `lib/sales-logic.ts`, never by matching a display
 stage name, so new or renamed pre-SQL stages stay unclassified automatically.
 
-SQL is evidence-based: a lead is qualified by explicit configured SQL-stage
-evidence, by downstream same-pipeline evidence at or after the SQL threshold, or
-by being a canonical WON. A terminal LOST outcome qualifies a deal only when the
-history could not be observed at all. Deals closed in the Sales funnel with no
-SQL evidence are **SQLgacha yopilgan** and count in none of the quality KPIs.
+SQL is established by an explicit configured SQL stage, downstream same-pipeline
+evidence at or after the SQL threshold, a canonical WON, or an ordinary Sales
+closure. A direct ordinary closure without recorded SQL evidence remains SQL and
+Sales Lost while also appearing in the **SQLgacha yopilgan** process diagnostic;
+no qualification timestamp or stage is fabricated for it.
 
 Note for releases: `qualified` is computed during sync and **stored** on the
 record, so a change to this rule only affects deals that are subsequently

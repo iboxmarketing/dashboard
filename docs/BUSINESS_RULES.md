@@ -49,10 +49,11 @@ population:
   population;
 - if it later returns to IBOX Sales — included again, counted once by Deal ID.
 
-Verified benchmark, `DATE_CREATE` 2026-09-01 — 2026-09-19 in `Asia/Tashkent`,
-source `CRM-форма`: 423 Deals currently in IBOX Sales (category 3) plus 25 in
-IBOX Обучение (category 13) give 448 canonical IBOX Leads. Deals 43281 and
-44071 sit in IDOKON (category 1) without having returned and are excluded.
+Verified benchmark, `DATE_CREATE` 2026-09-01 — 2026-09-19 inclusive in
+`Asia/Tashkent`: 429 Deals currently in IBOX Sales (category 3) plus 41 in IBOX
+Обучение (category 13) give 470 all-source canonical IBOX Leads. Filtering the
+same population to source `CRM-форма` gives 448. The audit had zero unresolved
+Deals.
 
 The failure reason is supporting routing evidence, never the only source of
 truth. The labels `передано Idokon (Not relevant)` and
@@ -89,15 +90,14 @@ A deal is quality accepted when it reaches the configured SQL stage, normally О
 A canonical **WON** also counts as quality accepted: an actual sale proves the
 lead was accepted, whatever the history shows. `Not Relevant` never does.
 
-A terminal **LOST** state is *not* by itself quality-acceptance evidence. It may
-stand in for evidence only when the qualification history genuinely could not be
-observed — the history source was unavailable, or returned no rows for the deal.
-History that was read and simply contains no SQL stage is positive evidence that
-the lead never reached SQL, and must not be upgraded.
+An ordinary Sales-group **LOST** outcome also counts as SQL, including a direct
+closure without recorded SQL/Обработка evidence. The latter remains visible as
+the `preSqlClosed` process diagnostic, but is not subtracted from SQL or Sales
+Lost. Routing and Not Relevant outcomes never receive this inference.
 
-Before this correction the LOST fallback was unconditional. On the 2026-08 production
-cohort it promoted 82 of 249 SQL deals whose complete history showed paths such as
-`РАСПРЕДЕЛЁННЫЕ СДЕЛКИ → НЕТ ОТВЕТА → Сделка провалена` — leads that were never worked.
+Verified live SQL benchmark for 2026-09-01 — 2026-09-19: 209 all-source and
+187 CRM-форма SQL Deals, comprising 163 with real SQL/downstream evidence and
+46 direct ordinary Sales closures without recorded SQL evidence. Unresolved: 0.
 
 ### Classified vs unclassified
 
@@ -124,13 +124,13 @@ classified and low quality, and must never also count as quality accepted.
 
 ### Pre-SQL closure — "SQLgacha yopilgan"
 
-`salesStatus === "LOST"` and `lossReasonGroup === "SALES"` and `qualified !== true`.
+`salesStatus === "LOST"` and `lossReasonGroup === "SALES"` and no recorded
+`qualifiedStageId`.
 
 A deal closed inside the Sales funnel that never produced SQL evidence. It is a
-workflow signal, not a KPI, and belongs to none of SQL, Sifatli, Sifatsiz,
-Not Relevant, Sotilmadi or Sales Lost. It sits inside **Saralanmagan**, because
-its quality verdict was never actually reached — so Saralanmagan legitimately
-contains both still-active pre-SQL leads and these terminal ones.
+workflow diagnostic, not a separate population: the Deal remains both SQL and
+Sales Lost. The diagnostic exists to show the missing recorded qualification
+step without changing either KPI.
 
 ## 3. Sales loss
 
@@ -147,6 +147,11 @@ Canonical **Sales Lost** requires both `lossReasonGroup === "SALES"` **and**
 strict subset of SQL and the invariant `Sales Lost <= SQL` always holds. The
 broader `salesStatus === "LOST"` state remains stored for diagnostics but must
 never power the Sotilmadi KPI on its own.
+
+An ordinary direct Sales closure is qualified by outcome and therefore is Sales
+Lost; it simultaneously remains in the `preSqlClosed` diagnostic. A Deal with
+real SQL/downstream evidence followed by ordinary Sales closure is Sales Lost as
+well. `Not Relevant` and routing/transfer outcomes are never Sales Lost.
 
 `qualifiedAt` / `qualifiedStage` may only come from real SQL or downstream
 evidence. When a deal is qualified solely through the safe missing-history
