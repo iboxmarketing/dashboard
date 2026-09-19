@@ -108,6 +108,31 @@ errors are not retried. The summary groups unresolved Deal IDs by error code.
 A result of `COMPLETE_WITH_UNRESOLVED` must not be accepted as a
 fully reconciled ID set until each unresolved lookup or field value is resolved.
 
+## Read-only IBOX SQL evidence audit
+
+`npm run audit:ibox-sql` starts from the same canonical IBOX Lead cohort as the
+Lead audit above and applies the repo's SQL semantics to live Bitrix evidence:
+real SQL/Обработка or downstream stage entry, WON/post-sale, and ordinary Sales
+Lost (including a direct close, reported as `preSqlClosed` with no invented
+`qualifiedAt`). Not Relevant is never SQL. It uses only the four read-only
+Bitrix methods, reads no D1 and runs no Sync or Backfill. Run it from an
+authorized environment with `BITRIX24_WEBHOOK_URL` already configured:
+
+```bash
+npm run audit:ibox-sql -- \
+  --category-id <IBOX_SALES_CATEGORY_ID> \
+  --post-sale-category-id <IBOX_POST_SALE_CATEGORY_ID> \
+  --failure-reason-field <UF_CRM_FAILURE_REASON_FIELD> \
+  --from YYYY-MM-DD \
+  --to YYYY-MM-DD
+```
+
+Output goes to the git-ignored `.audit/ibox-sql-evidence/` (JSON and text) with
+Deal IDs, counts, the SQL breakdown, unresolved evidence and a dashboard
+comparison. The dashboard's D1-configured stage IDs are not readable from the
+script, so it derives SQL, Not Relevant, payment and closed-lost stages from the
+live stage dictionary using the same name fallbacks the dashboard uses.
+
 ## Database and recovery
 
 GitHub stores migrations, not D1 rows. Most analytics data is recoverable from Bitrix with a full selected-funnel sync. Settings must be re-entered on a new database:

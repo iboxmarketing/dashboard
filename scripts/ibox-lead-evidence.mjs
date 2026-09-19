@@ -174,7 +174,7 @@ function unwrapList(result) {
   return [];
 }
 
-async function exhaustiveList(call, method, params, options = {}) {
+export async function exhaustiveList(call, method, params, options = {}) {
   const rows = [];
   const visited = new Set();
   let declaredTotal = null;
