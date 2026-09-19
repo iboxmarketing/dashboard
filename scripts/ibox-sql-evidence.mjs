@@ -292,12 +292,15 @@ export function summarizeSql(sqlRows) {
   };
 }
 
-export async function extractIboxSqlEvidence({ call, config, now = () => new Date(), retryOptions = {}, routingPatterns = DASHBOARD_ROUTING_PATTERNS }) {
+/**
+ * Shared live collection for the SQL and Not Relevant audits: the canonical Lead
+ * cohort plus one SQL-semantics classification per included Lead. Read-only.
+ */
+export async function collectIboxLeadSqlRows({ call, config, retryOptions = {}, routingPatterns = DASHBOARD_ROUTING_PATTERNS }) {
   const bounds = tashkentDateBounds(config.from, config.to);
   if (!/^\d+$/.test(String(config.postSaleCategoryId ?? "")) || String(config.postSaleCategoryId) === String(config.categoryId)) {
     throw new EvidenceError("INVALID_POST_SALE_CATEGORY", "postSaleCategoryId is required, numeric and different from categoryId");
   }
-  const snapshotStartedAt = now().toISOString();
   const discovery = await discoverIboxDealIds(call, config.categoryId, retryOptions);
   const stageEntity = String(config.categoryId) === "0" ? "DEAL_STAGE" : `DEAL_STAGE_${config.categoryId}`;
   const [postSaleDiscovery, sourceCatalog, failureReasonOptions, stageRows, currentDeals] = await Promise.all([
@@ -322,8 +325,6 @@ export async function extractIboxSqlEvidence({ call, config, now = () => new Dat
     bounds,
   }));
   const includedLeads = leads.filter((row) => row.classification === "INCLUDED");
-  const leadUnresolved = leads.filter((row) => row.classification === "UNRESOLVED");
-
   const sqlRows = includedLeads.map((lead) => ({
     ...classifySqlEvidence({
       dealId: lead.dealId,
@@ -340,6 +341,13 @@ export async function extractIboxSqlEvidence({ call, config, now = () => new Dat
     sourceId: lead.sourceId,
     sourceLabel: lead.sourceLabel,
   }));
+  return { bounds, discovery, leads, includedLeads, sqlRows, currentDeals, rules, failureReasonOptions, sourceCatalog };
+}
+
+export async function extractIboxSqlEvidence({ call, config, now = () => new Date(), retryOptions = {}, routingPatterns = DASHBOARD_ROUTING_PATTERNS }) {
+  const snapshotStartedAt = now().toISOString();
+  const { bounds, discovery, leads, includedLeads, sqlRows, rules } = await collectIboxLeadSqlRows({ call, config, retryOptions, routingPatterns });
+  const leadUnresolved = leads.filter((row) => row.classification === "UNRESOLVED");
   const sqlUnresolved = sqlRows.filter((row) => row.classification === "UNRESOLVED");
   const unresolved = [
     ...leadUnresolved.map((row) => ({ dealId: row.dealId, stage: "LEAD_COHORT", reason: row.reason, ...(row.errorCode ? { errorCode: row.errorCode } : {}) })),

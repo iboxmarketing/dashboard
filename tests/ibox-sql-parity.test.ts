@@ -89,6 +89,9 @@ const scenarios: Scenario[] = [
   { name: "direct Sales Lost (preSqlClosed)", path: ["C3:NEW", "C3:UC_05P04E", "C3:LOSE"], reason: "ignorit" },
   { name: "direct Sales Lost, no reason", path: ["C3:NEW", "C3:LOSE"] },
   { name: "Sales Lost with orphan enum reason", path: ["C3:NEW", "C3:UC_05P04E", "C3:LOSE"], reason: "11151" },
+  { name: "Not Relevant stage carrying a transfer reason", path: ["C3:NEW", "C3:UC_C0725V"], reason: "передано Idokon (Not relevant)" },
+  { name: "Not Relevant after Обработка carrying an orphan reason", path: ["C3:NEW", "C3:UC_9SUEMM", "C3:UC_C0725V"], reason: "11151" },
+  { name: "closed-lost stage whose reason text says Not relevant", path: ["C3:NEW", "C3:UC_9SUEMM", "C3:LOSE"], reason: "Not relevant" },
 ];
 
 for (const scenario of scenarios) {
@@ -138,4 +141,28 @@ test("documented difference 2: paid-then-Not-Relevant is WON (SQL) in both, whic
 
 test("the routing patterns used by the audit are exactly the dashboard defaults", () => {
   assert.deepEqual([...DASHBOARD_ROUTING_PATTERNS], defaultSettings.routingReasonPatterns);
+});
+
+test("Not Relevant parity: the dashboard's Not Relevant count equals the reference, is stage-authoritative and never overlaps SQL", () => {
+  for (const scenario of scenarios) {
+    const record = dashboardRecord(scenario);
+    const ref = reference(scenario);
+    const metrics = buildDashboardMetrics([record] as never, []);
+    const dashboardNotRelevant = metrics.notRelevant.length;
+    assert.equal(dashboardNotRelevant, ref.classification === "NOT_RELEVANT" ? 1 : 0, scenario.name);
+    assert.equal(metrics.sql.length + dashboardNotRelevant <= 1, true, `${scenario.name}: SQL and Not Relevant must be mutually exclusive`);
+    assert.equal(ref.classification === "SQL" && dashboardNotRelevant === 1, false, scenario.name);
+  }
+});
+
+test("Not Relevant parity: the failure reason never defines Not Relevant in either implementation", () => {
+  const withReason = { name: "NR", path: ["C3:NEW", "C3:UC_C0725V"], reason: "Ushli konkurentam" };
+  const withoutReason = { name: "NR", path: ["C3:NEW", "C3:UC_C0725V"] };
+  for (const scenario of [withReason, withoutReason]) {
+    assert.equal(dashboardRecord(scenario).lossReasonGroup, "MARKETING");
+    assert.equal(reference(scenario).classification, "NOT_RELEVANT");
+  }
+  const notNotRelevant = { name: "lost", path: ["C3:NEW", "C3:UC_9SUEMM", "C3:LOSE"], reason: "Not relevant" };
+  assert.notEqual(dashboardRecord(notNotRelevant).lossReasonGroup, "MARKETING");
+  assert.notEqual(reference(notNotRelevant).classification, "NOT_RELEVANT");
 });

@@ -133,6 +133,20 @@ comparison. The dashboard's D1-configured stage IDs are not readable from the
 script, so it derives SQL, Not Relevant, payment and closed-lost stages from the
 live stage dictionary using the same name fallbacks the dashboard uses.
 
+## Read-only IBOX Not Relevant audit
+
+`npm run audit:ibox-not-relevant` takes the same arguments as the SQL audit and
+is computed from the same single pass over the canonical IBOX Lead cohort, so
+SQL and Not Relevant cannot drift apart. Not Relevant is stage-authoritative
+(Marketing low quality): the failure reason is only reported as a diagnostic
+(orphan enum IDs, unselected, transfer-style labels) and never classifies a Deal.
+The report lists the exact Deal IDs, the CRM-форма and per-source split, the
+counts with and without prior SQL/downstream history, unresolved evidence, and
+the invariants (SQL ∩ Not Relevant is empty, Not Relevant ⊆ canonical Leads, one
+Deal ID once, Leads = SQL + Not Relevant + the rest). Output goes to the
+git-ignored `.audit/ibox-not-relevant-evidence/`. It is read-only in the same
+way as the other audits.
+
 ## Database and recovery
 
 GitHub stores migrations, not D1 rows. Most analytics data is recoverable from Bitrix with a full selected-funnel sync. Settings must be re-entered on a new database:
