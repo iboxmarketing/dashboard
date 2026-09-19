@@ -21,16 +21,12 @@ import {
   writeAuditOutput,
 } from "../scripts/ibox-lead-evidence.mjs";
 
-const categoryId = "17";
+const categoryId = "3";
+const postSaleCategoryId = "13";
+const idokonCategoryId = "1";
+const sdCategoryId = "9";
 const failureReasonField = "UF_CRM_FAILURE_REASON";
 const bounds = tashkentDateBounds("2026-08-01", "2026-08-31");
-const stageNames = new Map([
-  ["NEW", "РАСПРЕДЕЛЁННЫЕ СДЕЛКИ"],
-  ["FAIL", "Сделка провалена"],
-  ["NR", "Not relevant"],
-  ["PROCESS", "ОБРАБОТКА"],
-  ["PAID", "Оплата получена"],
-]);
 const reasonOptions = { fieldFound: true, byId: new Map([
   ["101", TRANSFER_OUT_REASONS[0]],
   ["102", TRANSFER_OUT_REASONS[1]],
@@ -66,9 +62,9 @@ function classify(id, lookup, history, overrides = {}) {
     lookup,
     history,
     categoryId,
+    postSaleCategoryId,
     failureReasonField,
     failureReasonOptions: reasonOptions,
-    stageNames,
     sourceLabels,
     bounds,
     ...overrides,
@@ -200,99 +196,136 @@ test("standalone retry helper does not retry definitive NOT_FOUND", async () => 
   assert.equal(attempts, 1);
 });
 
-test("a Deal created outside IBOX but later entering IBOX is included by Deal ID", () => {
-  const result = classify("200", foundDeal("200", { CATEGORY_ID: "99" }), [event("200", "NEW", "2026-08-10T10:00:00+05:00")]);
+test("a Deal created outside IBOX but later entering IBOX Sales is included by Deal ID", () => {
+  const result = classify("200", foundDeal("200"), [event("200", "NEW", "2026-08-10T10:00:00+05:00")]);
   assert.equal(result.classification, "INCLUDED");
   assert.equal(result.reason, "IBOX_STAGE_ENTRY");
+  assert.equal(result.currentCategoryId, categoryId);
 });
 
-test("Deal 43205 with an empty or not-selected failure reason and valid IBOX history is included", () => {
-  const history = [event("43205", "NEW", "2026-08-10T10:00:00+05:00")];
-  for (const emptyValue of ["", "   ", null, [], {}]) {
-    const result = classify("43205", foundDeal("43205", {
-      [failureReasonField]: emptyValue,
-    }), history);
-    assert.equal(result.classification, "INCLUDED");
-    assert.equal(result.reason, "IBOX_STAGE_ENTRY");
-  }
+test("IBOX -> IDOKON with no return is EXCLUDED", () => {
+  const result = classify("43281", foundDeal("43281", { CATEGORY_ID: idokonCategoryId }), [
+    event("43281", "NEW", "2026-08-10T10:00:00+05:00"),
+  ]);
+  assert.equal(result.classification, "EXCLUDED");
+  assert.equal(result.reason, "MOVED_TO_OTHER_FUNNEL_NO_RETURN");
+  assert.equal(result.currentCategoryId, idokonCategoryId);
 });
 
-test("a transferred Deal with a later IBOX stage event is included once as a return", () => {
+test("IBOX -> SD with no return is EXCLUDED", () => {
+  const result = classify("310", foundDeal("310", { CATEGORY_ID: sdCategoryId }), [
+    event("310", "NEW", "2026-08-10T10:00:00+05:00"),
+    event("310", "PROCESS", "2026-08-11T10:00:00+05:00"),
+  ]);
+  assert.equal(result.classification, "EXCLUDED");
+  assert.equal(result.reason, "MOVED_TO_OTHER_FUNNEL_NO_RETURN");
+  assert.equal(result.currentCategoryId, sdCategoryId);
+});
+
+test("IBOX -> other project -> IBOX return is INCLUDED once by Deal ID", () => {
+  // Discovery sees only IBOX rows, so both IBOX entries arrive under one Deal ID.
   const history = [
-    event("201", "NR", "2026-08-10T10:00:00+05:00", "1"),
-    event("201", "PROCESS", "2026-08-12T10:00:00+05:00", "2"),
+    event("311", "NEW", "2026-08-10T10:00:00+05:00", "1"),
+    event("311", "NEW", "2026-08-20T10:00:00+05:00", "2"),
   ];
-  const result = classify("201", foundDeal("201", { CATEGORY_ID: "99", [failureReasonField]: "101" }), history);
+  const result = classify("311", foundDeal("311", { CATEGORY_ID: categoryId }), history);
   assert.equal(result.classification, "INCLUDED");
-  assert.equal(result.reason, "RETURNED_TO_IBOX_AFTER_TRANSFER");
+  assert.equal(result.reason, "IBOX_STAGE_ENTRY");
+  assert.equal(result.currentCategoryId, categoryId);
 });
 
-test("post-sale movement preserves a Deal that previously reached payment", () => {
-  const history = [
+test("IBOX -> category 13 post-sale is INCLUDED, including a Deal that reached payment", () => {
+  const result = classify("202", foundDeal("202", { CATEGORY_ID: postSaleCategoryId, STAGE_ID: "POST_SALE" }), [
     event("202", "NEW", "2026-08-10T10:00:00+05:00", "1"),
     event("202", "PAID", "2026-08-15T10:00:00+05:00", "2"),
-  ];
-  const result = classify("202", foundDeal("202", { CATEGORY_ID: "44", STAGE_ID: "POST_SALE" }), history);
-  assert.equal(result.classification, "INCLUDED");
-});
-
-test("only either exact transfer reason excludes when no later IBOX return exists", () => {
-  for (const [index, reasonId] of ["101", "102"].entries()) {
-    const id = String(210 + index);
-    const result = classify(id, foundDeal(id, { CATEGORY_ID: "99", [failureReasonField]: reasonId }), [
-      event(id, index ? "FAIL" : "NR", "2026-08-20T10:00:00+05:00"),
-    ]);
-    assert.equal(result.classification, "EXCLUDED");
-    assert.equal(result.reason, "TRANSFERRED_OUT_NO_RETURN");
-    assert.equal(result.transferReason, TRANSFER_OUT_REASONS[index]);
-  }
-
-  const other = classify("212", foundDeal("212", { CATEGORY_ID: "99", [failureReasonField]: "103" }), [
-    event("212", "NR", "2026-08-20T10:00:00+05:00"),
   ]);
-  assert.equal(other.classification, "INCLUDED");
+  assert.equal(result.classification, "INCLUDED");
+  assert.equal(result.reason, "IBOX_ENTRY_NOW_POST_SALE");
+  assert.equal(result.currentCategoryId, postSaleCategoryId);
 });
 
-test("orphan failure-reason enum ID is not a transfer: Deal 43205 (raw 11151) is INCLUDED with diagnostics", () => {
-  const result = classify("43205", foundDeal("43205", { [failureReasonField]: "11151" }), [
+test("orphan failure-reason enum ID while currently in IBOX is INCLUDED with diagnostics (Deal 43205, raw 11151)", () => {
+  const history = [
     event("43205", "NEW", "2026-08-20T10:00:00+05:00"),
     event("43205", "NR", "2026-08-21T10:00:00+05:00"),
-  ]);
+  ];
+  const result = classify("43205", foundDeal("43205", { [failureReasonField]: "11151" }), history);
   assert.equal(result.classification, "INCLUDED");
   assert.equal(result.reason, "IBOX_STAGE_ENTRY");
   assert.deepEqual(result.orphanFailureReasonIds, ["11151"]);
+  assert.equal(Object.hasOwn(result, "transferReason"), false);
 
-  const withOtherReason = classify("43206", foundDeal("43206", { [failureReasonField]: ["103", "11151"] }), [
-    event("43206", "NR", "2026-08-20T10:00:00+05:00"),
-  ]);
-  assert.equal(withOtherReason.classification, "INCLUDED");
-  assert.deepEqual(withOtherReason.orphanFailureReasonIds, ["11151"]);
+  const beside = classify("43206", foundDeal("43206", { [failureReasonField]: ["103", "11151"] }), history);
+  assert.equal(beside.classification, "INCLUDED");
+  assert.deepEqual(beside.orphanFailureReasonIds, ["11151"]);
 
-  // A currently resolvable transfer label still excludes, even beside an orphan ID.
-  const transferBesideOrphan = classify("43207", foundDeal("43207", { [failureReasonField]: ["101", "11151"] }), [
-    event("43207", "NR", "2026-08-20T10:00:00+05:00"),
-  ]);
-  assert.equal(transferBesideOrphan.classification, "EXCLUDED");
-  assert.deepEqual(transferBesideOrphan.orphanFailureReasonIds, ["11151"]);
+  // An orphan alone never excludes, even once the Deal sits in another funnel it is only
+  // excluded because of the funnel, and the orphan stays visible.
+  const elsewhere = classify("43207", foundDeal("43207", { CATEGORY_ID: idokonCategoryId, [failureReasonField]: "11151" }), history);
+  assert.equal(elsewhere.classification, "EXCLUDED");
+  assert.equal(elsewhere.reason, "MOVED_TO_OTHER_FUNNEL_NO_RETURN");
+  assert.deepEqual(elsewhere.orphanFailureReasonIds, ["11151"]);
 
-  // An unreadable (empty) dictionary is not proof of orphans.
-  const emptyDictionary = classify("43208", foundDeal("43208", { [failureReasonField]: "11151" }), [
-    event("43208", "NR", "2026-08-20T10:00:00+05:00"),
-  ], { failureReasonOptions: { fieldFound: true, byId: new Map() } });
-  assert.equal(emptyDictionary.classification, "UNRESOLVED");
-  assert.equal(emptyDictionary.reason, "FAILURE_REASON_DICTIONARY_EMPTY");
+  // An unreadable (empty) dictionary proves nothing, so no orphan is reported.
+  const emptyDictionary = classify("43208", foundDeal("43208", { [failureReasonField]: "11151" }), history, {
+    failureReasonOptions: { fieldFound: true, byId: new Map() },
+  });
+  assert.equal(emptyDictionary.classification, "INCLUDED");
+  assert.equal(Object.hasOwn(emptyDictionary, "orphanFailureReasonIds"), false);
+});
+
+test("a transfer failure reason is supporting evidence only and never decides membership", () => {
+  const history = [event("320", "NR", "2026-08-20T10:00:00+05:00")];
+  for (const [index, reasonId] of ["101", "102"].entries()) {
+    // Still in IBOX (transfer pending): included, with the label kept for review.
+    const pending = classify(`32${index}`, foundDeal(`32${index}`, { [failureReasonField]: reasonId }), history);
+    assert.equal(pending.classification, "INCLUDED");
+    assert.equal(pending.transferReason, TRANSFER_OUT_REASONS[index]);
+
+    // Moved to another project's funnel: excluded by the funnel, label kept as support.
+    const moved = classify(`33${index}`, foundDeal(`33${index}`, { CATEGORY_ID: idokonCategoryId, [failureReasonField]: reasonId }), history);
+    assert.equal(moved.classification, "EXCLUDED");
+    assert.equal(moved.transferReason, TRANSFER_OUT_REASONS[index]);
+  }
+  // Moved elsewhere with no reason at all: still excluded by the funnel.
+  const noReason = classify("340", foundDeal("340", { CATEGORY_ID: idokonCategoryId }), history);
+  assert.equal(noReason.classification, "EXCLUDED");
+});
+
+test("Deal 43205 with an empty, not-selected or missing failure reason and valid IBOX history is included", () => {
+  const history = [event("43205", "NEW", "2026-08-10T10:00:00+05:00")];
+  for (const emptyValue of ["", "   ", null, [], {}]) {
+    const result = classify("43205", foundDeal("43205", { [failureReasonField]: emptyValue }), history);
+    assert.equal(result.classification, "INCLUDED");
+    assert.equal(result.reason, "IBOX_STAGE_ENTRY");
+  }
+  const missingField = foundDeal("43205");
+  delete missingField.deal[failureReasonField];
+  assert.equal(classify("43205", missingField, history).classification, "INCLUDED");
+  const unknownDictionary = classify("43205", foundDeal("43205"), history, {
+    failureReasonOptions: { fieldFound: false, byId: new Map() },
+  });
+  assert.equal(unknownDictionary.classification, "INCLUDED");
+});
+
+test("a Deal with no current category or no IBOX history is unresolved, never guessed", () => {
+  const history = [event("350", "NEW", "2026-08-10T10:00:00+05:00")];
+  const noCategory = foundDeal("350");
+  delete noCategory.deal.CATEGORY_ID;
+  assert.equal(classify("350", noCategory, history).reason, "CURRENT_CATEGORY_MISSING");
+  assert.equal(classify("351", foundDeal("351"), []).reason, "IBOX_HISTORY_MISSING");
 });
 
 test("orphan failure-reason IDs stay visible in the report and summary", async () => {
   const call = async (method, params) => {
     if (method === "crm.stagehistory.list") return { result: { items: [event("43205", "NR", "2026-08-21T10:00:00+05:00")] } };
-    if (method === "crm.status.list") return { result: [{ STATUS_ID: "NR", NAME: "Not relevant" }] };
+    if (method === "crm.status.list") return { result: [] };
     if (method === "crm.deal.fields") return { result: { [failureReasonField]: { items: [{ ID: "101", VALUE: TRANSFER_OUT_REASONS[0] }] } } };
     if (method === "crm.deal.get") return { result: foundDeal("43205", { [failureReasonField]: "11151" }).deal };
     throw new Error(`unexpected ${method} ${JSON.stringify(params)}`);
   };
   const report = await extractIboxLeadEvidence({
-    call, config: { categoryId, failureReasonField, from: "2026-08-01", to: "2026-08-31" },
+    call, config: { categoryId, postSaleCategoryId, failureReasonField, from: "2026-08-01", to: "2026-08-31" },
   });
   assert.deepEqual(report.includedIds, ["43205"]);
   assert.equal(report.counts.orphanFailureReasonDeals, 1);
@@ -302,17 +335,52 @@ test("orphan failure-reason IDs stay visible in the report and summary", async (
   assert.match(renderHumanSummary(report), /43205: INCLUDED \(orphan failure-reason ID 11151\)/);
 });
 
-test("missing failure-reason metadata or Deal field remains unresolved", () => {
-  const history = [event("214", "NEW", "2026-08-20T10:00:00+05:00")];
-  const unknownField = classify("214", foundDeal("214"), history, {
-    failureReasonOptions: { fieldFound: false, byId: new Map() },
-  });
-  assert.equal(unknownField.reason, "FAILURE_REASON_FIELD_NOT_FOUND");
+test("verified CRM-форма benchmark: 423 IBOX Sales + 25 post-sale resolve to 448, IDOKON deals excluded", async () => {
+  const salesIds = ["43205", ...Array.from({ length: 422 }, (_, index) => String(50001 + index))];
+  const postSaleIds = Array.from({ length: 25 }, (_, index) => String(60001 + index));
+  const idokonIds = ["43281", "44071"];
+  const currentCategory = new Map([
+    ...salesIds.map((id) => [id, categoryId]),
+    ...postSaleIds.map((id) => [id, postSaleCategoryId]),
+    ...idokonIds.map((id) => [id, idokonCategoryId]),
+  ]);
+  // Every Deal entered IBOX Sales; discovery is by stage history, not current funnel.
+  const histories = [...currentCategory.keys()].map((id, index) => event(id, "NEW", "2026-09-05T10:00:00+05:00", String(index + 1)));
+  const call = async (method, params) => {
+    if (method === "crm.stagehistory.list") return { result: histories };
+    if (method === "crm.status.list") return { result: [...sourceLabels].map(([STATUS_ID, NAME]) => ({ STATUS_ID, NAME })) };
+    if (method === "crm.deal.fields") return { result: { [failureReasonField]: { items: [{ ID: "101", VALUE: TRANSFER_OUT_REASONS[0] }] } } };
+    if (method === "crm.deal.get") {
+      return { result: foundDeal(params.id, {
+        DATE_CREATE: "2026-09-10T12:00:00+05:00",
+        CATEGORY_ID: currentCategory.get(params.id),
+        SOURCE_ID: "CRM_FORM",
+        [failureReasonField]: params.id === "43205" ? "11151" : "",
+      }).deal };
+    }
+    throw new Error(`unexpected method ${method}`);
+  };
 
-  const lookup = foundDeal("215");
-  delete lookup.deal[failureReasonField];
-  const missingValue = classify("215", lookup, history);
-  assert.equal(missingValue.reason, "FAILURE_REASON_FIELD_MISSING");
+  const report = await extractIboxLeadEvidence({
+    call, config: { categoryId, postSaleCategoryId, failureReasonField, from: "2026-09-01", to: "2026-09-19" },
+  });
+
+  assert.equal(report.result, "COMPLETE");
+  assert.equal(report.counts.discovered, 450);
+  assert.equal(report.counts.included, 448);
+  assert.equal(report.counts.excluded, 2);
+  assert.equal(report.counts.unresolved, 0);
+  assert.equal(new Set(report.includedIds).size, 448);
+  assert.deepEqual(report.currentCategoryBreakdown, {
+    included: { [categoryId]: 423, [postSaleCategoryId]: 25 },
+    excluded: { [idokonCategoryId]: 2 },
+  });
+  assert.ok(report.includedIds.includes("43205"));
+  assert.deepEqual(report.excluded.map((row) => row.dealId).sort(), idokonIds);
+  assert.deepEqual(report.includedBySource, [{
+    sourceId: "CRM_FORM", sourceLabel: "CRM-форма", count: 448, dealIds: [...report.includedIds].sort((a, b) => a.length - b.length || a.localeCompare(b)),
+  }]);
+  assert.match(renderHumanSummary(report), /Included: 448 \(by current category — 3: 423, 13: 25\)/);
 });
 
 test("NOT_FOUND is excluded while ACCESS_DENIED and ambiguous failures are unresolved", () => {
@@ -375,9 +443,6 @@ test("full extraction fetches every discovered Deal and reports safe counts and 
   const call = async (method, params) => {
     if (method === "crm.stagehistory.list") return { result: histories };
     if (method === "crm.status.list") {
-      if (params.filter.ENTITY_ID === `DEAL_STAGE_${categoryId}`) {
-        return { result: [...stageNames].map(([STATUS_ID, NAME]) => ({ STATUS_ID, NAME })) };
-      }
       if (params.filter.ENTITY_ID === "SOURCE") {
         return { result: [...sourceLabels].map(([STATUS_ID, NAME]) => ({ STATUS_ID, NAME })) };
       }
@@ -398,7 +463,7 @@ test("full extraction fetches every discovered Deal and reports safe counts and 
   const clock = [new Date("2026-09-01T00:00:00Z"), new Date("2026-09-01T00:00:10Z")];
   const report = await extractIboxLeadEvidence({
     call,
-    config: { categoryId, failureReasonField, from: "2026-08-01", to: "2026-08-31" },
+    config: { categoryId, postSaleCategoryId, failureReasonField, from: "2026-08-01", to: "2026-08-31" },
     now: () => clock.shift(),
     retryOptions: { delaysMs: [0], sleep: async () => {} },
   });
@@ -477,16 +542,24 @@ test("webhook credentials cannot enter errors, reports, summaries, or output fil
   }
 });
 
-test("CLI requires category, date range, and failure-reason field", () => {
-  assert.deepEqual(parseCliArgs([
-    "--category-id", "17", "--failure-reason-field", failureReasonField,
+test("CLI requires category, post-sale category, date range, and failure-reason field", () => {
+  const valid = [
+    "--category-id", categoryId, "--post-sale-category-id", postSaleCategoryId, "--failure-reason-field", failureReasonField,
     "--from", "2026-08-01", "--to", "2026-08-31",
-  ]), {
-    help: false, categoryId: "17", failureReasonField, from: "2026-08-01", to: "2026-08-31",
+  ];
+  assert.deepEqual(parseCliArgs(valid), {
+    help: false, categoryId, postSaleCategoryId, failureReasonField, from: "2026-08-01", to: "2026-08-31",
   });
   assert.throws(() => parseCliArgs(["--from", "2026-08-01", "--to", "2026-08-31"]), /category-id/);
   assert.throws(() => parseCliArgs([
-    "--category-id", "17", "--failure-reason-field", failureReasonField,
+    "--category-id", categoryId, "--failure-reason-field", failureReasonField, "--from", "2026-08-01", "--to", "2026-08-31",
+  ]), /post-sale-category-id/);
+  assert.throws(() => parseCliArgs([
+    "--category-id", categoryId, "--post-sale-category-id", categoryId, "--failure-reason-field", failureReasonField,
+    "--from", "2026-08-01", "--to", "2026-08-31",
+  ]), /post-sale-category-id/);
+  assert.throws(() => parseCliArgs([
+    "--category-id", categoryId, "--post-sale-category-id", postSaleCategoryId, "--failure-reason-field", failureReasonField,
     "--from", "2026-02-30", "--to", "2026-03-01",
   ]), /real YYYY-MM-DD/);
 });

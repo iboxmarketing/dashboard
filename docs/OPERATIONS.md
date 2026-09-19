@@ -82,7 +82,9 @@ Rules:
 The standalone audit CLI discovers every Deal ID returned by Bitrix stage
 history for one explicitly supplied IBOX Sales category. It then performs a
 current read of every discovered Deal, applies the original `DATE_CREATE` in
-`Asia/Tashkent`, and writes `INCLUDED`, `EXCLUDED`, and `UNRESOLVED` evidence.
+`Asia/Tashkent`, decides membership from the Deal's current funnel (IBOX Sales
+or the supplied post-sale funnel stay included; any other funnel is excluded),
+uses the failure reason only as supporting evidence, and writes `INCLUDED`, `EXCLUDED`, and `UNRESOLVED` evidence.
 It does not read or write D1 and does not invoke dashboard Sync or Backfill.
 
 Run it only from an authorized environment where `BITRIX24_WEBHOOK_URL` is
@@ -91,6 +93,7 @@ already configured. Never put the webhook on the command line:
 ```bash
 npm run audit:ibox-leads -- \
   --category-id <IBOX_SALES_CATEGORY_ID> \
+  --post-sale-category-id <IBOX_POST_SALE_CATEGORY_ID> \
   --failure-reason-field <UF_CRM_FAILURE_REASON_FIELD> \
   --from YYYY-MM-DD \
   --to YYYY-MM-DD

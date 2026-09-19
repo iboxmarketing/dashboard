@@ -38,23 +38,33 @@ is legitimate IBOX membership evidence. `Not relevant` and
 `Сделка провалена` remain membership evidence and must not be treated as
 routing stages.
 
-Transfer out of IBOX is identified only by either exact failure-reason value:
+Where the Deal is **now** decides whether it stays in the current canonical
+population:
 
-- `передано Idokon (Not relevant)`
-- `передано SD (Not relevant)`
+- currently in IBOX Sales — included, whether it never left or returned;
+- currently in the matching IBOX Обучение/Сопровождение (post-sale) funnel —
+  included, including a Deal that reached `Оплата получена`;
+- currently in any other funnel, for example IDOKON or SD Sales, and not
+  returned to IBOX Sales — excluded from the current canonical IBOX Lead
+  population;
+- if it later returns to IBOX Sales — included again, counted once by Deal ID.
 
-Only a reason that currently resolves in `crm.deal.fields` to one of those
-exact labels can exclude a Deal. A failure-reason enum ID that no longer exists
-in `crm.deal.fields` (an orphan, shown by Bitrix as "not selected") is never
-inferred to be a transfer: the Deal is treated as having no selected transfer
-reason and stays included when valid IBOX stage history exists. The evidence
-report keeps the orphan ID visible as data-quality metadata.
+Verified benchmark, `DATE_CREATE` 2026-09-01 — 2026-09-19 in `Asia/Tashkent`,
+source `CRM-форма`: 423 Deals currently in IBOX Sales (category 3) plus 25 in
+IBOX Обучение (category 13) give 448 canonical IBOX Leads. Deals 43281 and
+44071 sit in IDOKON (category 1) without having returned and are excluded.
 
-Other failure reasons do not remove IBOX membership. A Deal transferred out
-with one of the exact reasons and later entering any IBOX Sales stage is again
-included and counted once by Deal ID. A Deal created outside IBOX and later
-entering IBOX Sales is included. A Deal that reaches `Оплата получена` and then
-moves to IBOX Обучение/post-sale remains included.
+The failure reason is supporting routing evidence, never the only source of
+truth. The labels `передано Idokon (Not relevant)` and
+`передано SD (Not relevant)` are reported next to a Deal but do not, by
+themselves, include or exclude it. A failure-reason enum ID that no longer
+exists in `crm.deal.fields` (an orphan, shown by Bitrix as "not selected") is
+never inferred to be a transfer and never excludes a Deal; Deal 43205 (orphan
+ID `11151`, currently in IBOX Sales) is included. The evidence report keeps
+orphan IDs, and transfer labels on Deals that are still included, visible as
+data-quality metadata.
+
+A Deal created outside IBOX and later entering IBOX Sales is included.
 
 A Deal confirmed deleted from Bitrix is excluded. Access-denied, unreadable or
 otherwise ambiguous lookups are unresolved evidence and must never be treated

@@ -9,10 +9,6 @@ export const TRANSFER_OUT_REASONS = Object.freeze([
   "передано Idokon (Not relevant)",
   "передано SD (Not relevant)",
 ]);
-export const TRANSFER_TERMINAL_STAGE_NAMES = Object.freeze([
-  "Сделка провалена",
-  "Not relevant",
-]);
 
 const READ_ONLY_METHODS = new Set([
   "crm.stagehistory.list",
@@ -93,10 +89,6 @@ function scalar(value) {
   return value === null || value === undefined ? "" : String(value).trim();
 }
 
-function normalizeStageName(value) {
-  return scalar(value).toLocaleLowerCase("ru-RU").replace(/\s+/g, " ");
-}
-
 function compareDealIds(left, right) {
   const a = String(left);
   const b = String(right);
@@ -148,7 +140,7 @@ export function parseCliArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     if (token === "--help" || token === "-h") return { help: true };
-    if (!["--category-id", "--from", "--to", "--failure-reason-field"].includes(token)) {
+    if (!["--category-id", "--post-sale-category-id", "--from", "--to", "--failure-reason-field"].includes(token)) {
       throw new EvidenceError("INVALID_ARGUMENT", `Unknown argument: ${token}`);
     }
     const value = argv[++index];
@@ -159,6 +151,9 @@ export function parseCliArgs(argv) {
   if (!/^\d+$/.test(values.categoryId ?? "")) {
     throw new EvidenceError("INVALID_CATEGORY", "--category-id is required and must be numeric");
   }
+  if (!/^\d+$/.test(values.postSaleCategoryId ?? "") || values.postSaleCategoryId === values.categoryId) {
+    throw new EvidenceError("INVALID_POST_SALE_CATEGORY", "--post-sale-category-id is required, numeric and different from --category-id");
+  }
   if (!/^[A-Za-z0-9_]+$/.test(values.failureReasonField ?? "")) {
     throw new EvidenceError("INVALID_FAILURE_REASON_FIELD", "--failure-reason-field is required and must be a Bitrix field key");
   }
@@ -166,6 +161,7 @@ export function parseCliArgs(argv) {
   return {
     help: false,
     categoryId: values.categoryId,
+    postSaleCategoryId: values.postSaleCategoryId,
     failureReasonField: values.failureReasonField,
     from: bounds.from,
     to: bounds.to,
@@ -240,20 +236,6 @@ export async function discoverIboxDealIds(call, categoryId, retryOptions = {}) {
   for (const [dealId, dealRows] of histories) histories.set(dealId, sortHistory(dealRows));
   const dealIds = [...histories.keys()].sort(compareDealIds);
   return { dealIds, histories, historyRowCount: rows.length, query };
-}
-
-export async function loadStageCatalog(call, categoryId) {
-  const entityId = String(categoryId) === "0" ? "DEAL_STAGE" : `DEAL_STAGE_${categoryId}`;
-  const rows = await exhaustiveList(call, "crm.status.list", {
-    order: { SORT: "ASC" },
-    filter: { ENTITY_ID: entityId },
-  });
-  const byId = new Map();
-  for (const row of rows) {
-    const id = scalar(row.STATUS_ID || row.ID);
-    if (id) byId.set(id, scalar(row.NAME) || id);
-  }
-  return { entityId, byId };
 }
 
 export async function loadSourceCatalog(call) {
@@ -375,16 +357,6 @@ export async function fetchCurrentDeals(call, dealIds, retryOptions = {}) {
   return new Map(entries);
 }
 
-function latestTransferEventIndex(history, stageNames) {
-  const transferNames = new Set(TRANSFER_TERMINAL_STAGE_NAMES.map(normalizeStageName));
-  let found = -1;
-  for (let index = 0; index < history.length; index += 1) {
-    const stageName = stageNames.get(scalar(history[index].STAGE_ID));
-    if (stageName && transferNames.has(normalizeStageName(stageName))) found = index;
-  }
-  return found;
-}
-
 function classification(classificationName, dealId, reason, details = {}) {
   return { classification: classificationName, dealId: String(dealId), reason, ...details };
 }
@@ -397,14 +369,35 @@ function sourceEvidence(deal, sourceLabels) {
   };
 }
 
+/**
+ * The failure reason is supporting routing evidence only. It never decides
+ * membership: a transfer label is reported, an orphan enum ID (one that
+ * crm.deal.fields no longer lists) is reported as data quality, and neither
+ * moves a Deal in or out of the canonical population.
+ */
+function failureReasonSupport(deal, failureReasonField, failureReasonOptions) {
+  if (!failureReasonOptions.fieldFound) return {};
+  const field = dealField(deal, failureReasonField);
+  if (!field.present) return {};
+  const failure = resolveFailureReasons(field.value, failureReasonOptions);
+  const transferReason = failure.labels.find((label) => TRANSFER_OUT_REASONS.includes(label));
+  // An empty dictionary means the options could not be read, so nothing can be
+  // called an orphan.
+  const orphanIds = failureReasonOptions.byId.size ? failure.orphanIds : [];
+  return {
+    ...(transferReason ? { transferReason } : {}),
+    ...(orphanIds.length ? { orphanFailureReasonIds: orphanIds } : {}),
+  };
+}
+
 export function classifyDealEvidence({
   dealId,
   lookup,
   history,
   categoryId,
+  postSaleCategoryId,
   failureReasonField,
   failureReasonOptions,
-  stageNames,
   sourceLabels = new Map(),
   bounds,
 }) {
@@ -432,50 +425,32 @@ export function classifyDealEvidence({
     return classification("EXCLUDED", dealId, "DATE_AFTER_RANGE", { createdAt });
   }
 
-  if (!failureReasonOptions.fieldFound) {
-    return classification("UNRESOLVED", dealId, "FAILURE_REASON_FIELD_NOT_FOUND", { createdAt });
+  const currentCategoryId = scalar(deal.CATEGORY_ID);
+  if (!currentCategoryId) {
+    return classification("UNRESOLVED", dealId, "CURRENT_CATEGORY_MISSING", { createdAt });
   }
-  const failureField = dealField(deal, failureReasonField);
-  if (!failureField.present) {
-    return classification("UNRESOLVED", dealId, "FAILURE_REASON_FIELD_MISSING", { createdAt });
-  }
-  const failure = resolveFailureReasons(failureField.value, failureReasonOptions);
-  if (failure.unresolvedValues.length) {
-    return classification("UNRESOLVED", dealId, "FAILURE_REASON_UNRESOLVED", { createdAt });
-  }
-  // An empty dictionary means the options could not be read, not that every
-  // stored ID is an orphan; never let that silently hide a transfer.
-  if (failure.orphanIds.length && failureReasonOptions.byId.size === 0) {
-    return classification("UNRESOLVED", dealId, "FAILURE_REASON_DICTIONARY_EMPTY", { createdAt });
-  }
-  const orphan = failure.orphanIds.length ? { orphanFailureReasonIds: failure.orphanIds } : {};
-  const transferReason = failure.labels.find((label) => TRANSFER_OUT_REASONS.includes(label));
-  if (!transferReason) {
-    return classification("INCLUDED", dealId, "IBOX_STAGE_ENTRY", {
-      createdAt,
-      ...orphan,
-      ...sourceEvidence(deal, sourceLabels),
-    });
+  if (!history?.length) {
+    return classification("UNRESOLVED", dealId, "IBOX_HISTORY_MISSING", { createdAt, currentCategoryId });
   }
 
-  const transferIndex = latestTransferEventIndex(history, stageNames);
-  if (transferIndex < 0) {
-    return classification("UNRESOLVED", dealId, "TRANSFER_EVENT_NOT_LOCATED", { createdAt });
+  const evidence = { createdAt, currentCategoryId, ...failureReasonSupport(deal, failureReasonField, failureReasonOptions) };
+  // History proves the Deal entered IBOX Sales. Where the Deal is now decides
+  // whether it still belongs: IBOX Sales (never left, or returned) and the
+  // matching post-sale funnel stay in; any other funnel means it left.
+  if (currentCategoryId === String(categoryId)) {
+    return classification("INCLUDED", dealId, "IBOX_STAGE_ENTRY", { ...evidence, ...sourceEvidence(deal, sourceLabels) });
   }
-  if (history.slice(transferIndex + 1).some((row) => scalar(row.CATEGORY_ID) === String(categoryId))) {
-    return classification("INCLUDED", dealId, "RETURNED_TO_IBOX_AFTER_TRANSFER", {
-      createdAt,
-      ...orphan,
-      ...sourceEvidence(deal, sourceLabels),
-    });
+  if (currentCategoryId === String(postSaleCategoryId)) {
+    return classification("INCLUDED", dealId, "IBOX_ENTRY_NOW_POST_SALE", { ...evidence, ...sourceEvidence(deal, sourceLabels) });
   }
-  return classification("EXCLUDED", dealId, "TRANSFERRED_OUT_NO_RETURN", { createdAt, transferReason, ...orphan });
+  return classification("EXCLUDED", dealId, "MOVED_TO_OTHER_FUNNEL_NO_RETURN", evidence);
 }
 
-function safeConfig(config, bounds, discovery, stageCatalog, sourceCatalog, retryOptions) {
+function safeConfig(config, bounds, discovery, sourceCatalog, retryOptions) {
   const retry = normalizedRetryOptions(retryOptions);
   return {
     categoryId: String(config.categoryId),
+    postSaleCategoryId: String(config.postSaleCategoryId),
     failureReasonField: config.failureReasonField,
     dateBasis: "DATE_CREATE",
     timezone: TIMEZONE,
@@ -484,7 +459,7 @@ function safeConfig(config, bounds, discovery, stageCatalog, sourceCatalog, retr
     fromInstantInclusive: bounds.fromInclusive,
     toInstantExclusive: bounds.toExclusive,
     transferOutReasons: [...TRANSFER_OUT_REASONS],
-    transferTerminalStageNames: [...TRANSFER_TERMINAL_STAGE_NAMES],
+    membershipRule: "history entry into categoryId; INCLUDED while currently in categoryId or postSaleCategoryId; EXCLUDED when currently in any other funnel",
     historyQuery: {
       method: "crm.stagehistory.list",
       entityTypeId: discovery.query.entityTypeId,
@@ -495,7 +470,6 @@ function safeConfig(config, bounds, discovery, stageCatalog, sourceCatalog, retr
     },
     dealLookup: { method: "crm.deal.get", oneRequestPerDiscoveredDeal: true },
     failureReasonDictionary: { method: "crm.deal.fields" },
-    stageDictionary: { method: "crm.status.list", entityId: stageCatalog.entityId },
     sourceDictionary: { method: "crm.status.list", entityId: sourceCatalog.entityId },
     retryPolicy: {
       methods: ["crm.stagehistory.list", "crm.deal.get"],
@@ -541,10 +515,12 @@ export function buildIncludedSourceBreakdown(rows) {
 
 export async function extractIboxLeadEvidence({ call, config, now = () => new Date(), retryOptions = {} }) {
   const bounds = tashkentDateBounds(config.from, config.to);
+  if (!/^\d+$/.test(String(config.postSaleCategoryId ?? "")) || String(config.postSaleCategoryId) === String(config.categoryId)) {
+    throw new EvidenceError("INVALID_POST_SALE_CATEGORY", "postSaleCategoryId is required, numeric and different from categoryId");
+  }
   const snapshotStartedAt = now().toISOString();
   const discovery = await discoverIboxDealIds(call, config.categoryId, retryOptions);
-  const [stageCatalog, sourceCatalog, failureReasonOptions, currentDeals] = await Promise.all([
-    loadStageCatalog(call, config.categoryId),
+  const [sourceCatalog, failureReasonOptions, currentDeals] = await Promise.all([
     loadSourceCatalog(call),
     loadFailureReasonOptions(call, config.failureReasonField),
     fetchCurrentDeals(call, discovery.dealIds, retryOptions),
@@ -555,15 +531,20 @@ export async function extractIboxLeadEvidence({ call, config, now = () => new Da
     lookup: currentDeals.get(dealId),
     history: discovery.histories.get(dealId) ?? [],
     categoryId: config.categoryId,
+    postSaleCategoryId: config.postSaleCategoryId,
     failureReasonField: config.failureReasonField,
     failureReasonOptions,
-    stageNames: stageCatalog.byId,
     sourceLabels: sourceCatalog.byId,
     bounds,
   }));
   const included = classified.filter((row) => row.classification === "INCLUDED");
   const includedIds = included.map((row) => row.dealId);
   const includedBySource = buildIncludedSourceBreakdown(included);
+  const countByCategory = (rows) => Object.fromEntries([...rows.reduce((counts, row) => (
+    row.currentCategoryId ? counts.set(row.currentCategoryId, (counts.get(row.currentCategoryId) ?? 0) + 1) : counts
+  ), new Map())].sort(([left], [right]) => compareDealIds(left, right)));
+  const transferReasonWhileIncluded = included.filter((row) => row.transferReason)
+    .map((row) => ({ dealId: row.dealId, currentCategoryId: row.currentCategoryId, transferReason: row.transferReason }));
   const orphanFailureReasons = classified.filter((row) => row.orphanFailureReasonIds?.length)
     .map((row) => ({ dealId: row.dealId, classification: row.classification, orphanFailureReasonIds: row.orphanFailureReasonIds }));
   const excluded = classified.filter((row) => row.classification === "EXCLUDED")
@@ -584,7 +565,7 @@ export async function extractIboxLeadEvidence({ call, config, now = () => new Da
     schemaVersion: 1,
     result: unresolved.length ? "COMPLETE_WITH_UNRESOLVED" : "COMPLETE",
     snapshot: { startedAt: snapshotStartedAt, completedAt: snapshotCompletedAt },
-    config: safeConfig(config, bounds, discovery, stageCatalog, sourceCatalog, retryOptions),
+    config: safeConfig(config, bounds, discovery, sourceCatalog, retryOptions),
     counts: {
       discovered: discovery.dealIds.length,
       historyRows: discovery.historyRowCount,
@@ -597,14 +578,32 @@ export async function extractIboxLeadEvidence({ call, config, now = () => new Da
     discoveredIds: discovery.dealIds,
     includedIds,
     includedBySource,
-    dataQuality: { orphanFailureReasons },
+    currentCategoryBreakdown: {
+      included: countByCategory(included),
+      excluded: countByCategory(classified.filter((row) => row.classification === "EXCLUDED")),
+    },
+    dataQuality: { orphanFailureReasons, transferReasonWhileIncluded },
     excluded,
     unresolved,
   };
 }
 
 function linesForRows(rows) {
-  return rows.length ? rows.map((row) => `- ${row.dealId}: ${row.reason}`).join("\n") : "- none";
+  return rows.length
+    ? rows.map((row) => `- ${row.dealId}: ${row.reason}${row.currentCategoryId ? ` (current category ${row.currentCategoryId})` : ""}`).join("\n")
+    : "- none";
+}
+
+function categoryBreakdownLines(counts = {}) {
+  const entries = Object.entries(counts);
+  return entries.length ? entries.map(([id, count]) => `${id}: ${count}`).join(", ") : "none";
+}
+
+function transferWhileIncludedLines(report) {
+  const rows = report.dataQuality?.transferReasonWhileIncluded ?? [];
+  return rows.length
+    ? rows.map((row) => `- ${row.dealId}: ${row.transferReason} (current category ${row.currentCategoryId})`).join("\n")
+    : "- none";
 }
 
 function unresolvedCountLines(report) {
@@ -638,8 +637,9 @@ export function renderHumanSummary(report) {
     `Failure-reason field: ${report.config.failureReasonField}`,
     `Discovered IDs: ${report.counts.discovered}`,
     `History rows: ${report.counts.historyRows}`,
-    `Included: ${report.counts.included}`,
-    `Excluded: ${report.counts.excluded}`,
+    `Post-sale category ID: ${report.config.postSaleCategoryId}`,
+    `Included: ${report.counts.included} (by current category — ${categoryBreakdownLines(report.currentCategoryBreakdown?.included)})`,
+    `Excluded: ${report.counts.excluded} (by current category — ${categoryBreakdownLines(report.currentCategoryBreakdown?.excluded)})`,
     `Unresolved: ${report.counts.unresolved}`,
     "",
     "INCLUDED",
@@ -650,6 +650,9 @@ export function renderHumanSummary(report) {
     "",
     "DATA QUALITY: ORPHAN FAILURE-REASON IDS (not a transfer)",
     orphanLines(report),
+    "",
+    "DATA QUALITY: TRANSFER REASON SELECTED BUT DEAL STILL IN IBOX/POST-SALE (included)",
+    transferWhileIncludedLines(report),
     "",
     "EXCLUDED",
     linesForRows(report.excluded),
@@ -725,7 +728,7 @@ export function usage() {
     "Read-only IBOX Lead evidence extractor",
     "",
     "Usage:",
-    "  npm run audit:ibox-leads -- --category-id <IBOX_CATEGORY_ID> --failure-reason-field <UF_CRM_FIELD> --from YYYY-MM-DD --to YYYY-MM-DD",
+    "  npm run audit:ibox-leads -- --category-id <IBOX_CATEGORY_ID> --post-sale-category-id <IBOX_POST_SALE_CATEGORY_ID> --failure-reason-field <UF_CRM_FIELD> --from YYYY-MM-DD --to YYYY-MM-DD",
     "",
     `Output: ${path.relative(path.resolve(scriptDir, ".."), DEFAULT_AUDIT_DIR)}/ (git-ignored)`,
   ].join("\n");
