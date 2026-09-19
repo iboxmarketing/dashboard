@@ -135,6 +135,32 @@ aside nav button i { margin-left: auto; width: 7px; height: 7px; border-radius: 
 .filter-toggle span { width: 17px; height: 17px; border-radius: 6px; display: grid; place-items: center; background: var(--blue); color: white; font-size: 9px; }
 .clear-filter { border: 0; background: transparent; color: #9099a8; }
 .filters-extra { padding-top: 9px; }
+
+/* Multi-value filter (Menejer, Manba). Matches .select-wrap metrics so the
+   filter row keeps one rhythm; the panel is anchored, not a portal, because the
+   filters shell is the sticky positioning context. */
+.multi-select { position: relative; min-width: 135px; }
+.multi-select-button { width: 100%; min-width: 135px; height: 36px; padding: 0 29px 0 10px; position: relative; display: flex; align-items: center; gap: 6px; border: 1px solid #dfe4ed; border-radius: 9px; background: white; color: #49566d; font-size: 10px; font-weight: 650; text-align: left; }
+.multi-select.has-selection .multi-select-button { color: var(--blue); border-color: #bdd0fb; background: #f5f8ff; }
+.multi-select-button > svg { position: absolute; right: 9px; pointer-events: none; color: #8792a4; }
+.multi-select-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.multi-select-count { flex: 0 0 auto; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 6px; display: grid; place-items: center; background: var(--blue); color: white; font-size: 9px; font-weight: 700; }
+.multi-select-panel { position: absolute; z-index: 30; top: calc(100% + 5px); left: 0; width: max(100%, 226px); padding: 9px; border: 1px solid #e3e8f0; border-radius: 11px; background: white; box-shadow: 0 14px 34px rgba(24,39,75,.13); }
+.multi-select-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 2px 7px; }
+.multi-select-head strong { color: #59657c; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.multi-select-clear { display: inline-flex; align-items: center; gap: 4px; border: 0; background: transparent; color: #9099a8; font-size: 10px; font-weight: 650; }
+.multi-select-search { width: 100%; height: 31px; margin-bottom: 6px; padding: 0 9px; border: 1px solid #dfe4ed; border-radius: 8px; outline: 0; color: var(--ink); font-size: 11px; }
+.multi-select-options { max-height: 232px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+.multi-select-option { display: flex; align-items: center; gap: 8px; padding: 6px 7px; border-radius: 7px; color: #445168; font-size: 11px; cursor: pointer; }
+.multi-select-option:hover { background: #f5f7fb; }
+.multi-select-option.checked { color: var(--blue); font-weight: 650; }
+.multi-select-option input { position: absolute; opacity: 0; width: 0; height: 0; }
+.multi-select-box { flex: 0 0 auto; width: 15px; height: 15px; border: 1px solid #ccd4e2; border-radius: 4px; display: grid; place-items: center; background: white; color: white; }
+.multi-select-option.checked .multi-select-box { border-color: var(--blue); background: var(--blue); }
+.multi-select-option input:focus-visible + .multi-select-box { outline: 2px solid var(--blue); outline-offset: 1px; }
+.multi-select-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.multi-select-empty, .multi-select-note { margin: 6px 2px 0; color: #98a2b3; font-size: 10px; }
+.multi-select-note { padding-top: 6px; border-top: 1px solid #f0f3f8; }
 .custom-dates { padding-top: 8px; display: flex; gap: 8px; }
 .custom-dates label { display: flex; align-items: center; gap: 7px; color: #768196; font-size: 10px; }
 .custom-dates input, .holiday-add input, .schedule-list input, .field-label input, .field-label select { height: 34px; padding: 0 9px; border: 1px solid #dfe4ed; border-radius: 8px; background: white; color: #445168; font-size: 11px; }
@@ -477,6 +503,8 @@ footer { margin-top: 22px; padding-top: 14px; display: flex; justify-content: sp
   .top-actions .select-wrap { min-width: 104px; width: 104px; }
   .filters-shell { position: static; }
   .filters-main > * { flex: 1 1 46%; min-width: 0; }
+  .multi-select, .multi-select-button { min-width: 0; }
+  .multi-select-panel { width: min(88vw, 300px); }
   .search-box { flex-basis: 100%; }
   .clear-filter { flex: 0 0 auto; }
   .page-title, .dashboard-title { flex-direction: column; align-items: stretch; }
