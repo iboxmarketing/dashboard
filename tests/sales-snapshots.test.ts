@@ -26,13 +26,13 @@ function attributedSnapshot(managerId: string, attributionSource: string): Map<s
 }
 
 /** Real analytics build for a deal whose current stage proves payment. */
-function build(deal: Record<string, unknown>, snapshots?: Map<string, SalesSnapshot>, activities: Record<string, unknown>[] = []) {
+function build(deal: Record<string, unknown>, snapshots?: Map<string, SalesSnapshot>, activities: Record<string, unknown>[] = [], salesManagerField = SELLER_FIELD) {
   return buildAnalyticsRecords({
     deals: [{ ID: "1", TITLE: "T", DATE_CREATE: CREATED, CATEGORY_ID: MAIN, STAGE_ID: "PAYMENT", MOVED_TIME: JAN_12, ...deal }],
     activities, callStats: [],
     stageHistories: [{ OWNER_ID: "1", CATEGORY_ID: MAIN, STAGE_ID: "PAYMENT", CREATED_TIME: JAN_12 }],
     providerRules: {},
-    settings: { ...defaultSettings, selectedPipelineIds: [MAIN], salesManagerField: SELLER_FIELD },
+    settings: { ...defaultSettings, selectedPipelineIds: [MAIN], salesManagerField },
     users: new Map([["7", "Aziz"], ["9", "Bobur"], ["12", "Doston"], ["5", "Call"]]),
     pipelines: new Map([[MAIN, "IBOX Sales"]]), stages: new Map([["PAYMENT", "Оплата получена"]]),
     sources: new Map(), snapshots, domain: null, activitiesAvailable: true, stageHistoryAvailable: true,
@@ -83,6 +83,15 @@ test("Case 1: aniqlangan sotuvchi snapshot’i o‘zgarmas bo‘lib qoladi", () 
   assert.equal(row.salesManagerId, "7");
   assert.equal(row.salesManagerAttribution, "CUSTOM_FIELD");
   assert.equal(row.wonAt, JAN_10);
+});
+
+test("CUSTOM_FIELD seller attribution reads both canonical and legacy camelCase field keys", () => {
+  const canonical = build({ UF_CRM_123: "9" }, undefined, [], "UF_CRM_123");
+  const legacy = build({ UF_CRM_123: "9" }, undefined, [], "ufCrm_123");
+  assert.equal(canonical.salesManagerId, "9");
+  assert.equal(canonical.salesManagerAttribution, "CUSTOM_FIELD");
+  assert.equal(legacy.salesManagerId, "9", "stored camelCase setting reads the canonical Deal payload");
+  assert.equal(legacy.salesManagerAttribution, "CUSTOM_FIELD");
 });
 
 test("Case 2: null sotuvchili snapshot fallback zanjiriga yo‘l beradi", () => {

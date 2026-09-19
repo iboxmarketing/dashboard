@@ -98,7 +98,7 @@ export function mergeSettingsPayload(current: DashboardSettings, raw: unknown): 
     // The three fields the incident cleared. Absent now preserves.
     failureReasonField: nullableText(payload, "failureReasonField", base.failureReasonField),
     marketingChannelField: nullableText(payload, "marketingChannelField", base.marketingChannelField),
-    salesManagerField: nullableText(payload, "salesManagerField", base.salesManagerField),
+    salesManagerField: nullableText(payload, "salesManagerField", base.salesManagerField, canonicalDealFieldKey),
 
     failureReasonFieldByPipeline: has(payload, "failureReasonFieldByPipeline")
       && payload.failureReasonFieldByPipeline && typeof payload.failureReasonFieldByPipeline === "object"

@@ -1,4 +1,5 @@
 import { defaultSettings } from "./business-time";
+import { canonicalDealFieldKey } from "./crm-fields";
 import { resolveDashboardMetricIds } from "./dashboard-metrics";
 import { stageIdList } from "./stage-config";
 import type { DashboardSettings } from "./types";
@@ -14,6 +15,12 @@ import type { DashboardSettings } from "./types";
 export function normalizeSettings(raw: Partial<DashboardSettings> | null | undefined): DashboardSettings {
   const source = raw ?? {};
   const strings = (value: unknown) => (Array.isArray(value) ? value.map(String).filter(Boolean) : []);
+  const nullableSalesManagerField = (value: unknown) => {
+    if (value === undefined) return defaultSettings.salesManagerField;
+    if (value === null || typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed ? canonicalDealFieldKey(trimmed) : null;
+  };
   const record = (value: unknown) =>
     value && typeof value === "object" && !Array.isArray(value)
       ? Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [String(key), String(item)]))
@@ -22,6 +29,7 @@ export function normalizeSettings(raw: Partial<DashboardSettings> | null | undef
   return {
     ...defaultSettings,
     ...source,
+    salesManagerField: nullableSalesManagerField(source.salesManagerField),
     timezone: source.timezone || defaultSettings.timezone,
     schedule: { ...defaultSettings.schedule, ...(source.schedule ?? {}) },
     holidays: strings(source.holidays),

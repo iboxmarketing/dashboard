@@ -242,7 +242,15 @@ export function buildAnalyticsRecords(input: {
       ? "QUALIFICATION_STAGE"
       : histories.length ? "NO_PROCESSING" : "NO_PROCESSING_EVIDENCE";
 
-    const snapshot = snapshots.get(dealId); const customManagerId = input.settings.salesManagerField ? employeeId(deal[input.settings.salesManagerField]) : "";
+    const snapshot = snapshots.get(dealId);
+    // Settings written before field canonicalization may still contain Bitrix's
+    // camelCase spelling. Deal SELECT payloads use UF_CRM_*; read the canonical
+    // key first while retaining the raw-key fallback for controlled fixtures and
+    // any legacy payload that happened to use the stored spelling.
+    const salesManagerField = input.settings.salesManagerField ? canonicalDealFieldKey(input.settings.salesManagerField) : "";
+    const customManagerId = salesManagerField
+      ? employeeId(deal[salesManagerField] ?? deal[input.settings.salesManagerField as string])
+      : "";
     const moverId = string(deal.MOVED_BY_ID);
     // Two different immutability rules. The sale date is frozen as soon as a
     // snapshot exists, but seller attribution is frozen only once a real seller

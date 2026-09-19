@@ -116,6 +116,14 @@ test("values are still validated and normalized, not stored blindly", () => {
   assert.equal(mergeSettingsPayload(current, { timezone: "UTC" }).timezone, "Asia/Tashkent", "timezone is not client-controlled");
   assert.deepEqual(mergeSettingsPayload(current, { schedule: "junk" }).schedule, current.schedule, "a malformed schedule is ignored");
   assert.equal(mergeSettingsPayload(current, { salesManagerField: "  ASSIGNED_BY_ID  " }).salesManagerField, "ASSIGNED_BY_ID", "trimmed");
+  assert.equal(mergeSettingsPayload(current, { salesManagerField: "ufCrm_123" }).salesManagerField, "UF_CRM_123", "camelCase custom seller field is canonicalized");
+  assert.equal(mergeSettingsPayload(current, { failureReasonField: "ufCrm_loss" }).failureReasonField, "ufCrm_loss", "failure-reason field behavior is unchanged");
+});
+
+test("legacy camelCase seller settings normalize without a manual re-save", () => {
+  const safe = normalizeSettings({ salesManagerField: "ufCrm_123", failureReasonField: "ufCrm_loss" } as never);
+  assert.equal(safe.salesManagerField, "UF_CRM_123");
+  assert.equal(safe.failureReasonField, "ufCrm_loss", "failure-reason field remains untouched");
 });
 
 test("E. merged output still satisfies the Settings UI readiness expectations", () => {
