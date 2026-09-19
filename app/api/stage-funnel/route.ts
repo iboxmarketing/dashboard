@@ -2,8 +2,9 @@ import { listStageFunnelJson } from "@/lib/storage";
 
 /**
  * Stage history for the Stage Control funnel only, fetched when that view is
- * opened. It carries the timeline plus the four fields the view's own filters
- * read — never the full record, and never on the dashboard's initial load.
+ * opened. It carries the timeline plus the minimal fields the historical
+ * Manager, Source, Pipeline and search filters read — never the full record,
+ * and never on the dashboard's initial load.
  */
 export async function GET() {
   try {

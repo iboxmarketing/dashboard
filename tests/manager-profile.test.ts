@@ -5,8 +5,9 @@ import { buildDashboardMetrics } from "../lib/dashboard-metrics";
 import { isPreSqlClosed, isSalesLost, salesManagerKey } from "../lib/sales-logic";
 import {
   buildManagerProfile, medianOf, notRelevantRecords, notRelevantSemanticMismatches,
-  reasonBreakdown, reasonTextMismatches, salesLostRecords, salesManagerOptions, sourceFunnelRows, stageWorkloadRows, teamMedian,
+  reasonBreakdown, reasonTextMismatches, salesLostRecords, sourceFunnelRows, stageWorkloadRows, teamMedian,
 } from "../lib/manager-profile";
+import { historicalManagerOptions } from "../lib/record-filters";
 import type { AnalyticsRecord } from "../lib/types";
 
 const code = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
@@ -61,14 +62,14 @@ test("Ali sotgan post-sale Deal Ali revenue/conversionida qoladi, Madina seller 
   assert.equal(aliProfile.metrics.rates.lead_to_sale, 100);
   assert.equal(madinaProfile.metrics.counts.leads, 0);
   assert.equal(madinaProfile.metrics.counts.period_sales, 0);
-  assert.deepEqual(salesManagerOptions([sold]), [["7", "Ali"]], "current post-sale owner is absent from seller selector");
-  assert.match(client, /: salesManagerOptions\(records\)/, "historical selector uses seller identity only");
-  assert.match(client, /filters\.manager && salesManagerKey\(row\) !== filters\.manager/, "historical filter uses seller identity only");
+  assert.deepEqual(historicalManagerOptions([sold]), [{ id: "7", name: "Ali" }], "current post-sale owner is absent from seller selector");
+  assert.match(client, /: historicalManagerOptions\(records\)/, "historical selector uses seller identity only");
+  assert.match(client, /filterHistoricalRecords\(records, filters\)/, "historical views share the seller-only predicate");
 });
 
 test("unknown seller historical selector’da Unknown bo‘lib qoladi", () => {
   const unknown = deal({ salesManagerId: null, salesManager: null, assignedManagerId: "20", assignedManager: "Madina" });
-  assert.deepEqual(salesManagerOptions([unknown]), [["unknown", "Aniqlanmagan"]]);
+  assert.deepEqual(historicalManagerOptions([unknown]), [{ id: "unknown", name: "Aniqlanmagan" }]);
 });
 
 test("A: profile counts equal the clicked row's canonical values", () => {

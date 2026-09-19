@@ -17,14 +17,6 @@ export function managerRecords(records: MetricRecord[], managerId: string) {
   return records.filter((row) => salesManagerKey(row) === managerId);
 }
 
-/** Historical Sales filters expose sellers only, never current operational owners. */
-export function salesManagerOptions(records: Pick<MetricRecord, "salesManagerId" | "salesManager">[]) {
-  return [...new Map(records.map((row) => {
-    const id = salesManagerKey(row);
-    return [id, id === "unknown" ? "Aniqlanmagan" : row.salesManager || `Menejer #${id}`] as const;
-  })).entries()];
-}
-
 export function buildManagerProfile(cohortRecords: MetricRecord[], salesRecords: MetricRecord[], managerId: string) {
   const cohort = managerRecords(cohortRecords, managerId);
   const periodSales = managerRecords(salesRecords, managerId);

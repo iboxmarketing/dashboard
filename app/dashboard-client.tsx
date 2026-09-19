@@ -16,7 +16,7 @@ import {
 } from "@/lib/stage-control-analytics";
 import { DASHBOARD_HEADLINE_CARD_IDS, headlineCardLabel, resolveHeadlineCardIds, type HeadlineCardId } from "@/lib/dashboard-cards";
 import { BUCKET_COUNT, DEFAULT_LEAD_FLOW_METRIC, LEAD_FLOW_METRICS, WEEKDAY_LABELS, bucketLabel, buildLeadFlow, higherIsHealthier, leadFlowValue, type LeadFlowMetricId } from "@/lib/lead-flow-analytics";
-import { buildManagerProfile, notRelevantRecords, reasonBreakdown, salesLostRecords, salesManagerOptions, sourceFunnelRows, stageWorkloadRows, teamMedian } from "@/lib/manager-profile";
+import { buildManagerProfile, notRelevantRecords, reasonBreakdown, salesLostRecords, sourceFunnelRows, stageWorkloadRows, teamMedian } from "@/lib/manager-profile";
 import { buildQualityAnalytics, type MarketingManagerDiagnostic, type SalesManagerDiagnostic } from "@/lib/quality-analytics";
 import { DEFAULT_TREND_METRIC, TREND_METRICS, buildTrendSeries, supportsMovingAverage, trendBarHeight, trendMetric, type TrendBounds, type TrendMetricId, type TrendPoint } from "@/lib/trend-series";
 import { initialStageFunnelState, stageFunnelNext, type StageFunnelAction, type StageFunnelState, type StageFunnelStatus } from "@/lib/stage-funnel-cache";
@@ -44,6 +44,11 @@ import {
   type PageShare,
 } from "@/lib/share-tokens";
 import { countClassificationConflicts, dealOutcomeLabel, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isUnclassifiedLead, salesManagerKey } from "@/lib/sales-logic";
+import {
+  activeFilterCount, dedupeByDealId, filterCurrentStageRecords, filterHistoricalRecords, filterStageHistoryRecords,
+  historicalManagerOptions, liveManagerOptions,
+} from "@/lib/record-filters";
+import { MultiSelect } from "./ui/multi-select";
 import { countDuplicates, markDuplicates } from "@/lib/duplicates";
 import { stageConfigConflicts } from "@/lib/stage-config";
 import { DASHBOARD_METRICS, buildDashboardMetrics, resolveDashboardMetric, selectPeriodPopulations, type DashboardMetricId } from "@/lib/dashboard-metrics";
@@ -70,12 +75,16 @@ type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" 
 type SyncState = SyncProgressState;
 type Filters = {
   range: "today" | "yesterday" | "7" | "30" | "month" | "lastMonth" | "custom";
-  from: string; to: string; manager: string; pipeline: string; source: string;
+  from: string; to: string;
+  // Manager and Source accept several values: OR inside the dimension, AND
+  // across dimensions. An empty array means "all". See lib/record-filters.ts.
+  managers: string[]; sources: string[];
+  pipeline: string;
   stage: string; period: string; sla: string; processing: string; search: string;
 };
 
 const emptyFilters: Filters = {
-  range: "30", from: "", to: "", manager: "", pipeline: "", source: "",
+  range: "30", from: "", to: "", managers: [], sources: [], pipeline: "",
   stage: "", period: "", sla: "", processing: "", search: "",
 };
 
@@ -412,36 +421,38 @@ function ManagerTable({ rows, onSelect, limit }: { rows: ManagerRow[]; onSelect:
 
 function FiltersBar({ filters, setFilters, records, currentStages, mode = "cohort" }: { filters: Filters; setFilters: React.Dispatch<React.SetStateAction<Filters>>; records: DashboardRecord[]; currentStages?: CurrentStageRecord[]; mode?: "cohort" | "current" }) {
   const [expanded, setExpanded] = useState(false);
-  const managers = mode === "current"
-    ? [...new Map((currentStages ?? []).map((row) => [row.assignedManagerId, row.assignedManager] as const)).entries()]
-    : salesManagerOptions(records);
+  // Seller options come from the same key the filter compares against:
+  // salesManagerId for history, the current assignee for the live stage view.
+  const managers = mode === "current" ? liveManagerOptions(currentStages ?? []) : historicalManagerOptions(records);
   const pipelines = mode === "current" ? [...new Set((currentStages ?? []).map((row) => row.pipeline))].sort() : [...new Set(records.map((row) => row.originPipeline))].sort();
-  const sources = [...new Set(records.map((row) => row.source))].sort();
+  const sources = [...new Set(records.map((row) => row.source))].sort().map((value) => ({ id: value, name: value }));
   const stages = mode === "current" ? [...new Set((currentStages ?? []).map((row) => row.stage))].sort() : [...new Set(records.map((row) => row.stage))].sort();
   const set = (key: keyof Filters, value: string) => setFilters((current) => ({ ...current, [key]: value }));
-  const activeCount = Object.entries(filters).filter(([key, value]) => !["range", "search", "from", "to"].includes(key) && value).length;
+  const setMany = (key: "managers" | "sources", value: string[]) => setFilters((current) => ({ ...current, [key]: value }));
+  const activeCount = activeFilterCount(filters);
   if (mode === "current") {
-    const currentActiveCount = [filters.manager, filters.pipeline, filters.stage].filter(Boolean).length;
+    const currentActiveCount = [filters.managers.length > 0, filters.sources.length > 0, Boolean(filters.pipeline), Boolean(filters.stage)].filter(Boolean).length;
     return <div className="filters-shell current-stage-filters"><div className="filters-main">
       <div className="search-box"><Search size={16} /><input value={filters.search} onChange={(event) => set("search", event.target.value)} placeholder="Deal ID yoki nomi…" /></div>
-      <Select label="Menejer" value={filters.manager} onChange={(value) => set("manager", value)}><option value="">Barcha menejerlar</option>{managers.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</Select>
+      <MultiSelect label="Menejer" allLabel="Barcha menejerlar" options={managers} selected={filters.managers} onChange={(value) => setMany("managers", value)} />
+      <MultiSelect label="Manba · tarixiy" allLabel="Barcha manbalar" options={sources} selected={filters.sources} onChange={(value) => setMany("sources", value)} />
       <Select label="Pipeline" value={filters.pipeline} onChange={(value) => set("pipeline", value)}><option value="">Barcha pipeline</option>{pipelines.map((pipeline) => <option key={pipeline}>{pipeline}</option>)}</Select>
       <Select label="Joriy stage" value={filters.stage} onChange={(value) => set("stage", value)}><option value="">Barcha stage’lar</option>{stages.map((stage) => <option key={stage}>{stage}</option>)}</Select>
       {(currentActiveCount > 0 || filters.search) && <button className="clear-filter" onClick={() => setFilters((current) => ({ ...emptyFilters, range: current.range }))}><X size={15} />Tozalash</button>}
-    </div><div className="current-filter-note"><Clock3 size={15} /><span>Joriy stage sonlariga sana filtri qo‘llanmaydi — Bitrix’dagi hozirgi ochiq deal’lar ko‘rsatiladi.</span></div></div>;
+    </div><div className="current-filter-note"><Clock3 size={15} /><span>Joriy stage sonlariga sana va Manba filtri qo‘llanmaydi; Manba tarixiy funnelni filtrlaydi. Live workload joriy mas’ul bo‘yicha.</span></div></div>;
   }
   return <div className="filters-shell">
     <div className="filters-main">
       <div className="search-box"><Search size={16} /><input value={filters.search} onChange={(event) => set("search", event.target.value)} placeholder="Deal ID yoki nomi…" /></div>
       <Select label="Sana oralig‘i" value={filters.range} onChange={(value) => set("range", value)}><option value="today">Bugun</option><option value="yesterday">Kecha</option><option value="7">Oxirgi 7 kun</option><option value="30">Oxirgi 30 kun</option><option value="month">Shu oy</option><option value="lastMonth">O‘tgan oy</option><option value="custom">Custom</option></Select>
-      <Select label="Menejer" value={filters.manager} onChange={(value) => set("manager", value)}><option value="">Barcha menejerlar</option>{managers.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</Select>
+      <MultiSelect label="Menejer" allLabel="Barcha menejerlar" options={managers} selected={filters.managers} onChange={(value) => setMany("managers", value)} />
       <Select label="Pipeline" value={filters.pipeline} onChange={(value) => set("pipeline", value)}><option value="">Barcha pipeline</option>{pipelines.map((value) => <option key={value}>{value}</option>)}</Select>
       <button className={`filter-toggle ${activeCount ? "active" : ""}`} onClick={() => setExpanded(!expanded)}><SlidersHorizontal size={16} />Boshqa filtrlar{activeCount > 0 && <span>{activeCount}</span>}</button>
       {(activeCount > 0 || filters.search) && <button className="clear-filter" onClick={() => setFilters(emptyFilters)}><X size={15} />Tozalash</button>}
     </div>
     {filters.range === "custom" && <div className="custom-dates"><label>Boshlanish<input type="date" value={filters.from} onChange={(event) => set("from", event.target.value)} /></label><label>Tugash<input type="date" value={filters.to} onChange={(event) => set("to", event.target.value)} /></label></div>}
     {expanded && <div className="filters-extra">
-      <Select label="Manba" value={filters.source} onChange={(value) => set("source", value)}><option value="">Barcha manbalar</option>{sources.map((value) => <option key={value}>{value}</option>)}</Select>
+      <MultiSelect label="Manba" allLabel="Barcha manbalar" options={sources} selected={filters.sources} onChange={(value) => setMany("sources", value)} />
       <Select label="Status" value={filters.stage} onChange={(value) => set("stage", value)}><option value="">Barcha statuslar</option>{stages.map((value) => <option key={value}>{value}</option>)}</Select>
       <Select label="Ish vaqti" value={filters.period} onChange={(value) => set("period", value)}><option value="">Ish vaqti: barchasi</option><option value="WORK_HOURS">Ish vaqtida</option><option value="AFTER_HOURS">Ish vaqtidan tashqarida</option></Select>
       <Select label="SLA" value={filters.sla} onChange={(value) => set("sla", value)}><option value="">SLA: barchasi</option>{(Object.keys(SLA_LABELS) as (keyof typeof SLA_LABELS)[]).map((state) => <option key={state} value={state}>{SLA_LABELS[state]}</option>)}</Select>
@@ -2264,20 +2275,13 @@ export default function DashboardClient() {
   }, [configured, loadCurrentStages]);
 
   const { cohortFiltered, wonFiltered, previousCohortFiltered, previousWonFiltered, trendBounds, previousTrendBounds, detailFiltered } = useMemo(() => {
-    const bounds = rangeBounds(filters); const search = filters.search.trim().toLowerCase();
+    const bounds = rangeBounds(filters);
     const from = bounds.from ? boundsFromKeys({ from: bounds.from, to: bounds.from }).from : -Infinity;
     const to = bounds.to ? boundsFromKeys({ from: bounds.to, to: bounds.to }).to : Infinity;
-    const base = records.filter((row) => {
-      if (filters.manager && salesManagerKey(row) !== filters.manager) return false;
-      if (filters.pipeline && row.originPipeline !== filters.pipeline) return false;
-      if (filters.source && row.source !== filters.source) return false;
-      if (filters.stage && row.stage !== filters.stage) return false;
-      if (filters.period && row.creationPeriod !== filters.period) return false;
-      if (filters.sla && row.slaStatus !== filters.sla) return false;
-      if (filters.processing && row.processingSource !== filters.processing) return false;
-      if (search && !`${row.dealId} ${row.title}`.toLowerCase().includes(search)) return false;
-      return true;
-    });
+    // One predicate for both populations below, so the cohort and the period
+    // sales can never diverge on manager/source. Historical seller identity is
+    // salesManagerId only — see lib/record-filters.ts.
+    const base = filterHistoricalRecords(records, filters);
     const cohort = base.filter((row) => { const created = new Date(row.createdAt).getTime(); return created >= from && created <= to; });
     const won = base.filter((row) => row.salesStatus === "WON" && row.wonAt && new Date(row.wonAt).getTime() >= from && new Date(row.wonAt).getTime() <= to);
     const span = Number.isFinite(from) && Number.isFinite(to) ? Math.max(86_400_000, to - from + 1) : 0;
@@ -2290,7 +2294,7 @@ export default function DashboardClient() {
     const previousTrendBounds = span && trendBounds
       ? { from: localDateKey(new Date(previousFrom)), to: localDateKey(new Date(previousTo)) }
       : null;
-    return { cohortFiltered: cohort, wonFiltered: won, previousCohortFiltered: previousCohort, previousWonFiltered: previousWon, trendBounds, previousTrendBounds, detailFiltered: [...new Map([...cohort, ...won].map((row) => [row.dealId, row])).values()] };
+    return { cohortFiltered: cohort, wonFiltered: won, previousCohortFiltered: previousCohort, previousWonFiltered: previousWon, trendBounds, previousTrendBounds, detailFiltered: dedupeByDealId(cohort, won) };
   }, [records, filters]);
 
   // The Managers page and Quality drill-down open the same canonical row
@@ -2305,28 +2309,17 @@ export default function DashboardClient() {
     stageOverdue: row.stageOverdue, bitrixUrl: row.bitrixUrl,
   })), [records]);
   const effectiveCurrentStages = currentStageRecords ?? cachedCurrentStages;
-  const filteredCurrentStages = useMemo(() => {
-    const search = filters.search.trim().toLowerCase();
-    return effectiveCurrentStages.filter((row) => {
-      if (filters.manager && row.assignedManagerId !== filters.manager) return false;
-      if (filters.pipeline && row.pipeline !== filters.pipeline) return false;
-      if (filters.stage && row.stage !== filters.stage) return false;
-      if (search && !`${row.dealId} ${row.title}`.toLowerCase().includes(search)) return false;
-      return true;
-    });
-  }, [effectiveCurrentStages, filters.manager, filters.pipeline, filters.stage, filters.search]);
+  const filteredCurrentStages = useMemo(
+    () => filterCurrentStageRecords(effectiveCurrentStages, filters),
+    [effectiveCurrentStages, filters],
+  );
   // Same predicates as before, applied to the rows fetched for this view only.
   // The dashboard payload no longer carries stageTimeline, so the funnel reads
   // its own minimal records instead of the full cohort.
-  const stageHistoricalRecords = useMemo(() => {
-    const search = filters.search.trim().toLowerCase();
-    return stageFunnelRecords.filter((row) => {
-      if (filters.manager && row.assignedManagerId !== filters.manager) return false;
-      if (filters.pipeline && row.originPipeline !== filters.pipeline) return false;
-      if (search && !`${row.dealId} ${row.title}`.toLowerCase().includes(search)) return false;
-      return true;
-    });
-  }, [stageFunnelRecords, filters.manager, filters.pipeline, filters.search]);
+  const stageHistoricalRecords = useMemo(
+    () => filterStageHistoryRecords(stageFunnelRecords, filters),
+    [stageFunnelRecords, filters],
+  );
 
   /**
    * Reads sync state once, read-only, to find out whether a `start` whose
@@ -2469,7 +2462,7 @@ export default function DashboardClient() {
   return <div className="app-shell">
     <aside className={menuOpen ? "open" : ""}>
       <div className="brand"><div className="brand-mark">B24</div><div><strong>Deal Processing</strong><small>Sales analytics</small></div><button className="mobile-close" onClick={() => setMenuOpen(false)}><X size={18} /></button></div>
-      <nav>{navItems.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => { if (item.id === "stages") setFilters((current) => ({ ...current, source: "", period: "", sla: "", processing: "" })); changeView(item.id); setMenuOpen(false); }}><item.icon size={18} /><span>{item.label}</span>{item.id === "diagnostics" && sync.permissions.stageHistory === "error" && <i />}</button>)}</nav>
+      <nav>{navItems.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => { if (item.id === "stages") setFilters((current) => ({ ...current, period: "", sla: "", processing: "" })); changeView(item.id); setMenuOpen(false); }}><item.icon size={18} /><span>{item.label}</span>{item.id === "diagnostics" && sync.permissions.stageHistory === "error" && <i />}</button>)}</nav>
       <div className="sidebar-status"><div><span className="live-dot" /><strong>Bitrix24 ulangan</strong></div><small>Oxirgi sync</small><p>{fmtDate(sync.lastSyncAt)}</p></div>
       <div className="sidebar-foot"><ShieldCheck size={16} /><span>Webhook server secret’da himoyalangan</span></div>
     </aside>

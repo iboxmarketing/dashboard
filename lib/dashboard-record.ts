@@ -44,7 +44,7 @@ export type DashboardRecord =
 
 /** Minimal row the Stage Control funnel needs: its own filters plus the timeline. */
 export type StageFunnelRecord = Pick<AnalyticsRecord,
-  "dealId" | "title" | "assignedManagerId" | "salesManagerId" | "originPipeline" | "originCategoryId"
+  "dealId" | "title" | "salesManagerId" | "source" | "originPipeline" | "originCategoryId"
   | "salesStatus" | "qualified" | "lossReasonGroup" | "projectLeadMembership" | "currentScope" | "stageTimeline">;
 
 /**
@@ -54,7 +54,7 @@ export type StageFunnelRecord = Pick<AnalyticsRecord,
  * endpoint stays lazy and the payload stays a projection, not a full record.
  */
 export const STAGE_FUNNEL_FIELDS = [
-  "dealId", "title", "assignedManagerId", "salesManagerId",
+  "dealId", "title", "salesManagerId", "source",
   "originPipeline", "originCategoryId", "salesStatus", "qualified", "lossReasonGroup",
   "projectLeadMembership", "currentScope", "stageTimeline",
 ] as const;

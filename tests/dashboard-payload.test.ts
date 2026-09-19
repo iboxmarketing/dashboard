@@ -133,10 +133,10 @@ test("filters and drilldowns still work on the compact payload", () => {
 });
 
 test("the funnel's minimal record carries exactly what that view reads", () => {
-  // Its own filters (manager, pipeline, search), the funnel inputs, and the two
+  // Its own filters (seller, source, pipeline, search), the funnel inputs, and the two
   // scalars the historical outcome summary needs so it can reuse the canonical
   // predicates instead of classifying by stage or reason text.
-  for (const field of ["dealId", "title", "assignedManagerId", "salesManagerId", "originPipeline", "originCategoryId", "salesStatus", "qualified", "lossReasonGroup", "projectLeadMembership", "currentScope", "stageTimeline"])
+  for (const field of ["dealId", "title", "salesManagerId", "source", "originPipeline", "originCategoryId", "salesStatus", "qualified", "lossReasonGroup", "projectLeadMembership", "currentScope", "stageTimeline"])
     assert.ok((STAGE_FUNNEL_FIELDS as readonly string[]).includes(field), `${field} missing from the funnel projection`);
   assert.equal(STAGE_FUNNEL_FIELDS.length, 12, "nothing extra is shipped to the funnel");
   // Still a projection: the full record is far larger than what the funnel gets.

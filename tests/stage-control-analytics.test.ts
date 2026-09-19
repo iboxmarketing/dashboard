@@ -512,6 +512,9 @@ test("AO: the stage-funnel projection stays lazy and the dashboard payload carri
   assert.ok(STAGE_FUNNEL_FIELDS.includes("lossReasonGroup"));
   assert.ok(STAGE_FUNNEL_FIELDS.includes("projectLeadMembership"));
   assert.ok(STAGE_FUNNEL_FIELDS.includes("currentScope"));
+  assert.ok(STAGE_FUNNEL_FIELDS.includes("salesManagerId"), "historical manager filter uses seller");
+  assert.ok(STAGE_FUNNEL_FIELDS.includes("source"), "historical Source filter has its field");
+  assert.equal((STAGE_FUNNEL_FIELDS as readonly string[]).includes("assignedManagerId"), false, "current assignee is not historical funnel identity");
   assert.equal(STAGE_FUNNEL_FIELDS.length, 12, "still a projection, not the full record");
   assert.ok(Object.keys(funnel()).length < 20);
 });

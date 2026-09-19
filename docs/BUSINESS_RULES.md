@@ -213,6 +213,14 @@ person to the seller selector.
 
 Current stage workload uses current Bitrix `ASSIGNED_BY_ID`, because it answers who owns the deal now.
 
+Historical Manager and Source filters are multi-select: values are ORed within
+each dimension and the two dimensions are ANDed together. An empty selection
+means all values. The same predicate applies to dashboard KPIs, Managers,
+Manager Detail, Lead Flow, Quality, Deals, cohort and period Sales, and the
+historical Stage Funnel. The Stage Funnel uses `salesManagerId`; only the live
+Current Stage Control uses `assignedManagerId`. Source does not filter that live
+inventory.
+
 ## 6. Processing and SLA
 
 - Processing event: the earliest entry into a configured SQL/Обработка or Not Relevant stage — the CRM-recorded result of the first real qualification conversation.
