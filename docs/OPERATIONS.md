@@ -147,6 +147,22 @@ Deal ID once, Leads = SQL + Not Relevant + the rest). Output goes to the
 git-ignored `.audit/ibox-not-relevant-evidence/`. It is read-only in the same
 way as the other audits.
 
+## Read-only IBOX Sotuv / WON audit
+
+`npm run audit:ibox-sales` takes the same arguments as the SQL audit and shares
+its single pass over the canonical IBOX Lead cohort. A Deal is a sale when it
+reached the IBOX payment stage or moved into the post-sale category (counted once
+when both hold; earlier payment evidence is kept after the move). It reports
+cohort Sales (`DATE_CREATE`), the payment / post-sale / both evidence counts, how
+many sales have a trustworthy `wonAt` (payment-stage history, then post-sale
+history, then `MOVED_TIME` only while the current stage is the payment stage;
+`DATE_MODIFY` is never used), and separately the period Sales whose `wonAt` falls
+inside the range regardless of creation date. A Not Relevant current stage with
+payment/post-sale evidence is listed as a conflict and counted only when the
+evidence is provably earlier. Invariants and a dashboard comparison are included.
+Output goes to the git-ignored `.audit/ibox-sales-evidence/`; it is read-only in
+the same way as the other audits.
+
 ## Database and recovery
 
 GitHub stores migrations, not D1 rows. Most analytics data is recoverable from Bitrix with a full selected-funnel sync. Settings must be re-entered on a new database:

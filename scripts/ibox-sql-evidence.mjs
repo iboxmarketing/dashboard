@@ -341,7 +341,7 @@ export async function collectIboxLeadSqlRows({ call, config, retryOptions = {}, 
     sourceId: lead.sourceId,
     sourceLabel: lead.sourceLabel,
   }));
-  return { bounds, discovery, leads, includedLeads, sqlRows, currentDeals, rules, failureReasonOptions, sourceCatalog };
+  return { bounds, discovery, postSaleDiscovery, leads, includedLeads, sqlRows, currentDeals, rules, failureReasonOptions, sourceCatalog };
 }
 
 export async function extractIboxSqlEvidence({ call, config, now = () => new Date(), retryOptions = {}, routingPatterns = DASHBOARD_ROUTING_PATTERNS }) {
