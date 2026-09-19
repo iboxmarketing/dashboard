@@ -33,7 +33,7 @@ export type DealSnapshot = {
  * earlier version turned every thrown error into NOT_FOUND, which would have
  * marked a live deal permanently unavailable the first time Bitrix timed out.
  *
- *   NOT_FOUND     Bitrix answered, definitively: the deal is gone or unreadable.
+ *   NOT_FOUND     Bitrix answered, definitively: the deal is gone.
  *   LOOKUP_ERROR  We could not get an answer. Change nothing; retry later.
  */
 export type DealLookup =
@@ -53,7 +53,6 @@ export const DEFINITIVE_MISSING_CODES = new Set([
   "EMPTY_RESULT",
   "ERROR_NOT_FOUND",
   "ERROR_CORE",
-  "ACCESS_DENIED",
   "INVALID_ARG_VALUE",
   // Verified on the portal: crm.deal.get for a deal that no longer exists
   // answers HTTP 400 with an empty error code. An id that never existed
@@ -62,9 +61,12 @@ export const DEFINITIVE_MISSING_CODES = new Set([
   "HTTP_400",
 ]);
 
-/** Transient by construction: never write a scope decision from these. */
+/** Non-definitive evidence: never write a scope decision from these. */
 export const TRANSIENT_CODES = new Set([
   "NETWORK_ERROR", "INVALID_RESPONSE", "NOT_CONFIGURED", "QUERY_LIMIT_EXCEEDED", "OPERATION_TIME_LIMIT",
+  // Permission failure is ambiguous evidence about existence. It must be
+  // retried/reported, never persisted as a deletion.
+  "ACCESS_DENIED",
 ]);
 
 export function classifyLookupFailure(code: string): DealLookup {

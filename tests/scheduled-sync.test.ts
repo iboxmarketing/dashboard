@@ -118,7 +118,7 @@ test("a deal moved to an unrelated category leaves sync scope and is NOT routing
   assert.equal(countsAsOperational("OUT_OF_SCOPE"), false, "no longer inflates operational ACTIVE");
 });
 
-test("a deleted or unreadable deal is recorded, never silently dropped", () => {
+test("a definitively deleted Deal is marked unavailable but never deleted from history", () => {
   const gone = { found: false as const, reason: "NOT_FOUND" as const, code: "NOT_FOUND" };
   assert.equal(resolveStaleDeal(gone, scope), "UNAVAILABLE");
   assert.equal(currentScopeFor("UNAVAILABLE"), "UNAVAILABLE");

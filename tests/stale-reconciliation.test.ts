@@ -41,6 +41,18 @@ test("a transient failure never marks a record", () => {
   }
 });
 
+test("ACCESS_DENIED is unresolved evidence and never becomes a deletion", () => {
+  assert.equal(DEFINITIVE_MISSING_CODES.has("ACCESS_DENIED"), false);
+  const lookup = classifyLookupFailure("ACCESS_DENIED");
+  assert.equal(lookup.found, false);
+  if (lookup.found) throw new Error("an access failure cannot report a found Deal");
+  assert.equal(lookup.reason, "LOOKUP_ERROR");
+  const resolution = resolveStaleDeal(lookup, scope);
+  assert.equal(resolution, "LOOKUP_ERROR");
+  assert.equal(currentScopeFor(resolution), null,
+    "ambiguous access must leave currentScope untouched, not write UNAVAILABLE");
+});
+
 test("HTTP_400 is the verified missing signature; 5xx stays transient", () => {
   // Verified on the portal: crm.deal.get for a deleted deal answers HTTP 400
   // with an empty error code, and an id that never existed (99999999) gives the

@@ -14,7 +14,7 @@ export type StaleResolution =
   | "CLOSED_IN_SCOPE"       // closed inside the sales funnel — canonical rules classify it
   | "MOVED_TO_POST_SALE"    // now in the configured paired post-sale funnel
   | "MOVED_OUT_OF_SCOPE"    // some other category: neither selected sales nor paired post-sale
-  | "UNAVAILABLE"           // Bitrix answered definitively: deleted or unreadable
+  | "UNAVAILABLE"           // Bitrix answered definitively: deleted / not found
   | "LOOKUP_ERROR";         // no answer — decide nothing, retry on a later sync
 
 /**
