@@ -306,6 +306,7 @@ function fieldScalars(raw) {
 export function resolveFailureReasons(raw, options) {
   const labels = [];
   const unresolvedValues = [];
+  const orphanIds = [];
   for (const value of fieldScalars(raw)) {
     if (!value) {
       unresolvedValues.push("UNSUPPORTED_VALUE");
@@ -316,12 +317,15 @@ export function resolveFailureReasons(raw, options) {
       continue;
     }
     if (/^\d+$/.test(value)) {
-      unresolvedValues.push("UNMAPPED_ENUM_ID");
+      // An enum ID that crm.deal.fields no longer lists is not a currently
+      // selectable reason: Bitrix shows it as "not selected". Keep the ID as
+      // diagnostics only; it must never be read as a transfer.
+      orphanIds.push(value);
       continue;
     }
     labels.push(value);
   }
-  return { labels, unresolvedValues };
+  return { labels, unresolvedValues, orphanIds };
 }
 
 function dealField(deal, fieldKey) {
@@ -439,10 +443,17 @@ export function classifyDealEvidence({
   if (failure.unresolvedValues.length) {
     return classification("UNRESOLVED", dealId, "FAILURE_REASON_UNRESOLVED", { createdAt });
   }
+  // An empty dictionary means the options could not be read, not that every
+  // stored ID is an orphan; never let that silently hide a transfer.
+  if (failure.orphanIds.length && failureReasonOptions.byId.size === 0) {
+    return classification("UNRESOLVED", dealId, "FAILURE_REASON_DICTIONARY_EMPTY", { createdAt });
+  }
+  const orphan = failure.orphanIds.length ? { orphanFailureReasonIds: failure.orphanIds } : {};
   const transferReason = failure.labels.find((label) => TRANSFER_OUT_REASONS.includes(label));
   if (!transferReason) {
     return classification("INCLUDED", dealId, "IBOX_STAGE_ENTRY", {
       createdAt,
+      ...orphan,
       ...sourceEvidence(deal, sourceLabels),
     });
   }
@@ -454,10 +465,11 @@ export function classifyDealEvidence({
   if (history.slice(transferIndex + 1).some((row) => scalar(row.CATEGORY_ID) === String(categoryId))) {
     return classification("INCLUDED", dealId, "RETURNED_TO_IBOX_AFTER_TRANSFER", {
       createdAt,
+      ...orphan,
       ...sourceEvidence(deal, sourceLabels),
     });
   }
-  return classification("EXCLUDED", dealId, "TRANSFERRED_OUT_NO_RETURN", { createdAt, transferReason });
+  return classification("EXCLUDED", dealId, "TRANSFERRED_OUT_NO_RETURN", { createdAt, transferReason, ...orphan });
 }
 
 function safeConfig(config, bounds, discovery, stageCatalog, sourceCatalog, retryOptions) {
@@ -552,6 +564,8 @@ export async function extractIboxLeadEvidence({ call, config, now = () => new Da
   const included = classified.filter((row) => row.classification === "INCLUDED");
   const includedIds = included.map((row) => row.dealId);
   const includedBySource = buildIncludedSourceBreakdown(included);
+  const orphanFailureReasons = classified.filter((row) => row.orphanFailureReasonIds?.length)
+    .map((row) => ({ dealId: row.dealId, classification: row.classification, orphanFailureReasonIds: row.orphanFailureReasonIds }));
   const excluded = classified.filter((row) => row.classification === "EXCLUDED")
     .map((row) => {
       const evidence = { ...row };
@@ -578,10 +592,12 @@ export async function extractIboxLeadEvidence({ call, config, now = () => new Da
       excluded: excluded.length,
       unresolved: unresolved.length,
       unresolvedByCode: countUnresolvedByCode(unresolved),
+      orphanFailureReasonDeals: orphanFailureReasons.length,
     },
     discoveredIds: discovery.dealIds,
     includedIds,
     includedBySource,
+    dataQuality: { orphanFailureReasons },
     excluded,
     unresolved,
   };
@@ -595,6 +611,13 @@ function unresolvedCountLines(report) {
   const grouped = report.counts.unresolvedByCode ?? countUnresolvedByCode(report.unresolved ?? []);
   const entries = Object.entries(grouped);
   return entries.length ? entries.map(([code, count]) => `- ${code}: ${count}`).join("\n") : "- none";
+}
+
+function orphanLines(report) {
+  const rows = report.dataQuality?.orphanFailureReasons ?? [];
+  return rows.length
+    ? rows.map((row) => `- ${row.dealId}: ${row.classification} (orphan failure-reason ID ${row.orphanFailureReasonIds.join(", ")})`).join("\n")
+    : "- none";
 }
 
 function sourceBreakdownLines(report) {
@@ -624,6 +647,9 @@ export function renderHumanSummary(report) {
     "",
     "INCLUDED BY SOURCE",
     sourceBreakdownLines(report),
+    "",
+    "DATA QUALITY: ORPHAN FAILURE-REASON IDS (not a transfer)",
+    orphanLines(report),
     "",
     "EXCLUDED",
     linesForRows(report.excluded),

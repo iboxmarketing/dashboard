@@ -43,6 +43,13 @@ Transfer out of IBOX is identified only by either exact failure-reason value:
 - `передано Idokon (Not relevant)`
 - `передано SD (Not relevant)`
 
+Only a reason that currently resolves in `crm.deal.fields` to one of those
+exact labels can exclude a Deal. A failure-reason enum ID that no longer exists
+in `crm.deal.fields` (an orphan, shown by Bitrix as "not selected") is never
+inferred to be a transfer: the Deal is treated as having no selected transfer
+reason and stays included when valid IBOX stage history exists. The evidence
+report keeps the orphan ID visible as data-quality metadata.
+
 Other failure reasons do not remove IBOX membership. A Deal transferred out
 with one of the exact reasons and later entering any IBOX Sales stage is again
 included and counted once by Deal ID. A Deal created outside IBOX and later

@@ -253,12 +253,53 @@ test("only either exact transfer reason excludes when no later IBOX return exist
   assert.equal(other.classification, "INCLUDED");
 });
 
-test("unmapped failure-reason evidence remains unresolved", () => {
-  const result = classify("213", foundDeal("213", { CATEGORY_ID: "99", [failureReasonField]: "999" }), [
-    event("213", "NR", "2026-08-20T10:00:00+05:00"),
+test("orphan failure-reason enum ID is not a transfer: Deal 43205 (raw 11151) is INCLUDED with diagnostics", () => {
+  const result = classify("43205", foundDeal("43205", { [failureReasonField]: "11151" }), [
+    event("43205", "NEW", "2026-08-20T10:00:00+05:00"),
+    event("43205", "NR", "2026-08-21T10:00:00+05:00"),
   ]);
-  assert.equal(result.classification, "UNRESOLVED");
-  assert.equal(result.reason, "FAILURE_REASON_UNRESOLVED");
+  assert.equal(result.classification, "INCLUDED");
+  assert.equal(result.reason, "IBOX_STAGE_ENTRY");
+  assert.deepEqual(result.orphanFailureReasonIds, ["11151"]);
+
+  const withOtherReason = classify("43206", foundDeal("43206", { [failureReasonField]: ["103", "11151"] }), [
+    event("43206", "NR", "2026-08-20T10:00:00+05:00"),
+  ]);
+  assert.equal(withOtherReason.classification, "INCLUDED");
+  assert.deepEqual(withOtherReason.orphanFailureReasonIds, ["11151"]);
+
+  // A currently resolvable transfer label still excludes, even beside an orphan ID.
+  const transferBesideOrphan = classify("43207", foundDeal("43207", { [failureReasonField]: ["101", "11151"] }), [
+    event("43207", "NR", "2026-08-20T10:00:00+05:00"),
+  ]);
+  assert.equal(transferBesideOrphan.classification, "EXCLUDED");
+  assert.deepEqual(transferBesideOrphan.orphanFailureReasonIds, ["11151"]);
+
+  // An unreadable (empty) dictionary is not proof of orphans.
+  const emptyDictionary = classify("43208", foundDeal("43208", { [failureReasonField]: "11151" }), [
+    event("43208", "NR", "2026-08-20T10:00:00+05:00"),
+  ], { failureReasonOptions: { fieldFound: true, byId: new Map() } });
+  assert.equal(emptyDictionary.classification, "UNRESOLVED");
+  assert.equal(emptyDictionary.reason, "FAILURE_REASON_DICTIONARY_EMPTY");
+});
+
+test("orphan failure-reason IDs stay visible in the report and summary", async () => {
+  const call = async (method, params) => {
+    if (method === "crm.stagehistory.list") return { result: { items: [event("43205", "NR", "2026-08-21T10:00:00+05:00")] } };
+    if (method === "crm.status.list") return { result: [{ STATUS_ID: "NR", NAME: "Not relevant" }] };
+    if (method === "crm.deal.fields") return { result: { [failureReasonField]: { items: [{ ID: "101", VALUE: TRANSFER_OUT_REASONS[0] }] } } };
+    if (method === "crm.deal.get") return { result: foundDeal("43205", { [failureReasonField]: "11151" }).deal };
+    throw new Error(`unexpected ${method} ${JSON.stringify(params)}`);
+  };
+  const report = await extractIboxLeadEvidence({
+    call, config: { categoryId, failureReasonField, from: "2026-08-01", to: "2026-08-31" },
+  });
+  assert.deepEqual(report.includedIds, ["43205"]);
+  assert.equal(report.counts.orphanFailureReasonDeals, 1);
+  assert.deepEqual(report.dataQuality.orphanFailureReasons, [
+    { dealId: "43205", classification: "INCLUDED", orphanFailureReasonIds: ["11151"] },
+  ]);
+  assert.match(renderHumanSummary(report), /43205: INCLUDED \(orphan failure-reason ID 11151\)/);
 });
 
 test("missing failure-reason metadata or Deal field remains unresolved", () => {
@@ -375,6 +416,7 @@ test("full extraction fetches every discovered Deal and reports safe counts and 
       HTTP_400: 1,
       "QUERY_LIMIT_EXCEEDED after retries": 1,
     },
+    orphanFailureReasonDeals: 0,
   });
   assert.deepEqual(report.includedIds, ["301"]);
   assert.deepEqual(report.includedBySource, [{
