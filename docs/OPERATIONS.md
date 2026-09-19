@@ -108,6 +108,53 @@ errors are not retried. The summary groups unresolved Deal IDs by error code.
 A result of `COMPLETE_WITH_UNRESOLVED` must not be accepted as a
 fully reconciled ID set until each unresolved lookup or field value is resolved.
 
+## Read-only seller attribution audit
+
+Answers whether the frozen rows in `deal_sales_snapshots` name the commercial
+seller or an onboarding/support employee who only touched the card after it moved
+to IBOX Обучение/Сопровождение. The audit opens no database: export the two
+tables with **read-only SELECTs**, then pass the JSON in.
+
+```bash
+mkdir -p .audit/in
+npx wrangler d1 execute DB --remote --config wrangler.generated.jsonc --json \
+  --command "SELECT deal_id, won_at, manager_id, manager_name, attribution_source, created_at FROM deal_sales_snapshots" \
+  > .audit/in/snapshots.json
+npx wrangler d1 execute DB --remote --config wrangler.generated.jsonc --json \
+  --command "SELECT key, value FROM app_settings WHERE key = 'settings'" \
+  > .audit/in/settings.json
+
+npm run audit:seller-attribution -- \
+  --snapshots .audit/in/snapshots.json --settings .audit/in/settings.json \
+  --category-id 3 --post-sale-category-id 13 \
+  --from 2026-09-01 --to 2026-09-19 --expected-cohort-sales 41
+```
+
+Both inputs and the report live under the git-ignored `.audit/`. Only the four
+read Bitrix methods are called; nothing is written to D1 or Bitrix and no sync or
+backfill is started.
+
+Each snapshot is classified against the approved seller priority — trustworthy
+snapshot, then the stable Sales Manager field, then `MOVED_BY_ID` only while the
+current stage is the payment stage, then Unknown:
+
+| Classification | What it means |
+| --- | --- |
+| `VERIFIED_SELLER` | the stable field confirms it, it was frozen from that field, the card still sits in the payment stage, or it was frozen before the card ever reached post-sale |
+| `REPAIRABLE_FROM_CUSTOM_FIELD` | the stable field names a different seller, so a rebuild corrects it deterministically |
+| `SUSPICIOUS_NO_PROOF` | frozen after the post-sale move, or from `CURRENT_RESPONSIBLE`, with no field to repair from — a human must name the seller |
+| `UNKNOWN_INSUFFICIENT_EVIDENCE` | the Deal is unreadable or deleted, no seller was ever frozen, or the attribution source is unrecognised |
+
+A `STAGE_MOVER` row is not assumed wrong. The audit compares when the snapshot
+was frozen with when the Deal entered the post-sale category, so a mover captured
+while the card was still in Sales stays verified.
+
+The report also checks the configuration itself. `lib/analytics.ts` reads
+`deal[settings.salesManagerField]` verbatim while the deal `select` list is built
+through `canonicalDealFieldKey`, so a stored camelCase spelling makes the
+`CUSTOM_FIELD` step silently never fire; that is reported as
+`NON_CANONICAL_SPELLING` and must be fixed before any data repair.
+
 ## Database and recovery
 
 GitHub stores migrations, not D1 rows. Most analytics data is recoverable from Bitrix with a full selected-funnel sync. Settings must be re-entered on a new database:
