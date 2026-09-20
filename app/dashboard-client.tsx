@@ -4,7 +4,7 @@ import {
   Activity, AlertTriangle, ArrowLeft, BarChart3, CalendarDays, Check,
   ChevronDown, Clock3, Database, Download, ExternalLink, Gauge, LayoutDashboard,
   Loader2, Menu, RefreshCw, Search, Settings, ShieldCheck,
-  SlidersHorizontal, TimerReset, Users, Wallet, X, XCircle, CircleDollarSign, ClipboardList, Layers3, GripVertical, ChevronUp
+  SlidersHorizontal, TimerReset, UserCog, Users, Wallet, X, XCircle, CircleDollarSign, ClipboardList, Layers3, GripVertical, ChevronUp
 } from "lucide-react";
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ErrorInfo, ReactNode } from "react";
@@ -50,6 +50,10 @@ import {
   historicalManagerOptions, liveManagerOptions,
 } from "@/lib/record-filters";
 import { MultiSelect } from "./ui/multi-select";
+import { AuthGate, type AuthSession } from "./auth/auth-shell";
+import { ProfileMenu } from "./auth/profile-menu";
+import { UsersScreen } from "./auth/users-screen";
+import { canAccessView } from "@/lib/auth-permissions";
 import { countDuplicates, markDuplicates } from "@/lib/duplicates";
 import { stageConfigConflicts } from "@/lib/stage-config";
 import { DASHBOARD_METRICS, buildDashboardMetrics, resolveDashboardMetric, selectPeriodPopulations, type DashboardMetricId } from "@/lib/dashboard-metrics";
@@ -65,7 +69,6 @@ import {
 import { Drawer } from "./ui/drawer";
 import { FinanceView } from "./finance/finance-view";
 import { StatusCombobox } from "./ui/combobox";
-import { UsersView } from "./users-view";
 import type { PublicAuthUser } from "@/lib/auth/types";
 import { hasPermission, type PermissionKey } from "@/lib/auth/permissions";
 
@@ -116,7 +119,7 @@ const navItems: { id: View; label: string; icon: typeof LayoutDashboard; permiss
   { id: "pages", label: "Pages", icon: LayoutDashboard, permission: "pages" },
   { id: "diagnostics", label: "Diagnostika", icon: Activity, permission: "diagnostics" },
   { id: "settings", label: "Sozlamalar", icon: Settings, permission: "settings" },
-  { id: "users", label: "Foydalanuvchilar", icon: Users, permission: "users" },
+  { id: "users", label: "Foydalanuvchilar", icon: UserCog, permission: "users" },
 ];
 
 function pct(value: number, total: number) { return total ? Math.round((value / total) * 100) : 0; }
@@ -2087,7 +2090,13 @@ function SharePanel({ page, widgets, shares, draft, setDraft, createdUrl, dismis
   </div>;
 }
 
-export default function DashboardClient({ authUser, onLogout }: { authUser: PublicAuthUser; onLogout: () => void }) {
+/**
+ * Nav and data loading are both derived from the one permission mapping, never
+ * from a list kept in sync by hand: a section the user cannot open is absent,
+ * and its fetch never fires. The API enforces the same rules independently.
+ */
+function DashboardApp({ session }: { session: AuthSession }) {
+  const authUser = session.user;
   const canAccess = (permission: PermissionKey) => hasPermission(authUser.role, authUser.permissions, permission);
   const allowedNavItems = navItems.filter((item) => canAccess(item.permission));
   const defaultView = allowedNavItems[0]?.id ?? "dashboard";
@@ -2118,7 +2127,15 @@ export default function DashboardClient({ authUser, onLogout }: { authUser: Publ
   const [currentStageError, setCurrentStageError] = useState<string | null>(null);
   const [settings, setSettings] = useState<DashboardSettings | null>(null);
   const [sync, setSync] = useState<SyncState>(idleSync);
-  const [view, setView] = useState<View>(defaultView);
+  // Seeded from the permission mapping rather than defaulting to "dashboard": a
+  // member without that section must never see it render even for one frame.
+  const [requestedView, setView] = useState<View>(defaultView);
+  // If access changes under the user mid-session — an admin edits their
+  // permissions — they fall back to a section they can still open. Derived
+  // during render rather than corrected in an effect, so the forbidden view is
+  // never painted first. The API rejects the data calls regardless; this only
+  // keeps the UI honest.
+  const view: View = canAccessView(authUser, requestedView) ? requestedView : defaultView;
   const [selectedManager, setSelectedManager] = useState<ManagerRow | null>(null);
   const [filters, setFilters] = useState<Filters>(emptyFilters);
   const [refreshing, setRefreshing] = useState(false);
@@ -2501,7 +2518,7 @@ export default function DashboardClient({ authUser, onLogout }: { authUser: Publ
     </aside>
     {menuOpen && <button className="sidebar-backdrop" aria-label="Menyuni yopish" onClick={() => setMenuOpen(false)} />}
     <main className="content">
-      <header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)}><Menu size={20} /></button><div><span>Bitrix24</span><small>/</small><strong>{title}</strong></div><div className="top-actions">{!isManagementView(view) && <>{canSettings && <><span className="sync-time">Oxirgi sinxronizatsiya: <strong>{fmtDate(sync.lastSyncAt)}</strong></span><Select label="Sinxronizatsiya funnel" value={activeSyncPipelineId} onChange={setSyncPipelineId}>{syncOptions.map((pipeline) => <option key={pipeline.id} value={pipeline.id}>{pipeline.name}</option>)}</Select><button className="button secondary refresh" onClick={refresh}>{sync.status === "running" ? <TimerReset size={17} /> : refreshing ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}{sync.status === "running" ? "Pauza" : "Tanlangan funnelni sinxronlash"}</button></>}</>}<button className="avatar" title={`${authUser.name} — chiqish`} onClick={onLogout}>{authUser.name.split(/\s+/u).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</button></div></header>
+      <header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)}><Menu size={20} /></button><div><span>Bitrix24</span><small>/</small><strong>{title}</strong></div><div className="top-actions">{!isManagementView(view) && canSettings && <><span className="sync-time">Oxirgi sinxronizatsiya: <strong>{fmtDate(sync.lastSyncAt)}</strong></span><Select label="Sinxronizatsiya funnel" value={activeSyncPipelineId} onChange={setSyncPipelineId}>{syncOptions.map((pipeline) => <option key={pipeline.id} value={pipeline.id}>{pipeline.name}</option>)}</Select><button className="button secondary refresh" onClick={refresh}>{sync.status === "running" ? <TimerReset size={17} /> : refreshing ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}{sync.status === "running" ? "Pauza" : "Tanlangan funnelni sinxronlash"}</button></>}<ProfileMenu user={session.user} onChangePassword={session.changePassword} onLogout={session.logout} /></div></header>
       <div className="content-inner">
         {loadError && <div className="notice error page-notice"><XCircle size={18} />{loadError}<button onClick={() => setLoadError(null)}><X size={14} /></button></div>}
         {canSettings && hasLegacyData && sync.status !== "running" && <div className="notice warning page-notice"><AlertTriangle size={18} /><span>Post-sale observer seller dalilini yuklash uchun Sozlamalarda CRM field’larini tekshirib, <strong>“To‘liq qayta sync”</strong>ni bosing. Analytics Backfill observer’ni Bitrix’dan yuklamaydi.</span><button onClick={() => setView("settings")}>Sozlamalar</button></div>}
@@ -2581,8 +2598,8 @@ export default function DashboardClient({ authUser, onLogout }: { authUser: Publ
         {view === "deals" && <><div className="page-title"><div><p className="eyebrow">DETAIL REPORT</p><h1>Deal’lar</h1><p>Sotuv holati, sotuvchi attribution’i, stage yoshi va processing yagona jadvalda.</p></div></div><DealsTable records={detailFiltered} /></>}
         {view === "diagnostics" && <DiagnosticsView sync={sync} records={records} reconciliation={stageReconciliation} settings={settings} />}
         {view === "finance" && <FinanceView />}
+        {view === "users" && <UsersScreen adapter={session.adapter} selfId={session.user.id} onSelfChanged={session.refresh} onSessionLost={session.sessionLost} />}
         {view === "settings" && <SettingsView settings={settings} syncing={refreshing || sync.status === "running"} lastSyncAt={sync.lastSyncAt} onSave={saveSettings} onFullSync={saveAndFullSync} onDirtyChange={setSettingsDirty} />}
-        {view === "users" && <UsersView />}
         </ViewErrorBoundary>
         <Drawer open={Boolean(pageDraft)} title={pageDraft?.id ? "Sahifa sozlamasi" : "Yangi sahifa"}
           context={pageDraft?.id ? pageDraft.name : "Auditoriya uchun dashboard"}
@@ -2795,4 +2812,12 @@ export default function DashboardClient({ authUser, onLogout }: { authUser: Publ
       </div>
     </main>
   </div>;
+}
+
+/**
+ * The dashboard only mounts once `/api/auth/me` has answered, so no analytics
+ * request and no navigation happens on behalf of an unidentified visitor.
+ */
+export default function DashboardClient() {
+  return <AuthGate>{(session) => <DashboardApp session={session} />}</AuthGate>;
 }
