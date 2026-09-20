@@ -636,7 +636,7 @@ export function usage() {
     '    --command "SELECT deal_id, won_at, manager_id, manager_name, attribution_source, created_at FROM deal_sales_snapshots" \\',
     "    > .audit/in/snapshots.json",
     '  npx wrangler d1 execute DB --remote --config wrangler.generated.jsonc --json \\',
-    '    --command "SELECT key, value FROM app_settings WHERE key = \'settings\'" \\',
+    '    --command "SELECT key, value FROM app_settings WHERE key = \'dashboard\'" \\',
     "    > .audit/in/settings.json",
     "",
     "Then, with BITRIX24_WEBHOOK_URL already in the environment:",
