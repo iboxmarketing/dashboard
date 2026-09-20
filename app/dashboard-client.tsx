@@ -4,7 +4,7 @@ import {
   Activity, AlertTriangle, ArrowLeft, BarChart3, CalendarDays, Check,
   ChevronDown, Clock3, Database, Download, ExternalLink, Gauge, LayoutDashboard,
   Loader2, Menu, RefreshCw, Search, Settings, ShieldCheck,
-  SlidersHorizontal, TimerReset, Users, Wallet, X, XCircle, CircleDollarSign, ClipboardList, Layers3, GripVertical, ChevronUp
+  SlidersHorizontal, TimerReset, UserCog, Users, Wallet, X, XCircle, CircleDollarSign, ClipboardList, Layers3, GripVertical, ChevronUp
 } from "lucide-react";
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ErrorInfo, ReactNode } from "react";
@@ -50,6 +50,10 @@ import {
   historicalManagerOptions, liveManagerOptions,
 } from "@/lib/record-filters";
 import { MultiSelect } from "./ui/multi-select";
+import { AuthGate, type AuthSession } from "./auth/auth-shell";
+import { ProfileMenu } from "./auth/profile-menu";
+import { UsersScreen } from "./auth/users-screen";
+import { allowedNavEntries, firstAllowedView, resolveView } from "@/lib/auth-permissions";
 import { countDuplicates, markDuplicates } from "@/lib/duplicates";
 import { stageConfigConflicts } from "@/lib/stage-config";
 import { DASHBOARD_METRICS, buildDashboardMetrics, resolveDashboardMetric, selectPeriodPopulations, type DashboardMetricId } from "@/lib/dashboard-metrics";
@@ -69,7 +73,7 @@ import { StatusCombobox } from "./ui/combobox";
 /** Sales analytics views. Only these carry the global cohort filter bar. */
 const SALES_VIEWS = ["dashboard", "managers", "managerDetail", "leadFlow", "quality", "stages", "deals"] as const;
 /** Management views: no sales filters, no funnel/sync controls. */
-const MANAGEMENT_VIEWS = ["projects", "projectDetail", "pages", "pageDetail", "settings", "diagnostics", "finance"] as const;
+const MANAGEMENT_VIEWS = ["projects", "projectDetail", "pages", "pageDetail", "settings", "diagnostics", "finance", "users"] as const;
 /**
  * Finance is its own lane. It holds its own date filter and dataset and shares no
  * state with the Sales cohort filter, so opening Finance cannot move a Sales number.
@@ -78,7 +82,7 @@ export const isFinanceView = (view: string) => view === "finance";
 export const isSalesView = (view: string) => (SALES_VIEWS as readonly string[]).includes(view);
 export const isManagementView = (view: string) => (MANAGEMENT_VIEWS as readonly string[]).includes(view);
 
-type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "projects" | "projectDetail" | "pages" | "pageDetail" | "diagnostics" | "settings" | "finance";
+type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "projects" | "projectDetail" | "pages" | "pageDetail" | "diagnostics" | "settings" | "finance" | "users";
 type SyncState = SyncProgressState;
 type Filters = {
   range: "today" | "yesterday" | "7" | "30" | "month" | "lastMonth" | "custom";
@@ -113,6 +117,7 @@ const navItems: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "pages", label: "Pages", icon: LayoutDashboard },
   { id: "diagnostics", label: "Diagnostika", icon: Activity },
   { id: "settings", label: "Sozlamalar", icon: Settings },
+  { id: "users", label: "Foydalanuvchilar", icon: UserCog },
 ];
 
 function pct(value: number, total: number) { return total ? Math.round((value / total) * 100) : 0; }
@@ -2083,7 +2088,11 @@ function SharePanel({ page, widgets, shares, draft, setDraft, createdUrl, dismis
   </div>;
 }
 
-export default function DashboardClient() {
+/**
+ * Nav is derived from the one permission mapping, never from a list kept in
+ * sync by hand: a section the user cannot open is absent, not disabled.
+ */
+function DashboardApp({ session }: { session: AuthSession }) {
   const [loading, setLoading] = useState(true);
   const [configured, setConfigured] = useState(false);
   const [records, setRecords] = useState<DashboardRecord[]>([]);
@@ -2105,7 +2114,16 @@ export default function DashboardClient() {
   const [currentStageError, setCurrentStageError] = useState<string | null>(null);
   const [settings, setSettings] = useState<DashboardSettings | null>(null);
   const [sync, setSync] = useState<SyncState>(idleSync);
-  const [view, setView] = useState<View>("dashboard");
+  // Initialised from the permission mapping rather than defaulting to
+  // "dashboard": a member without the dashboard section must never see it render
+  // even for one frame before a redirect.
+  const [requestedView, setView] = useState<View>(() => (firstAllowedView(session.user) ?? "dashboard") as View);
+  // If access changes under the user mid-session — an admin edits their
+  // permissions — they fall back to a section they can still open. Derived
+  // during render rather than corrected in an effect, so the forbidden view is
+  // never painted first. The backend rejects the data calls regardless; this
+  // only keeps the UI honest.
+  const view = (resolveView(session.user, requestedView).view ?? requestedView) as View;
   const [selectedManager, setSelectedManager] = useState<ManagerRow | null>(null);
   const [filters, setFilters] = useState<Filters>(emptyFilters);
   const [refreshing, setRefreshing] = useState(false);
@@ -2446,6 +2464,7 @@ export default function DashboardClient() {
   if (!configured || (configured && !records.length && sync.status !== "success")) return <SetupScreen configured={configured} sync={sync} syncing={refreshing} externalError={loadError} onStart={() => void syncLoop("start", true, 30, settings?.selectedPipelineIds[0])} onPause={() => void pauseCurrentSync()} onResume={() => void syncLoop("resume")} />;
   if (!settings) return <div className="fatal-error"><XCircle /><p>Sozlamalar yuklanmadi.</p></div>;
   const title = view === "managerDetail" ? selectedManager?.name ?? "Menejer" : navItems.find((item) => item.id === view)?.label ?? "Dashboard";
+  const visibleNavItems = navItems.filter((item) => allowedNavEntries(session.user).some((entry) => entry.view === item.id));
   const openProject = projects.find((project) => project.id === openProjectId) ?? null;
   const projectStatusSuggestions = statusOptions(projects, projectUpdateRows);
   /** Leaving Settings with unsaved edits asks first. */
@@ -2470,13 +2489,13 @@ export default function DashboardClient() {
   return <div className="app-shell">
     <aside className={menuOpen ? "open" : ""}>
       <div className="brand"><div className="brand-mark">B24</div><div><strong>Deal Processing</strong><small>Sales analytics</small></div><button className="mobile-close" onClick={() => setMenuOpen(false)}><X size={18} /></button></div>
-      <nav>{navItems.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => { if (item.id === "stages") setFilters((current) => ({ ...current, period: "", sla: "", processing: "" })); changeView(item.id); setMenuOpen(false); }}><item.icon size={18} /><span>{item.label}</span>{item.id === "diagnostics" && sync.permissions.stageHistory === "error" && <i />}</button>)}</nav>
+      <nav>{visibleNavItems.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => { if (item.id === "stages") setFilters((current) => ({ ...current, period: "", sla: "", processing: "" })); changeView(item.id); setMenuOpen(false); }}><item.icon size={18} /><span>{item.label}</span>{item.id === "diagnostics" && sync.permissions.stageHistory === "error" && <i />}</button>)}</nav>
       <div className="sidebar-status"><div><span className="live-dot" /><strong>Bitrix24 ulangan</strong></div><small>Oxirgi sync</small><p>{fmtDate(sync.lastSyncAt)}</p></div>
       <div className="sidebar-foot"><ShieldCheck size={16} /><span>Webhook server secret’da himoyalangan</span></div>
     </aside>
     {menuOpen && <button className="sidebar-backdrop" aria-label="Menyuni yopish" onClick={() => setMenuOpen(false)} />}
     <main className="content">
-      <header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)}><Menu size={20} /></button><div><span>Bitrix24</span><small>/</small><strong>{title}</strong></div><div className="top-actions">{!isManagementView(view) && <><span className="sync-time">Oxirgi sinxronizatsiya: <strong>{fmtDate(sync.lastSyncAt)}</strong></span><Select label="Sinxronizatsiya funnel" value={activeSyncPipelineId} onChange={setSyncPipelineId}>{syncOptions.map((pipeline) => <option key={pipeline.id} value={pipeline.id}>{pipeline.name}</option>)}</Select><button className="button secondary refresh" onClick={refresh}>{sync.status === "running" ? <TimerReset size={17} /> : refreshing ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}{sync.status === "running" ? "Pauza" : "Tanlangan funnelni sinxronlash"}</button></>}<div className="avatar">IM</div></div></header>
+      <header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)}><Menu size={20} /></button><div><span>Bitrix24</span><small>/</small><strong>{title}</strong></div><div className="top-actions">{!isManagementView(view) && <><span className="sync-time">Oxirgi sinxronizatsiya: <strong>{fmtDate(sync.lastSyncAt)}</strong></span><Select label="Sinxronizatsiya funnel" value={activeSyncPipelineId} onChange={setSyncPipelineId}>{syncOptions.map((pipeline) => <option key={pipeline.id} value={pipeline.id}>{pipeline.name}</option>)}</Select><button className="button secondary refresh" onClick={refresh}>{sync.status === "running" ? <TimerReset size={17} /> : refreshing ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}{sync.status === "running" ? "Pauza" : "Tanlangan funnelni sinxronlash"}</button></>}<ProfileMenu user={session.user} onChangePassword={session.changePassword} onLogout={session.logout} /></div></header>
       <div className="content-inner">
         {loadError && <div className="notice error page-notice"><XCircle size={18} />{loadError}<button onClick={() => setLoadError(null)}><X size={14} /></button></div>}
         {hasLegacyData && sync.status !== "running" && <div className="notice warning page-notice"><AlertTriangle size={18} /><span>Post-sale observer seller dalilini yuklash uchun Sozlamalarda CRM field’larini tekshirib, <strong>“To‘liq qayta sync”</strong>ni bosing. Analytics Backfill observer’ni Bitrix’dan yuklamaydi.</span><button onClick={() => setView("settings")}>Sozlamalar</button></div>}
@@ -2556,6 +2575,7 @@ export default function DashboardClient() {
         {view === "deals" && <><div className="page-title"><div><p className="eyebrow">DETAIL REPORT</p><h1>Deal’lar</h1><p>Sotuv holati, sotuvchi attribution’i, stage yoshi va processing yagona jadvalda.</p></div></div><DealsTable records={detailFiltered} /></>}
         {view === "diagnostics" && <DiagnosticsView sync={sync} records={records} reconciliation={stageReconciliation} settings={settings} />}
         {view === "finance" && <FinanceView />}
+        {view === "users" && <UsersScreen adapter={session.adapter} selfId={session.user.id} onSelfChanged={session.refresh} />}
         {view === "settings" && <SettingsView settings={settings} syncing={refreshing || sync.status === "running"} lastSyncAt={sync.lastSyncAt} onSave={saveSettings} onFullSync={saveAndFullSync} onDirtyChange={setSettingsDirty} />}
         </ViewErrorBoundary>
         <Drawer open={Boolean(pageDraft)} title={pageDraft?.id ? "Sahifa sozlamasi" : "Yangi sahifa"}
@@ -2769,4 +2789,12 @@ export default function DashboardClient() {
       </div>
     </main>
   </div>;
+}
+
+/**
+ * The dashboard only mounts once `/api/auth/me` has answered, so no analytics
+ * request and no navigation happens on behalf of an unidentified visitor.
+ */
+export default function DashboardClient() {
+  return <AuthGate>{(session) => <DashboardApp session={session} />}</AuthGate>;
 }
