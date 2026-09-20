@@ -265,3 +265,84 @@ test("the override is refused whenever the handoff could actually have contamina
   const mixed = resolveRoleConflict({ footprint: { 3: 60, 17: 40 }, dealCurrentCategoryId: "3" });
   assert.equal(mixed.resolution, "REVIEW", "only 60% Sales");
 });
+
+// ------------------ final certification: Sales staff by footprint, proven-unsafe ---
+
+import { ACTION, certify, isSalesStaffByFootprint } from "../scripts/seller-final-certification.mjs";
+import { OBSERVER_STATE as OS } from "../scripts/observer-seller-recovery.mjs";
+
+test("Sales staff is judged by footprint, which lets a stale job title through", () => {
+  // Oybek Shukurillayev: "Customer Care Team Lead", 335 category-3 cards, none post-sale.
+  assert.equal(isSalesStaffByFootprint({ 3: 335 }).ok, true);
+  assert.equal(isSalesStaffByFootprint({ 3: 118, 5: 2 }).ok, true);
+  assert.equal(isSalesStaffByFootprint({ 3: 5 }).ok, false, "a handful of cards is not a career");
+  assert.equal(isSalesStaffByFootprint({ 3: 50, 13: 20 }).ok, false, "any post-sale footprint disqualifies");
+  assert.equal(isSalesStaffByFootprint({ 13: 26 }).ok, false);
+  assert.equal(isSalesStaffByFootprint({}).ok, false);
+});
+
+const U = new Map([
+  ["7", { ID: "7", WORK_POSITION: "Sales Manager", UF_DEPARTMENT: [195] }],
+  ["88", { ID: "88", WORK_POSITION: "Customer Care Specialist", UF_DEPARTMENT: [43] }],
+  ["9903", { ID: "9903", WORK_POSITION: "Customer Care Team Lead", UF_DEPARTMENT: [27] }],
+]);
+const FP = { 7: { 3: 222 }, 88: { 13: 26 }, 9903: { 3: 335 } };
+const cert = (snapshot, evidence, observerVerdict = { state: OS.NOT_CACHED, candidates: [] }) =>
+  certify({ snapshot, evidence, observerVerdict, footprintOf: (id) => FP[String(id)] ?? {}, users: U });
+
+test("a CUSTOM_FIELD seller on a Deal that never left Sales is unproven, not proven unsafe", () => {
+  // ASSIGNED_BY_ID is corrupted by the post-sale handoff; with no handoff and a
+  // real Sales Manager named, clearing it would destroy good attribution.
+  const r = cert(
+    { dealId: "1", managerId: "7", attributionSource: "CUSTOM_FIELD", frozenAt: null },
+    { cat: "3", stage: "C3:UC_OTHER", movedBy: "", postSaleAt: null },
+  );
+  assert.equal(r.provenUnsafe, false);
+  assert.equal(r.action, ACTION.UNKNOWN, "still not certified — but it must stay out of the invalidate list");
+  assert.ok(r.flags.some((f) => f.startsWith("FROZEN_SELLER_UNPROVEN_BUT_NOT_PROVEN_UNSAFE")));
+});
+
+test("the same seller becomes proven unsafe once the Deal has been through the handoff", () => {
+  for (const evidence of [
+    { cat: "13", stage: "C13:NEW", movedBy: "88", postSaleAt: "2026-09-14T05:00:00Z" },
+    { cat: "3", stage: "C3:UC_OTHER", movedBy: "", postSaleAt: "2026-09-14T05:00:00Z" },
+    { cat: "17", stage: "C17:NEW", movedBy: "", postSaleAt: null },
+  ]) {
+    const r = cert({ dealId: "1", managerId: "7", attributionSource: "CUSTOM_FIELD", frozenAt: null }, evidence);
+    assert.equal(r.provenUnsafe, true, JSON.stringify(evidence));
+  }
+});
+
+test("a CUSTOM_FIELD seller who is not Sales staff is proven unsafe even inside Sales", () => {
+  const r = cert(
+    { dealId: "1", managerId: "88", attributionSource: "CUSTOM_FIELD", frozenAt: null },
+    { cat: "3", stage: "C3:UC_OTHER", movedBy: "", postSaleAt: null },
+  );
+  assert.equal(r.provenUnsafe, true);
+});
+
+test("an uncorroborated FIRST_CALL seller is proven unsafe by approved policy, wherever it sits", () => {
+  const r = cert(
+    { dealId: "1", managerId: "7", attributionSource: "FIRST_CALL", frozenAt: null },
+    { cat: "3", stage: "C3:UC_OTHER", movedBy: "", postSaleAt: null },
+  );
+  assert.equal(r.provenUnsafe, true);
+});
+
+test("a category-13 observer candidate with a stale title is still recovered", () => {
+  const r = cert(
+    { dealId: "1", managerId: "88", attributionSource: "CUSTOM_FIELD", frozenAt: null },
+    { cat: "13", stage: "C13:NEW", movedBy: "88", assigned: "88", postSaleAt: "2026-09-14T05:00:00Z" },
+    { state: OS.EXACT_ONE, candidates: ["9903"] },
+  );
+  assert.equal(r.action, ACTION.OBSERVER);
+  assert.equal(r.sellerId, "9903");
+  assert.ok(r.flags.some((f) => f.startsWith("OBSERVER_TITLE_OVERRIDDEN_BY_FOOTPRINT")));
+});
+
+test("a Deal with no raw evidence is never declared proven unsafe", () => {
+  const r = cert({ dealId: "1", managerId: "88", attributionSource: "CUSTOM_FIELD", frozenAt: null }, null);
+  assert.equal(r.action, ACTION.UNKNOWN);
+  assert.equal(r.provenUnsafe, false);
+  assert.equal(r.basis, "NO_RAW_EVIDENCE_FOR_THIS_DEAL");
+});
