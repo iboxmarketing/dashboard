@@ -16,6 +16,7 @@ The browser never receives the webhook URL. All Bitrix REST calls go through ser
 ```text
 Bitrix24 REST
   ├─ selected Sales + matching post-sale deals
+  ├─ universal Deal `observers` for current post-sale seller handoff evidence
   ├─ activities and outgoing calls
   ├─ stage history
   ├─ telephony statistics
@@ -50,6 +51,9 @@ This separation prevents historical import limits from understating current work
    configured payment-stage history, current payment-stage `MOVED_TIME`, and
    matching post-sale transitions. The event streams are independent of a
    Deal's `DATE_CREATE` and converge on the same `raw_deals` row by Deal ID.
+   Current post-sale Deals are enriched through `crm.item.list` (`entityTypeId:
+   2`, `select: ["id", "observers"]`) because `observers` is the documented
+   universal `user[]` field and is not guessed from a legacy Deal field name.
 2. `activities` — activity data in bounded deal batches.
 3. `stageHistory` — stage movement per deal.
 4. `telephony` — call-result enrichment.

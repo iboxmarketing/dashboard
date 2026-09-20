@@ -17,7 +17,9 @@ import type { CrmFieldOption } from "./types";
  *
  * Deliberately makes NO Bitrix calls: there is no `bitrixList`/`bitrixCall`
  * import here, and `getBitrixDomain()` only reads the configured host string to
- * build deal links. That is what makes this safe to run without a Full Sync.
+ * build deal links. Version 11 observer recovery therefore requires one Full
+ * Sync first so `raw_deals` contains the universal `observers` evidence; later
+ * Backfills can then reuse that persisted evidence after targeted invalidation.
  *
  * It never deletes a raw row, never writes a management table, and never moves
  * a sync checkpoint. Records are written with INSERT OR REPLACE keyed on

@@ -1,7 +1,7 @@
 import { getD1 } from "@/db";
 import { buildFieldOptionMap, buildStatusMaps, buildUserMap } from "./analytics-dictionaries";
 import { buildAnalyticsRecords, type RawDeal, type RawStageHistory } from "./analytics";
-import { bitrixCall, bitrixList, bitrixPage, getBitrixDomain, safeBitrixMessage } from "./bitrix";
+import { bitrixCall, bitrixList, bitrixPage, getBitrixDomain, SafeBitrixError, safeBitrixMessage } from "./bitrix";
 import {
   getDictionary, getSettings, getSyncJob,
   getSyncState, getSalesSnapshots, saveDictionary, saveSalesSnapshots, saveSettings, saveSyncJob,
@@ -24,6 +24,7 @@ import {
   nextDealDiscoveryScope,
   uniqueDiscoveryIds,
 } from "./period-sales-coverage";
+import { attachDealObservers, buildDealObserverRead, observerItemIds } from "./deal-observers";
 
 const stageDealBatchSize = 25;
 const analyticsDealBatchSize = 80;
@@ -212,6 +213,30 @@ async function idsNotFetchedInRun(runId: string, dealIds: string[]) {
   return dealIds.filter((id) => !seen.has(id));
 }
 
+/**
+ * Legacy Deal reads remain the canonical sync path. Only current post-sale
+ * Deals need the universal `observers` field, so enrich that bounded subset
+ * with one documented crm.item.list read per Deal page.
+ */
+async function enrichPostSaleObservers(deals: RawDeal[], postSaleCategoryIds: string[]) {
+  const postSale = new Set(postSaleCategoryIds.map(String));
+  const ids = deals
+    .filter((deal) => postSale.has(value(deal, "CATEGORY_ID")))
+    .map((deal) => value(deal, "ID"))
+    .filter(Boolean);
+  if (!ids.length) return deals;
+
+  const request = buildDealObserverRead(ids);
+  const items = await bitrixList<Record<string, unknown>>(request.method, request.params, {
+    maxPages: Math.ceil(request.dealIds.length / 50) + 1,
+  });
+  const returned = observerItemIds(items);
+  if (request.dealIds.some((id) => !returned.has(id))) {
+    throw new SafeBitrixError("OBSERVER_READ_INCOMPLETE", "Post-sale Deal kuzatuvchilari to‘liq yuklanmadi");
+  }
+  return attachDealObservers(deals, items) as RawDeal[];
+}
+
 function advanceDealDiscovery(job: StoredSyncJob, paymentStageIds: string[]) {
   const next = nextDealDiscoveryScope(job.dealScope, {
     hasPaymentStages: paymentStageIds.length > 0,
@@ -331,6 +356,7 @@ async function dealStep(job: StoredSyncJob) {
     } else {
       deals = [];
     }
+    deals = await enrichPostSaleObservers(deals, postSaleCategoryIds);
     await upsertRaw("raw_deals", deals.map((deal) => [value(deal, "ID"), value(deal, "CATEGORY_ID") || "0", value(deal, "DATE_CREATE"), JSON.stringify(deal), job.runId]));
     const scopeCount = `${job.dealScope}Deals`;
     const counts = {
@@ -363,9 +389,10 @@ async function dealStep(job: StoredSyncJob) {
     order: { DATE_CREATE: "DESC", ID: "DESC" }, filter,
     select,
   }, job.cursor);
+  const deals = await enrichPostSaleObservers(page.items, postSaleCategoryIds);
   // The last bind is the run id, not a timestamp; the column name `synced_at`
     // is historical. See db/schema.ts.
-    await upsertRaw("raw_deals", page.items.map((deal) => [value(deal, "ID"), value(deal, "CATEGORY_ID") || "0", value(deal, "DATE_CREATE"), JSON.stringify(deal), job.runId]));
+    await upsertRaw("raw_deals", deals.map((deal) => [value(deal, "ID"), value(deal, "CATEGORY_ID") || "0", value(deal, "DATE_CREATE"), JSON.stringify(deal), job.runId]));
   const counts = { ...job.counts, deals: (job.counts.deals ?? 0) + page.items.length };
   if (page.next === null) {
     return advanceDealDiscovery({ ...job, counts }, paymentStageIds);

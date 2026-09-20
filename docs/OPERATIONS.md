@@ -144,17 +144,33 @@ plus post-sale evidence does not multiply analytics rows.
 
 ## Repairing seller attribution semantics
 
-Seller attribution is stored in each analytics payload, so after deploying the
-version-10 seller-field safety rule run the analytics Backfill to rebuild existing records
-from the raw Deals, histories, configured Sales Manager field and snapshots
-already in D1. A Full Sync is not required for this rule change and cannot
-manufacture a historical sale-transition actor: Bitrix stage history does not
-provide one.
+Seller attribution is stored in each analytics payload. Version 10's unsafe
+seller-field guard could be rebuilt from existing raw data, but version 11 adds
+new Bitrix evidence: the universal Deal `observers` user list. Run one Full Sync
+after deploying version 11 so every relevant current post-sale raw Deal stores
+that evidence. Analytics Backfill does not call Bitrix and cannot populate a
+missing observer list by itself.
 
-The Backfill ignores legacy snapshots sourced only from
+Staging recovery order for version 11 is controlled:
+
+1. deploy the observer-aware Worker with `salesManagerField` still null;
+2. run one Full Sync whose history window covers the reviewed repair Deals and
+   wait for success;
+3. reconcile the approved core KPI/Deal-ID reference before seller mutation;
+4. dry-run the conservative reviewed seller manifest and review requested,
+   matched, missing and would-change counts;
+5. only after explicit approval, apply that exact manifest;
+6. run Analytics Backfill so invalidated rows can resolve from payment-stage
+   mover or the persisted post-sale observer;
+7. reconcile seller attribution and repeat the unchanged core KPI check.
+
+Do not run the seller repair before the Full Sync: an old raw Deal without an
+`observers` property cannot distinguish “not fetched” from “no observers.”
+
+The normal rebuild ignores legacy snapshots sourced only from
 `CURRENT_RESPONSIBLE`; those records resolve from stronger evidence or move to
-the explicit Unknown seller bucket. Correct `CUSTOM_FIELD` and `STAGE_MOVER`
-snapshots remain frozen. An old `STAGE_MOVER` snapshot captured after the Deal
+the explicit Unknown seller bucket. Correct `CUSTOM_FIELD`, `STAGE_MOVER` and
+`POST_SALE_OBSERVER` snapshots remain frozen. An old `STAGE_MOVER` snapshot captured after the Deal
 had already entered post-sale cannot be distinguished from one captured in the
 payment stage with the current schema. Those exceptional rows require an
 evidence-led audit/correction; neither Backfill nor Full Sync can safely guess

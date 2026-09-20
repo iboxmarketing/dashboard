@@ -54,7 +54,7 @@ function buildPostSale(deal: Record<string, unknown>, snapshots?: Map<string, Sa
       { OWNER_ID: "1", CATEGORY_ID: POST_SALE, STAGE_ID: "SUPPORT", CREATED_TIME: JAN_12 },
     ],
     settings: { ...defaultSettings, selectedPipelineIds: [MAIN], postSalePipelineIds: [POST_SALE], salesManagerField },
-    users: new Map([["7", "Ali"], ["20", "Madina"]]),
+    users: new Map([["7", "Ali"], ["9", "Sanjar"], ["20", "Madina"]]),
     pipelines: new Map([[MAIN, "IBOX Sales"], [POST_SALE, "IBOX Обучение/Сопровождение"]]),
     stages: new Map([["PAYMENT", "Оплата получена"], ["SUPPORT", "Сопровождение"]]),
     sources: new Map(), snapshots, domain: null, stageHistoryAvailable: true,
@@ -220,6 +220,93 @@ test("Case 7c: oldin to‘g‘ri muzlatilgan Ali post-sale owner bilan qayta yoz
   const row = buildPostSale({ MOVED_BY_ID: "20", ASSIGNED_BY_ID: "20" }, snapshot("7"));
   assert.equal(row.salesManagerId, "7");
   assert.equal(row.salesManagerAttribution, "CUSTOM_FIELD");
+});
+
+test("observer A: Ali sotadi, post-sale observer Ali va assignee Madina — seller Ali", () => {
+  const row = buildPostSale({ observers: [7], ASSIGNED_BY_ID: "20", MOVED_BY_ID: "20" }, snapshot(null));
+  assert.equal(row.salesStatus, "WON");
+  assert.equal(row.salesManagerId, "7");
+  assert.equal(row.salesManager, "Ali");
+  assert.equal(row.salesManagerAttribution, "POST_SALE_OBSERVER");
+  assert.equal(row.assignedManagerId, "20");
+});
+
+test("observer B: observer va current assignee bir odam bo‘lsa handoff dalili emas", () => {
+  const row = buildPostSale({ observers: [7], ASSIGNED_BY_ID: "7", MOVED_BY_ID: "7" });
+  assert.equal(row.salesManagerId, null);
+  assert.equal(row.salesManagerAttribution, "UNKNOWN");
+});
+
+test("observer C: observer yo‘q bo‘lsa Unknown", () => {
+  const row = buildPostSale({ observers: [], ASSIGNED_BY_ID: "20" });
+  assert.equal(row.salesManagerId, null);
+  assert.equal(row.salesManagerAttribution, "UNKNOWN");
+});
+
+test("observer D: bir nechta observer bo‘lsa taxmin qilinmaydi", () => {
+  const row = buildPostSale({ observers: [7, 9], ASSIGNED_BY_ID: "20" });
+  assert.equal(row.salesManagerId, null);
+  assert.equal(row.salesManagerAttribution, "UNKNOWN");
+});
+
+test("observer E: trustworthy payment snapshot current observer’dan ustun", () => {
+  const trustedPayment = new Map<string, SalesSnapshot>([["1", {
+    dealId: "1", wonAt: JAN_10, managerId: "7", managerName: "Ali", attributionSource: "STAGE_MOVER",
+  }]]);
+  const row = buildPostSale(
+    { observers: [9], ASSIGNED_BY_ID: "20", MOVED_BY_ID: "20" },
+    trustedPayment,
+  );
+  assert.equal(row.salesManagerId, "7");
+  assert.equal(row.salesManager, "Ali");
+  assert.equal(row.salesManagerAttribution, "STAGE_MOVER");
+});
+
+test("approved stable custom seller field observer’dan ustun", () => {
+  const row = buildPostSale({ [SELLER_FIELD]: "9", observers: [7], ASSIGNED_BY_ID: "20" });
+  assert.equal(row.salesManagerId, "9");
+  assert.equal(row.salesManager, "Sanjar");
+  assert.equal(row.salesManagerAttribution, "CUSTOM_FIELD");
+});
+
+test("observer F: unsafe ASSIGNED_BY_ID config observer dalilini bosib ketmaydi", () => {
+  const row = buildPostSale(
+    { observers: [7], ASSIGNED_BY_ID: "20", MOVED_BY_ID: "20" },
+    undefined,
+    "ASSIGNED_BY_ID",
+  );
+  assert.equal(row.salesManagerId, "7");
+  assert.equal(row.salesManagerAttribution, "POST_SALE_OBSERVER");
+  assert.notEqual(row.salesManagerId, row.assignedManagerId);
+});
+
+test("observer G: seller recovery Lead/SQL/NR/Lost/Sales/wonAt/Opportunity/Revenue’ni o‘zgartirmaydi", () => {
+  const deal = { ASSIGNED_BY_ID: "20", MOVED_BY_ID: "20", OPPORTUNITY: 559_000, CURRENCY_ID: "UZS" };
+  const before = buildPostSale({ ...deal, observers: [] }, snapshot(null));
+  const after = buildPostSale({ ...deal, observers: [7] }, snapshot(null));
+  const beforeMetrics = buildDashboardMetrics([before], [before]);
+  const afterMetrics = buildDashboardMetrics([after], [after]);
+
+  assert.deepEqual(afterMetrics.counts, beforeMetrics.counts,
+    "Lead, SQL, Not Relevant, Sales Lost and both Sales populations are unchanged");
+  assert.deepEqual(afterMetrics.money, beforeMetrics.money, "revenue is unchanged");
+  assert.equal(after.wonAt, before.wonAt);
+  assert.equal(after.opportunity, before.opportunity);
+  assert.equal(after.salesManagerId, "7");
+  assert.equal(before.salesManagerId, null);
+});
+
+test("observer evidence can upgrade only an untrusted CURRENT_RESPONSIBLE snapshot", { skip: !DatabaseSync }, () => {
+  const raw = new DatabaseSync!(":memory:");
+  raw.exec(readFileSync(new URL("../drizzle/0002_flawless_king_cobra.sql", import.meta.url), "utf8").replace(/-->.*$/gm, ""));
+  raw.prepare("INSERT INTO deal_sales_snapshots(deal_id, won_at, manager_id, manager_name, attribution_source, created_at) VALUES(?, ?, ?, ?, ?, ?)")
+    .run("1", JAN_10, "20", "Madina", "CURRENT_RESPONSIBLE", "2026-01-10T13:00:00.000Z");
+  raw.prepare(SALES_SNAPSHOT_UPSERT)
+    .run("1", JAN_12, "7", "Ali", "POST_SALE_OBSERVER", "2026-06-01T00:00:00.000Z");
+  const row = raw.prepare("SELECT * FROM deal_sales_snapshots").get()! as Record<string, string>;
+  assert.equal(row.manager_id, "7");
+  assert.equal(row.attribution_source, "POST_SALE_OBSERVER");
+  assert.equal(row.won_at, JAN_10);
 });
 
 test("Case 8: Full Sync eski A5 qatorlarini ta’mirlaydi (uchtan-uchi)", { skip: !DatabaseSync }, () => {

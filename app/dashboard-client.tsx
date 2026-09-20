@@ -2457,11 +2457,6 @@ export default function DashboardClient() {
   const openPage = pages.find((page) => page.id === openPageId) ?? null;
   const openPageWidgets = openPage ? pageWidgets(widgets, openPage.id) : [];
   const hasLegacyData = records.some((record) => record.analyticsVersion < ANALYTICS_VERSION);
-  // v8+ already has the raw Deal/history coverage needed for the v10 seller
-  // safety correction, so an analytics-only Backfill is sufficient. Older
-  // persisted semantics may still require the broader Full Sync path documented
-  // for their release; do not overstate v10's API requirement in the banner.
-  const sellerBackfillOnly = hasLegacyData && records.every((record) => record.analyticsVersion >= 8);
   const syncOptions = settings.selectedPipelineIds.map((id, index) => ({ id, name: settings.selectedPipelineNames[index] ?? `Sales funnel #${id}` }));
   const activeSyncPipelineId = syncOptions.some((pipeline) => pipeline.id === syncPipelineId) ? syncPipelineId : syncOptions[0]?.id ?? "";
 
@@ -2477,9 +2472,7 @@ export default function DashboardClient() {
       <header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)}><Menu size={20} /></button><div><span>Bitrix24</span><small>/</small><strong>{title}</strong></div><div className="top-actions">{!isManagementView(view) && <><span className="sync-time">Oxirgi sinxronizatsiya: <strong>{fmtDate(sync.lastSyncAt)}</strong></span><Select label="Sinxronizatsiya funnel" value={activeSyncPipelineId} onChange={setSyncPipelineId}>{syncOptions.map((pipeline) => <option key={pipeline.id} value={pipeline.id}>{pipeline.name}</option>)}</Select><button className="button secondary refresh" onClick={refresh}>{sync.status === "running" ? <TimerReset size={17} /> : refreshing ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}{sync.status === "running" ? "Pauza" : "Tanlangan funnelni sinxronlash"}</button></>}<div className="avatar">IM</div></div></header>
       <div className="content-inner">
         {loadError && <div className="notice error page-notice"><XCircle size={18} />{loadError}<button onClick={() => setLoadError(null)}><X size={14} /></button></div>}
-        {hasLegacyData && sync.status !== "running" && <div className="notice warning page-notice"><AlertTriangle size={18} /><span>{sellerBackfillOnly
-          ? <>Seller attribution yangilanishi uchun <strong>Analytics Backfill</strong> talab qilinadi; Full Sync shart emas.</>
-          : <>Eski sync ma’lumotlari bor. Yangi sales analytics to‘liq ishlashi uchun Sozlamalarda CRM field’larini tekshirib, <strong>“To‘liq qayta sync”</strong>ni bosing.</>}</span>{!sellerBackfillOnly && <button onClick={() => setView("settings")}>Sozlamalar</button>}</div>}
+        {hasLegacyData && sync.status !== "running" && <div className="notice warning page-notice"><AlertTriangle size={18} /><span>Post-sale observer seller dalilini yuklash uchun Sozlamalarda CRM field’larini tekshirib, <strong>“To‘liq qayta sync”</strong>ni bosing. Analytics Backfill observer’ni Bitrix’dan yuklamaydi.</span><button onClick={() => setView("settings")}>Sozlamalar</button></div>}
         {["running", "paused", "error"].includes(sync.status) && <SyncProgress sync={sync} busy={refreshing} onPause={() => void pauseCurrentSync()} onResume={() => void syncLoop("resume")} />}
         {isSalesView(view) && <FiltersBar filters={filters} setFilters={setFilters} records={records} currentStages={effectiveCurrentStages} mode={view === "stages" ? "current" : "cohort"} />}
         {isSalesView(view) && <CoverageNotice records={records} filters={filters} />}

@@ -5,6 +5,7 @@ import { sqlThresholdsByCategory, type StageMeta, type StageSemantics } from "./
 import { canonicalDealFieldKey } from "./crm-fields";
 import { decideCanonicalLeadMembership } from "./canonical-lead-membership.js";
 import { normalizeSafeStableSellerField } from "./stable-seller-field";
+import { DEAL_OBSERVERS_FIELD, singlePostSaleObserverId } from "./deal-observers";
 import type { SalesSnapshot } from "./storage";
 import type { AnalyticsRecord, DashboardSettings, ProcessingSource, SalesManagerAttribution } from "./types";
 
@@ -45,8 +46,13 @@ import type { AnalyticsRecord, DashboardSettings, ProcessingSource, SalesManager
  *      owners such as ASSIGNED_BY_ID can no longer be read and mislabeled as
  *      CUSTOM_FIELD seller evidence. Existing unsafe snapshots are repaired
  *      only through the explicit reviewed-ID invalidation workflow.
+ * 11 — A won Deal currently in its paired post-sale category may recover the
+ *      commercial seller from the universal Bitrix `observers` user[] field,
+ *      but only when it contains exactly one valid user distinct from the
+ *      current operational assignee. Observer evidence is explicit and never
+ *      masquerades as a custom field.
  */
-export const ANALYTICS_VERSION = 10;
+export const ANALYTICS_VERSION = 11;
 
 export type RawDeal = Record<string, unknown>;
 export type RawActivity = Record<string, unknown>;
@@ -258,6 +264,9 @@ export function buildAnalyticsRecords(input: {
       ? employeeId(deal[salesManagerField] ?? deal[safeSellerField as string])
       : "";
     const moverId = string(deal.MOVED_BY_ID);
+    const postSaleObserverId = salesStatus === "WON" && postSaleIds.has(currentCategoryId)
+      ? singlePostSaleObserverId(deal[DEAL_OBSERVERS_FIELD], assignedManagerId)
+      : "";
     // Two different immutability rules. The sale date is frozen as soon as a
     // snapshot exists, but seller attribution is frozen only once a real seller
     // was actually resolved: a snapshot holding an UNKNOWN seller must not block
@@ -270,6 +279,8 @@ export function buildAnalyticsRecords(input: {
     // bad legacy CUSTOM_FIELD/FIRST_CALL snapshot is not weakened globally:
     // the reviewed-ID repair first clears only its seller fields to UNKNOWN,
     // after which this normal unresolved-snapshot fallback chain applies.
+    // Newly resolved POST_SALE_OBSERVER snapshots join CUSTOM_FIELD and
+    // STAGE_MOVER as immutable trustworthy evidence.
     const snapshotManagerId = snapshot?.attributionSource === "CURRENT_RESPONSIBLE" ? "" : snapshot?.managerId ?? "";
     let salesManagerId = snapshotManagerId;
     let salesManager = snapshotManagerId ? snapshot?.managerName ?? "" : "";
@@ -280,9 +291,13 @@ export function buildAnalyticsRecords(input: {
     // so it is sale-time evidence only while that current stage is payment.
     // Once a won Deal has moved to post-sale, both MOVED_BY_ID and
     // ASSIGNED_BY_ID can belong to onboarding/support and must never be frozen
-    // as the seller. Unknown is an honest, reportable result in that case.
+    // as the seller. A single distinct observer is the owner's confirmed CRM
+    // handoff evidence; an empty/ambiguous observer list remains Unknown.
     else if (!snapshotManagerId && moverId && (salesStatus !== "WON" || currentStageIsPayment) && mainIds.has(currentCategoryId)) {
       salesManagerId = moverId; salesManagerAttribution = "STAGE_MOVER";
+    }
+    else if (!snapshotManagerId && postSaleObserverId) {
+      salesManagerId = postSaleObserverId; salesManagerAttribution = "POST_SALE_OBSERVER";
     }
     // Current responsibility remains useful for not-yet-won Sales-funnel work
     // (including ordinary Sales Lost), but is operational evidence, never a

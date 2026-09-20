@@ -11,7 +11,7 @@
  *    existing sale date can never be replaced by a later recalculation;
  *  - the seller fields are updated only while the stored seller is unresolved,
  *    or when repairing the legacy CURRENT_RESPONSIBLE guess with stronger
- *    custom-field/current-payment-mover evidence.
+ *    custom-field/current-payment-mover/post-sale-observer evidence.
  *
  * The guard makes the statement idempotent: once a trustworthy manager source
  * is stored the conflict clause stops matching, so repeated syncs are a no-op.
@@ -28,7 +28,7 @@ WHERE excluded.manager_id IS NOT NULL
     deal_sales_snapshots.manager_id IS NULL
     OR (
       deal_sales_snapshots.attribution_source = 'CURRENT_RESPONSIBLE'
-      AND excluded.attribution_source IN ('CUSTOM_FIELD', 'STAGE_MOVER')
+      AND excluded.attribution_source IN ('CUSTOM_FIELD', 'STAGE_MOVER', 'POST_SALE_OBSERVER')
     )
   )
 `;
