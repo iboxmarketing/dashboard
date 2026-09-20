@@ -1,4 +1,5 @@
 import { getSettings, getSyncState, listDashboardRecordJson, listProviderDiagnostics } from "@/lib/storage";
+import { authorizeAnyPermission } from "@/lib/auth/http";
 
 /**
  * The record rows arrive from D1 as JSON strings that are already in their
@@ -6,7 +7,9 @@ import { getSettings, getSyncState, listDashboardRecordJson, listProviderDiagnos
  * objects and serialised again. Parsing and re-serialising 1,699 records cost
  * ~38 ms of Worker CPU and produced exactly the text D1 had already given us.
  */
-export async function GET() {
+export async function GET(request: Request) {
+  const denied = await authorizeAnyPermission(request, ["dashboard", "managers", "leadFlow", "quality", "deals"]);
+  if (denied) return denied;
   try {
     const [rows, settings, sync, providers] = await Promise.all([
       listDashboardRecordJson(),

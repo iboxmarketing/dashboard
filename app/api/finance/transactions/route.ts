@@ -1,8 +1,11 @@
 import { financeApiError, financeId, financePayload } from "@/lib/finance/api";
 import { createFinanceTransaction, getFinanceTransaction, listFinanceTransactions, updateFinanceTransaction } from "@/lib/finance/storage";
 import { normalizeFinanceDate, validateTransactionInput } from "@/lib/finance/validation";
+import { authorizePermission } from "@/lib/auth/http";
 
 export async function GET(request: Request) {
+  const denied = await authorizePermission(request, "finance");
+  if (denied) return denied;
   try {
     const params = new URL(request.url).searchParams;
     const rawFrom = params.get("from");
@@ -19,6 +22,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const denied = await authorizePermission(request, "finance");
+  if (denied) return denied;
   try {
     const parsed = validateTransactionInput(await financePayload(request));
     if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 });
@@ -27,6 +32,8 @@ export async function POST(request: Request) {
 }
 
 export async function PATCH(request: Request) {
+  const denied = await authorizePermission(request, "finance");
+  if (denied) return denied;
   try {
     const payload = await financePayload(request);
     const id = financeId(payload);

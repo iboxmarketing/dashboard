@@ -57,6 +57,13 @@
       "when": 1789920000000,
       "tag": "0007_finance_core",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1790208000000,
+      "tag": "0008_auth_core",
+      "breakpoints": true
     }
   ]
 }

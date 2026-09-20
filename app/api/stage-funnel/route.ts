@@ -1,4 +1,5 @@
 import { listStageFunnelJson } from "@/lib/storage";
+import { authorizePermission } from "@/lib/auth/http";
 
 /**
  * Stage history for the Stage Control funnel only, fetched when that view is
@@ -6,7 +7,9 @@ import { listStageFunnelJson } from "@/lib/storage";
  * Manager, Source, Pipeline and search filters read — never the full record,
  * and never on the dashboard's initial load.
  */
-export async function GET() {
+export async function GET(request: Request) {
+  const denied = await authorizePermission(request, "stages");
+  if (denied) return denied;
   try {
     const rows = await listStageFunnelJson();
     return new Response(`{"records":[${rows.join(",")}]}`, { headers: { "content-type": "application/json" } });

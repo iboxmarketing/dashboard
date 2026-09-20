@@ -1,5 +1,5 @@
-import DashboardClient from "./dashboard-client";
+import AuthClient from "./auth-client";
 
 export default function Home() {
-  return <DashboardClient />;
+  return <AuthClient />;
 }

@@ -2,13 +2,16 @@ import { bitrixList, getBitrixDomain, safeBitrixMessage } from "@/lib/bitrix";
 import { buildCurrentStageRecords, reconcileCurrentStages, type RawCurrentStageDeal } from "@/lib/current-stages";
 import { getDictionary, getSettings, listAnalyticsRecords } from "@/lib/storage";
 import { listPipelineStages } from "@/lib/sync";
+import { authorizePermission } from "@/lib/auth/http";
 
 function value(row: Record<string, unknown>, key: string) {
   const raw = row[key];
   return raw === null || raw === undefined ? "" : String(raw);
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const denied = await authorizePermission(request, "stages");
+  if (denied) return denied;
   let truncated = false;
   try {
     const settings = await getSettings();

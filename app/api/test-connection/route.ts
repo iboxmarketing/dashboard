@@ -1,5 +1,6 @@
 import { bitrixCall, getBitrixDomain, getWebhookUrl, safeBitrixMessage } from "@/lib/bitrix";
 import { saveSyncState } from "@/lib/storage";
+import { authorizePermission } from "@/lib/auth/http";
 
 type Check = "ok" | "warning" | "error";
 
@@ -12,7 +13,9 @@ async function test(method: string, params: Record<string, unknown>, optional = 
   }
 }
 
-export async function POST() {
+export async function POST(request: Request) {
+  const denied = await authorizePermission(request, "settings");
+  if (denied) return denied;
   if (!getWebhookUrl()) {
     return Response.json({ configured: false, error: "Bitrix24 webhook ulanmagan" }, { status: 400 });
   }
@@ -36,4 +39,3 @@ export async function POST() {
     return Response.json({ configured: true, bitrix: "error", error: safeBitrixMessage(error) }, { status: 400 });
   }
 }
-

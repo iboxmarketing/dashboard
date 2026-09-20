@@ -5,12 +5,15 @@ import {
 } from "@/lib/finance/storage";
 import { buildFinanceSummary } from "@/lib/finance/summary";
 import { normalizeFinanceDate, validateFinanceRange } from "@/lib/finance/validation";
+import { authorizePermission } from "@/lib/auth/http";
 
 const dayFormatter = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Tashkent", year: "numeric", month: "2-digit", day: "2-digit",
 });
 
 export async function GET(request: Request) {
+  const denied = await authorizePermission(request, "finance");
+  if (denied) return denied;
   try {
     const params = new URL(request.url).searchParams;
     const range = validateFinanceRange(params.get("from"), params.get("to"));
