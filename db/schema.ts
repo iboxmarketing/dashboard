@@ -1,4 +1,5 @@
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
+import { check, index, integer, sqliteTable, text, type AnySQLiteColumn } from "drizzle-orm/sqlite-core";
 
 export const appSettings = sqliteTable("app_settings", {
   key: text("key").primaryKey(),
@@ -182,3 +183,99 @@ export const pageShareWidgets = sqliteTable("page_share_widgets", {
   shareId: text("share_id").notNull(),
   widgetId: text("widget_id").notNull(),
 });
+
+// Finance is an independent ledger domain. No Finance table references CRM,
+// analytics_records, Sales snapshots, or the management `projects` table.
+export const financeCurrencies = sqliteTable("finance_currencies", {
+  code: text("code").primaryKey(),
+  name: text("name").notNull(),
+  minorUnit: integer("minor_unit").notNull(),
+  symbol: text("symbol").notNull(),
+  archived: integer("archived", { mode: "boolean" }).notNull().default(false),
+}, (table) => [
+  check("finance_currencies_minor_unit_check", sql`${table.minorUnit} BETWEEN 0 AND 6`),
+]);
+
+export const financeAccounts = sqliteTable("finance_accounts", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  type: text("type").notNull(),
+  currencyCode: text("currency_code").notNull().references(() => financeCurrencies.code, { onDelete: "restrict", onUpdate: "restrict" }),
+  openingBalanceMinor: integer("opening_balance_minor").notNull(),
+  archived: integer("archived", { mode: "boolean" }).notNull().default(false),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const financeCategories = sqliteTable("finance_categories", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  kind: text("kind").notNull(),
+  parentId: text("parent_id").references((): AnySQLiteColumn => financeCategories.id, { onDelete: "restrict", onUpdate: "restrict" }),
+  archived: integer("archived", { mode: "boolean" }).notNull().default(false),
+  sortOrder: integer("sort_order").notNull().default(0),
+}, (table) => [
+  index("finance_categories_parent_idx").on(table.parentId),
+  index("finance_categories_kind_idx").on(table.kind),
+]);
+
+export const financeProjects = sqliteTable("finance_projects", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  description: text("description"),
+  archived: integer("archived", { mode: "boolean" }).notNull().default(false),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const financeTransactions = sqliteTable("finance_transactions", {
+  id: text("id").primaryKey(),
+  date: text("date").notNull(),
+  type: text("type").notNull(),
+  note: text("note").notNull().default(""),
+  projectId: text("project_id").references(() => financeProjects.id, { onDelete: "restrict", onUpdate: "restrict" }),
+  accountId: text("account_id").references(() => financeAccounts.id, { onDelete: "restrict", onUpdate: "restrict" }),
+  amountMinor: integer("amount_minor"),
+  currencyCode: text("currency_code").references(() => financeCurrencies.code, { onDelete: "restrict", onUpdate: "restrict" }),
+  categoryId: text("category_id").references(() => financeCategories.id, { onDelete: "restrict", onUpdate: "restrict" }),
+  fromAccountId: text("from_account_id").references(() => financeAccounts.id, { onDelete: "restrict", onUpdate: "restrict" }),
+  toAccountId: text("to_account_id").references(() => financeAccounts.id, { onDelete: "restrict", onUpdate: "restrict" }),
+  sourceAmountMinor: integer("source_amount_minor"),
+  sourceCurrencyCode: text("source_currency_code").references(() => financeCurrencies.code, { onDelete: "restrict", onUpdate: "restrict" }),
+  destinationAmountMinor: integer("destination_amount_minor"),
+  destinationCurrencyCode: text("destination_currency_code").references(() => financeCurrencies.code, { onDelete: "restrict", onUpdate: "restrict" }),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  index("finance_transactions_date_idx").on(table.date),
+  index("finance_transactions_account_idx").on(table.accountId),
+  index("finance_transactions_from_account_idx").on(table.fromAccountId),
+  index("finance_transactions_to_account_idx").on(table.toAccountId),
+  index("finance_transactions_category_idx").on(table.categoryId),
+  index("finance_transactions_project_idx").on(table.projectId),
+]);
+
+export const financeSubscriptions = sqliteTable("finance_subscriptions", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  direction: text("direction").notNull(),
+  accountId: text("account_id").notNull().references(() => financeAccounts.id, { onDelete: "restrict", onUpdate: "restrict" }),
+  categoryId: text("category_id").notNull().references(() => financeCategories.id, { onDelete: "restrict", onUpdate: "restrict" }),
+  projectId: text("project_id").references(() => financeProjects.id, { onDelete: "restrict", onUpdate: "restrict" }),
+  amountMinor: integer("amount_minor").notNull(),
+  currencyCode: text("currency_code").notNull().references(() => financeCurrencies.code, { onDelete: "restrict", onUpdate: "restrict" }),
+  cadence: text("cadence").notNull(),
+  intervalMonths: integer("interval_months"),
+  nextDueDate: text("next_due_date").notNull(),
+  startDate: text("start_date").notNull(),
+  endDate: text("end_date"),
+  archived: integer("archived", { mode: "boolean" }).notNull().default(false),
+  note: text("note"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  index("finance_subscriptions_next_due_idx").on(table.nextDueDate),
+  index("finance_subscriptions_account_idx").on(table.accountId),
+  index("finance_subscriptions_category_idx").on(table.categoryId),
+  index("finance_subscriptions_project_idx").on(table.projectId),
+]);
