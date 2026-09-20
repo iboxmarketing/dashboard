@@ -127,3 +127,109 @@ test("the manifest builder never writes to a database or calls an API", async ()
   assert.deepEqual([...source.matchAll(/from "([^"]+)"/g)].map((m) => m[1]).filter((s) => s.startsWith(".")), [],
     "no local imports: the manifest is derived purely from the exports it is given");
 });
+
+// ------------------------------- conservative refinement: no config assumption ---
+
+import { EVIDENCE, FINAL_BUCKETS, SALES_DEPARTMENTS, classifyConservative, roleOf } from "../scripts/seller-repair-manifest.mjs";
+
+const user = (over = {}) => ({ ID: "7", WORK_POSITION: "Sales Manager", UF_DEPARTMENT: [195], ...over });
+const cons = (over = {}) => classifyConservative({
+  snapshot: snap(over.snapshot), record: over.record === undefined ? rec() : over.record,
+  raw: over.raw ?? null, postSaleEnteredAt: over.postSaleEnteredAt ?? null,
+  user: over.user === undefined ? user() : over.user,
+  paymentStageIds: PAY, postSaleCategoryId: "13", priorBucket: over.priorBucket ?? null,
+});
+
+test("a job title proves the role, independently of any dashboard configuration", () => {
+  assert.deepEqual(roleOf(user({ WORK_POSITION: "Sales Manager" })), { role: "SELLER", basis: "WORK_POSITION=Sales Manager", proven: true });
+  assert.equal(roleOf(user({ WORK_POSITION: "Customer Care Specialist", UF_DEPARTMENT: [43] })).role, "NON_SELLER");
+  assert.equal(roleOf(user({ WORK_POSITION: "iBox оператор", UF_DEPARTMENT: [27] })).role, "NON_SELLER");
+  assert.equal(roleOf(user({ WORK_POSITION: "Customer Retention Manager" })).role, "NON_SELLER");
+  assert.equal(roleOf(user({ WORK_POSITION: "Marketing", UF_DEPARTMENT: [1] })).role, "NON_SELLER");
+});
+
+test("'Customer Care Team Lead' is customer care, not a sales team lead", () => {
+  // Regression: the seller pattern used to match "Team Lead" inside this title
+  // and promoted a Customer Care lead to SELLER.
+  const r = roleOf(user({ WORK_POSITION: "Customer Care Team Lead", UF_DEPARTMENT: [27] }));
+  assert.equal(r.role, "NON_SELLER");
+  assert.equal(r.proven, true);
+});
+
+test("a bare Teamlead is a seller only inside a sales department", () => {
+  assert.equal(roleOf(user({ WORK_POSITION: "Teamlead", UF_DEPARTMENT: [195] })).role, "SELLER");
+  assert.equal(roleOf(user({ WORK_POSITION: "Teamlead", UF_DEPARTMENT: [43] })).role, "UNKNOWN", "a lead outside sales proves nothing");
+  assert.ok(SALES_DEPARTMENTS.includes(197));
+});
+
+test("a blank job title falls back to the department as corroboration, never as proof", () => {
+  const care = roleOf(user({ WORK_POSITION: "", UF_DEPARTMENT: [27] }));
+  assert.equal(care.role, "NON_SELLER");
+  assert.equal(care.proven, false, "department is corroboration only");
+  assert.equal(roleOf(user({ WORK_POSITION: null, UF_DEPARTMENT: [1] })).role, "UNKNOWN", "a mixed department signals nothing");
+  assert.equal(roleOf(undefined).role, "UNKNOWN");
+  assert.equal(roleOf(undefined).basis, "USER_NOT_IN_CACHED_DIRECTORY");
+});
+
+test("a CUSTOM_FIELD row is auto-clearable when the frozen person cannot be a seller by job title", () => {
+  const r = cons({ snapshot: { attributionSource: "CUSTOM_FIELD" }, user: user({ WORK_POSITION: "Customer Care Specialist", UF_DEPARTMENT: [43] }) });
+  assert.equal(r.bucket, FINAL_BUCKETS.AUTO);
+  assert.equal(r.evidence, EVIDENCE.PROVEN);
+  assert.equal(r.reason, "FROZEN_MANAGER_IS_NOT_A_SELLER_BY_JOB_TITLE");
+});
+
+test("a CUSTOM_FIELD row is auto-clearable when timing proves the value is post-sale identity", () => {
+  const r = cons({
+    snapshot: { attributionSource: "CUSTOM_FIELD", managerId: "88", frozenAt: "2026-09-16T05:00:00Z" },
+    record: rec({ categoryId: "13", stageId: "C13:NEW", assignedId: "88" }),
+    postSaleEnteredAt: "2026-09-14T05:00:00Z",
+    user: user({ WORK_POSITION: "", UF_DEPARTMENT: [1] }),
+  });
+  assert.equal(r.bucket, FINAL_BUCKETS.AUTO);
+  assert.equal(r.reason, "FROZEN_AFTER_POST_SALE_ENTRY_AND_EQUALS_POST_SALE_OWNER");
+});
+
+test("a CUSTOM_FIELD row naming a PROVEN SELLER is never auto-cleared — clearing would discard good data", () => {
+  const r = cons({ snapshot: { attributionSource: "CUSTOM_FIELD" }, user: user({ WORK_POSITION: "Sales Manager" }) });
+  assert.equal(r.bucket, FINAL_BUCKETS.REVIEW);
+  assert.equal(r.evidence, EVIDENCE.INSUFFICIENT);
+  assert.equal(r.reason, "SOURCE_UNPROVEN_BUT_FROZEN_MANAGER_IS_A_PROVEN_SELLER");
+});
+
+test("CUSTOM_FIELD rows that are only suspicious go to the owner, not to auto-clear", () => {
+  const dept = cons({ snapshot: { attributionSource: "CUSTOM_FIELD" }, user: user({ WORK_POSITION: "", UF_DEPARTMENT: [27] }) });
+  assert.equal(dept.bucket, FINAL_BUCKETS.OWNER);
+  assert.equal(dept.evidence, EVIDENCE.STRONG);
+  assert.equal(dept.reason, "FROZEN_MANAGER_IN_CUSTOMER_CARE_DEPARTMENT_BUT_NO_JOB_TITLE");
+
+  const unknown = cons({ snapshot: { attributionSource: "CUSTOM_FIELD" }, user: null });
+  assert.equal(unknown.bucket, FINAL_BUCKETS.OWNER);
+  assert.equal(unknown.reason, "FROZEN_MANAGER_ROLE_UNKNOWN_AND_SOURCE_UNPROVEN");
+  // Neither may ever be silently auto-cleared.
+  for (const b of [dept.bucket, unknown.bucket]) assert.notEqual(b, FINAL_BUCKETS.AUTO);
+});
+
+test("an uncorroborated FIRST_CALL row is cleared by approved policy, whatever the role", () => {
+  for (const position of ["Sales Manager", "Customer Care Specialist", ""]) {
+    const r = cons({ snapshot: { attributionSource: "FIRST_CALL" }, user: user({ WORK_POSITION: position }) });
+    assert.equal(r.bucket, FINAL_BUCKETS.AUTO, position);
+    assert.equal(r.reason, "POLICY_FIRST_CALL_NOT_ACCEPTED_AS_SELLER_EVIDENCE");
+  }
+});
+
+test("payment-stage evidence is kept, unless it contradicts the person's role", () => {
+  const kept = cons({ priorBucket: BUCKETS.TRUSTWORTHY, user: user({ WORK_POSITION: "Sales Manager" }) });
+  assert.equal(kept.bucket, FINAL_BUCKETS.KEEP);
+
+  const conflict = cons({ priorBucket: BUCKETS.TRUSTWORTHY, user: user({ WORK_POSITION: "Customer Care Team Lead", UF_DEPARTMENT: [27] }) });
+  assert.equal(conflict.bucket, FINAL_BUCKETS.REVIEW);
+  assert.equal(conflict.reason, "CONFLICT_PAYMENT_EVIDENCE_BUT_NON_SELLER_ROLE");
+  assert.notEqual(conflict.bucket, FINAL_BUCKETS.AUTO, "a conflict is never auto-cleared either");
+});
+
+test("the conservative classifier never consults the current dashboard configuration", async () => {
+  const source = await readFile(new URL("../scripts/seller-repair-manifest.mjs", import.meta.url), "utf8");
+  const fn = source.slice(source.indexOf("export function classifyConservative"));
+  assert.doesNotMatch(fn, /salesManagerField|configuredFieldWasAssignedBy/,
+    "the conservative path must not depend on the setting, whose history is unknown");
+});

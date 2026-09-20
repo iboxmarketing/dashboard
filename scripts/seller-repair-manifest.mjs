@@ -184,3 +184,123 @@ export async function build({ inDir, outDir, cohortFrom, cohortTo, paymentStageI
     outDir,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Conservative refinement: remove the historical-configuration assumption.
+//
+// `app_settings` keeps no history, so "salesManagerField is ASSIGNED_BY_ID
+// today" cannot prove what it was when each snapshot froze. The buckets below
+// therefore rest on per-Deal and per-person evidence that holds whatever the
+// setting was, and every row whose invalidity depends only on the config
+// assumption is routed to an owner decision or to human review instead.
+// ---------------------------------------------------------------------------
+
+export const EVIDENCE = Object.freeze({
+  PROVEN: "PROVEN_INVALID",
+  STRONG: "STRONGLY_SUSPICIOUS_BUT_NOT_PROVEN",
+  INSUFFICIENT: "INSUFFICIENT_EVIDENCE",
+});
+
+export const FINAL_BUCKETS = Object.freeze({
+  AUTO: "SAFE_TO_CLEAR_BY_POLICY_OR_PROOF",
+  OWNER: "OWNER_APPROVAL_REQUIRED_TO_CLEAR",
+  KEEP: "KEEP_TRUSTWORTHY",
+  REVIEW: "HUMAN_REVIEW_REQUIRED",
+});
+
+/** Job titles that cannot be the commercial seller of an IBOX Sales deal. */
+// Checked FIRST and unconditionally: "Customer Care Team Lead" is customer care,
+// not a sales team lead, so this must outrank the seller pattern below.
+const NON_SELLER_POSITION = /customer\s*care|customer\s*retention|оператор|operator|support|саппорт|сап\b|marketing|маркет|automation|operations|integrator|интегратор|developer|разработ|qa\b|devops|recruiter|hrbp|finance|офис/i;
+/** Job titles that legitimately close sales. */
+const SELLER_POSITION = /sales|продаж|ka\s*manager|business\s*development/i;
+/** A bare "Teamlead" is a seller only inside a sales department. */
+const AMBIGUOUS_LEAD_POSITION = /teamlead|team\s*lead|руководитель/i;
+export const SALES_DEPARTMENTS = Object.freeze([195, 197, 17, 153]);
+/** Departments whose entire staff is customer care (corroboration, not proof). */
+export const CUSTOMER_CARE_DEPARTMENTS = Object.freeze([27, 43]);
+
+/**
+ * Role verdict for one employee, from the cached Bitrix users dictionary.
+ *
+ * `WORK_POSITION` is treated as proof because it is a per-person fact recorded
+ * in Bitrix, wholly independent of how the dashboard was configured. A blank
+ * position falls back to the department, which is corroboration only.
+ */
+export function roleOf(user) {
+  if (!user) return { role: "UNKNOWN", basis: "USER_NOT_IN_CACHED_DIRECTORY", proven: false };
+  const position = str(user.WORK_POSITION);
+  const departments = Array.isArray(user.UF_DEPARTMENT) ? user.UF_DEPARTMENT.map(Number) : [];
+  if (position && NON_SELLER_POSITION.test(position)) {
+    return { role: "NON_SELLER", basis: `WORK_POSITION=${position}`, proven: true };
+  }
+  if (position && SELLER_POSITION.test(position)) {
+    return { role: "SELLER", basis: `WORK_POSITION=${position}`, proven: true };
+  }
+  if (position && AMBIGUOUS_LEAD_POSITION.test(position)) {
+    return departments.length && departments.every((d) => SALES_DEPARTMENTS.includes(d))
+      ? { role: "SELLER", basis: `WORK_POSITION=${position} in sales department ${departments.join(",")}`, proven: true }
+      : { role: "UNKNOWN", basis: `WORK_POSITION=${position} outside a sales department`, proven: false };
+  }
+  if (departments.length && departments.every((d) => CUSTOMER_CARE_DEPARTMENTS.includes(d))) {
+    return { role: "NON_SELLER", basis: `UF_DEPARTMENT=${departments.join(",")} (customer-care only)`, proven: false };
+  }
+  return { role: "UNKNOWN", basis: position ? `WORK_POSITION=${position}` : "NO_POSITION_OR_DEPARTMENT_SIGNAL", proven: false };
+}
+
+/**
+ * Final bucket for one snapshot, never using the current configuration as proof.
+ *
+ * A CUSTOM_FIELD row is auto-clearable only when the frozen person is provably
+ * not a seller, or when timing proves the frozen value is post-sale operational
+ * identity. A CUSTOM_FIELD row naming a proven Sales Manager is deliberately NOT
+ * cleared: its source is unproven, but clearing it would most likely discard
+ * correct attribution.
+ */
+export function classifyConservative({ snapshot, record, postSaleEnteredAt, user, priorBucket }) {
+  const source = snapshot.attributionSource;
+  const role = roleOf(user);
+  const frozen = ms(snapshot.frozenAt);
+  const postSale = ms(postSaleEnteredAt);
+  const frozenAfterPostSale = frozen !== null && postSale !== null && frozen >= postSale;
+  const assignee = str(record?.assignedId);
+  const equalsAssignee = Boolean(snapshot.managerId && assignee && snapshot.managerId === assignee);
+  const out = (bucket, evidence, reason) => ({ bucket, evidence, reason, role: role.role, roleBasis: role.basis });
+
+  if (priorBucket === BUCKETS.TRUSTWORTHY) {
+    // Evidence-backed, but flag the contradiction rather than hiding it.
+    if (role.role === "NON_SELLER" && role.proven) {
+      return out(FINAL_BUCKETS.REVIEW, EVIDENCE.STRONG, "CONFLICT_PAYMENT_EVIDENCE_BUT_NON_SELLER_ROLE");
+    }
+    return out(FINAL_BUCKETS.KEEP, "EVIDENCE_BACKED", snapshot.attributionSource === "STAGE_MOVER" ? "MOVER_AT_PAYMENT_STAGE" : "FIRST_CALL_CORROBORATED_BY_PAYMENT_STAGE_MOVER");
+  }
+
+  if (source === "FIRST_CALL") {
+    // Config-independent: the approved semantics no longer accept a call as
+    // seller evidence, and these rows have no corroborating payment-stage mover.
+    return out(FINAL_BUCKETS.AUTO, EVIDENCE.PROVEN, "POLICY_FIRST_CALL_NOT_ACCEPTED_AS_SELLER_EVIDENCE");
+  }
+
+  if (source === "CUSTOM_FIELD") {
+    if (role.role === "NON_SELLER" && role.proven) {
+      return out(FINAL_BUCKETS.AUTO, EVIDENCE.PROVEN, `FROZEN_MANAGER_IS_NOT_A_SELLER_BY_JOB_TITLE`);
+    }
+    if (frozenAfterPostSale && equalsAssignee) {
+      return out(FINAL_BUCKETS.AUTO, EVIDENCE.PROVEN, "FROZEN_AFTER_POST_SALE_ENTRY_AND_EQUALS_POST_SALE_OWNER");
+    }
+    if (role.role === "NON_SELLER" && !role.proven) {
+      return out(FINAL_BUCKETS.OWNER, EVIDENCE.STRONG, "FROZEN_MANAGER_IN_CUSTOMER_CARE_DEPARTMENT_BUT_NO_JOB_TITLE");
+    }
+    if (role.role === "UNKNOWN") {
+      return out(FINAL_BUCKETS.OWNER, EVIDENCE.STRONG, "FROZEN_MANAGER_ROLE_UNKNOWN_AND_SOURCE_UNPROVEN");
+    }
+    // Proven seller: clearing would probably destroy correct attribution.
+    return out(FINAL_BUCKETS.REVIEW, EVIDENCE.INSUFFICIENT, "SOURCE_UNPROVEN_BUT_FROZEN_MANAGER_IS_A_PROVEN_SELLER");
+  }
+
+  // STAGE_MOVER without sale-time evidence, and anything unrecognised.
+  if (role.role === "NON_SELLER" && role.proven) {
+    return out(FINAL_BUCKETS.AUTO, EVIDENCE.PROVEN, "FROZEN_MANAGER_IS_NOT_A_SELLER_BY_JOB_TITLE");
+  }
+  return out(FINAL_BUCKETS.REVIEW, EVIDENCE.INSUFFICIENT, priorBucket === BUCKETS.UNKNOWN ? "NO_SALE_TIME_EVIDENCE" : "UNCLASSIFIED");
+}
