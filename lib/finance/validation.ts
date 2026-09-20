@@ -1,7 +1,8 @@
 import {
   ACCOUNT_TYPES, CATEGORY_KINDS, SUBSCRIPTION_CADENCES, SUBSCRIPTION_DIRECTIONS,
   TRANSACTION_TYPES,
-  type FinanceAccount, type FinanceCategory, type FinanceProject, type ValidationResult,
+  type FinanceAccountInput, type FinanceCategory, type FinanceCategoryInput,
+  type FinanceProjectInput, type FinanceSubscriptionInput, type FinanceTransactionInput, type ValidationResult,
 } from "./types";
 import { isSafeMinor, normalizeCurrencyCode } from "./money";
 
@@ -28,7 +29,7 @@ function enumValue<T extends readonly string[]>(value: unknown, allowed: T): T[n
   return allowed.includes(candidate as T[number]) ? candidate as T[number] : null;
 }
 
-export type AccountInput = Omit<FinanceAccount, "id" | "createdAt" | "updatedAt">;
+export type AccountInput = FinanceAccountInput;
 
 export function validateAccountInput(payload: unknown): ValidationResult<AccountInput> {
   const input = (payload ?? {}) as Record<string, unknown>;
@@ -42,7 +43,7 @@ export function validateAccountInput(payload: unknown): ValidationResult<Account
   return { ok: true, value: { name, type, currencyCode, openingBalanceMinor: input.openingBalanceMinor as number, archived: input.archived === true } };
 }
 
-export type CategoryInput = Omit<FinanceCategory, "id">;
+export type CategoryInput = FinanceCategoryInput;
 
 export function validateCategoryInput(payload: unknown): ValidationResult<CategoryInput> {
   const input = (payload ?? {}) as Record<string, unknown>;
@@ -66,7 +67,7 @@ export function validateCategoryHierarchy(candidate: CategoryInput & { id?: stri
   return { ok: true, value: candidate };
 }
 
-export type ProjectInput = Omit<FinanceProject, "id" | "createdAt" | "updatedAt">;
+export type ProjectInput = FinanceProjectInput;
 
 export function validateFinanceProjectInput(payload: unknown): ValidationResult<ProjectInput> {
   const input = (payload ?? {}) as Record<string, unknown>;
@@ -75,22 +76,7 @@ export function validateFinanceProjectInput(payload: unknown): ValidationResult<
   return { ok: true, value: { name, description: optionalText(input.description, NOTE_LIMIT), archived: input.archived === true } };
 }
 
-export type TransactionInput = {
-  date: string;
-  type: "INCOME" | "EXPENSE" | "TRANSFER";
-  note: string;
-  projectId: string | null;
-  accountId: string | null;
-  amountMinor: number | null;
-  currencyCode: string | null;
-  categoryId: string | null;
-  fromAccountId: string | null;
-  toAccountId: string | null;
-  sourceAmountMinor: number | null;
-  sourceCurrencyCode: string | null;
-  destinationAmountMinor: number | null;
-  destinationCurrencyCode: string | null;
-};
+export type TransactionInput = FinanceTransactionInput;
 
 export function validateTransactionInput(payload: unknown): ValidationResult<TransactionInput> {
   const input = (payload ?? {}) as Record<string, unknown>;
@@ -135,22 +121,7 @@ export function validateTransactionInput(payload: unknown): ValidationResult<Tra
   } };
 }
 
-export type SubscriptionInput = {
-  name: string;
-  direction: "INCOME" | "EXPENSE";
-  accountId: string;
-  categoryId: string;
-  projectId: string | null;
-  amountMinor: number;
-  currencyCode: string;
-  cadence: "MONTHLY" | "QUARTERLY" | "YEARLY" | "CUSTOM_MONTHS";
-  intervalMonths: number | null;
-  nextDueDate: string;
-  startDate: string;
-  endDate: string | null;
-  archived: boolean;
-  note: string | null;
-};
+export type SubscriptionInput = FinanceSubscriptionInput;
 
 export function validateSubscriptionInput(payload: unknown): ValidationResult<SubscriptionInput> {
   const input = (payload ?? {}) as Record<string, unknown>;

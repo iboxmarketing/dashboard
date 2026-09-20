@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 
 import { Drawer } from "../ui/drawer";
 import { DateInput, FormField, NumberInput, SelectInput, TextInput, Textarea } from "../ui/form";
+import { formatMoney, moneyInputValue, parseMoneyInput } from "@/lib/finance-money";
 import { buildTransactionBody, cadenceMonths, selectableCategories, transferShape, validateTransaction } from "@/lib/finance-metrics";
 import {
   ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, CADENCES, CADENCE_LABELS, CURRENCIES,
@@ -15,7 +16,7 @@ import {
 } from "@/lib/finance-types";
 
 const today = () => new Date().toISOString().slice(0, 10);
-const activeOnly = <T extends { status: "ACTIVE" | "ARCHIVED" }>(rows: readonly T[]) => rows.filter((row) => row.status === "ACTIVE");
+const activeOnly = <T extends { archived: boolean }>(rows: readonly T[]) => rows.filter((row) => !row.archived);
 
 function DrawerFooter({ onCancel, onSave, saving, saveLabel = "Saqlash" }: {
   onCancel: () => void; onSave: () => void; saving: boolean; saveLabel?: string;
@@ -73,8 +74,8 @@ export function TransactionDrawer({ open, dataset, initialType = "EXPENSE", onCl
     // without rendering, and so the transfer rule has exactly one definition.
     const draft = {
       type, date, accountId, toAccountId: toAccountId || null,
-      amount: amount === "" ? null : Number(amount),
-      toAmount: toAmount === "" ? null : Number(toAmount),
+      amountMinor: from && amount !== "" ? parseMoneyInput(amount, from.currencyCode as Currency) : null,
+      destinationAmountMinor: to && toAmount !== "" ? parseMoneyInput(toAmount, to.currencyCode as Currency) : null,
       categoryId: categoryId || null, projectId: projectId || null,
     };
     const check = validateTransaction(draft, accounts);
@@ -105,7 +106,7 @@ export function TransactionDrawer({ open, dataset, initialType = "EXPENSE", onCl
       <FormField label={type === "TRANSFER" ? "Qaysi hisobdan" : "Hisob"} required>
         <SelectInput value={accountId} onChange={(event) => setAccountId(event.target.value)}>
           <option value="">Tanlang</option>
-          {accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {account.currency}</option>)}
+          {accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {account.currencyCode}</option>)}
         </SelectInput>
       </FormField>
 
@@ -114,19 +115,19 @@ export function TransactionDrawer({ open, dataset, initialType = "EXPENSE", onCl
           <SelectInput value={toAccountId} onChange={(event) => setToAccountId(event.target.value)}>
             <option value="">Tanlang</option>
             {accounts.filter((account) => account.id !== accountId).map((account) => (
-              <option key={account.id} value={account.id}>{account.name} · {account.currency}</option>
+              <option key={account.id} value={account.id}>{account.name} · {account.currencyCode}</option>
             ))}
           </SelectInput>
         </FormField>
       )}
 
-      <FormField label={crossCurrency ? `Yuboriladigan summa (${from?.currency})` : "Summa"} required
-        hint={from ? `Valyuta: ${from.currency}` : undefined}>
+      <FormField label={crossCurrency ? `Yuboriladigan summa (${from?.currencyCode})` : "Summa"} required
+        hint={from ? `Valyuta: ${from.currencyCode}` : undefined}>
         <NumberInput value={amount} min="0" step="0.01" onChange={(event) => setAmount(event.target.value)} />
       </FormField>
 
       {crossCurrency && (
-        <FormField label={`Tushadigan summa (${to?.currency})`} required
+        <FormField label={`Tushadigan summa (${to?.currencyCode})`} required
           hint="Valyutalar farq qiladi — ikkala summani o‘zingiz kiritasiz. Kurs avtomatik hisoblanmaydi.">
           <NumberInput value={toAmount} min="0" step="0.01" onChange={(event) => setToAmount(event.target.value)} />
         </FormField>
@@ -134,22 +135,23 @@ export function TransactionDrawer({ open, dataset, initialType = "EXPENSE", onCl
 
       {type !== "TRANSFER" && (
         <>
-          <FormField label="Kategoriya" hint="Ixtiyoriy">
+          <FormField label="Kategoriya" required>
             <SelectInput value={categoryId} onChange={(event) => setCategoryId(event.target.value)}>
-              <option value="">Kategoriyasiz</option>
+              <option value="">Tanlang</option>
               {categories.map((category) => (
                 <option key={category.id} value={category.id}>{category.parentId ? "— " : ""}{category.name}</option>
               ))}
             </SelectInput>
           </FormField>
-          <FormField label="Project" hint="Ixtiyoriy — Project tanlanmasa ham yozuv saqlanadi">
-            <SelectInput value={projectId} onChange={(event) => setProjectId(event.target.value)}>
-              <option value="">Project belgilanmagan</option>
-              {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-            </SelectInput>
-          </FormField>
         </>
       )}
+
+      <FormField label="Project" hint="Ixtiyoriy — Project tanlanmasa ham yozuv saqlanadi">
+        <SelectInput value={projectId} onChange={(event) => setProjectId(event.target.value)}>
+          <option value="">Project belgilanmagan</option>
+          {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+        </SelectInput>
+      </FormField>
 
       <FormField label="Izoh"><Textarea value={description} onChange={(event) => setDescription(event.target.value)} /></FormField>
       {error && <p className="form-error" role="alert">{error}</p>}
@@ -165,8 +167,8 @@ export function AccountDrawer({ open, account, onClose, onSave }: {
 }) {
   const [name, setName] = useState(account?.name ?? "");
   const [type, setType] = useState<AccountType>(account?.type ?? "CASH");
-  const [currency, setCurrency] = useState<Currency>(account?.currency ?? "UZS");
-  const [openingBalance, setOpeningBalance] = useState(String(account?.openingBalance ?? ""));
+  const [currency, setCurrency] = useState<Currency>((account?.currencyCode as Currency) ?? "UZS");
+  const [openingBalance, setOpeningBalance] = useState(account ? moneyInputValue(account.openingBalanceMinor, currency) : "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -174,11 +176,11 @@ export function AccountDrawer({ open, account, onClose, onSave }: {
     if (!name.trim()) return setError("Nomini kiriting");
     setSaving(true); setError(null);
     try {
-      await onSave({
-        name: name.trim(), type, currency,
-        openingBalance: Number(openingBalance) || 0,
-        status: account?.status ?? "ACTIVE",
-      }, account?.id ?? null);
+      const openingBalanceMinor = openingBalance === "" && account
+        ? account.openingBalanceMinor
+        : parseMoneyInput(openingBalance || "0", currency);
+      if (openingBalanceMinor === null) return setError("Boshlang‘ich balans noto‘g‘ri");
+      await onSave({ name: name.trim(), type, currencyCode: currency, openingBalanceMinor, archived: account?.archived ?? false }, account?.id ?? null);
       onClose();
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Saqlanmadi"); }
     finally { setSaving(false); }
@@ -201,11 +203,7 @@ export function AccountDrawer({ open, account, onClose, onSave }: {
       <FormField label="Boshlang‘ich balans" hint="Joriy balans yozuvlardan hisoblanadi — qo‘lda tahrirlanmaydi">
         <NumberInput value={openingBalance} step="0.01" onChange={(event) => setOpeningBalance(event.target.value)} disabled={Boolean(account)} />
       </FormField>
-      {account && (
-        <FormField label="Joriy balans">
-          <TextInput value={`${account.currentBalance} ${account.currency}`} readOnly disabled />
-        </FormField>
-      )}
+      {account && <p className="field-hint">Saqlangan boshlang‘ich balans: {formatMoney(account.openingBalanceMinor, currency)}. Joriy balans faqat server summary’dan o‘qiladi.</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
     </Drawer>
   );
@@ -228,13 +226,13 @@ export function CategoryDrawer({ open, kind, category, categories, onClose, onSa
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Same kind, top level only, and never itself.
-  const parents = categories.filter((item) => item.kind === kind && item.parentId === null && item.status === "ACTIVE" && item.id !== category?.id);
+  const parents = categories.filter((item) => item.kind === kind && item.parentId === null && !item.archived && item.id !== category?.id);
 
   const save = async () => {
     if (!name.trim()) return setError("Nomini kiriting");
     setSaving(true); setError(null);
     try {
-      await onSave({ name: name.trim(), kind, parentId: parentId || null, status: category?.status ?? "ACTIVE" }, category?.id ?? null);
+      await onSave({ name: name.trim(), kind, parentId: parentId || null, archived: category?.archived ?? false, sortOrder: category?.sortOrder ?? 0 }, category?.id ?? null);
       onClose();
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Saqlanmadi"); }
     finally { setSaving(false); }
@@ -271,7 +269,7 @@ export function ProjectDrawer({ open, project, onClose, onSave }: {
     if (!name.trim()) return setError("Nomini kiriting");
     setSaving(true); setError(null);
     try {
-      await onSave({ name: name.trim(), description: description.trim() || null, status: project?.status ?? "ACTIVE" }, project?.id ?? null);
+      await onSave({ name: name.trim(), description: description.trim() || null, archived: project?.archived ?? false }, project?.id ?? null);
       onClose();
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Saqlanmadi"); }
     finally { setSaving(false); }
@@ -303,15 +301,19 @@ export function SubscriptionDrawer({ open, subscription, dataset, onClose, onSav
 }) {
   const accounts = activeOnly(dataset.accounts);
   const projects = activeOnly(dataset.projects);
-  const categories = dataset.categories.filter((category) => category.kind === "EXPENSE" && category.status === "ACTIVE");
+  const [direction, setDirection] = useState<CategoryKind>(subscription?.direction ?? "EXPENSE");
+  const categories = dataset.categories.filter((category) => category.kind === direction && !category.archived);
   const [name, setName] = useState(subscription?.name ?? "");
   const [accountId, setAccountId] = useState(subscription?.accountId ?? "");
-  const [amount, setAmount] = useState(String(subscription?.amount ?? ""));
+  const [amount, setAmount] = useState(subscription ? moneyInputValue(subscription.amountMinor, subscription.currencyCode as Currency) : "");
   const [categoryId, setCategoryId] = useState(subscription?.categoryId ?? "");
   const [projectId, setProjectId] = useState(subscription?.projectId ?? "");
   const [cadence, setCadence] = useState<Cadence>(subscription?.cadence ?? "MONTHLY");
   const [intervalMonths, setIntervalMonths] = useState(String(subscription?.intervalMonths ?? ""));
   const [nextDueDate, setNextDueDate] = useState(subscription?.nextDueDate ?? today());
+  const [startDate, setStartDate] = useState(subscription?.startDate ?? today());
+  const [endDate, setEndDate] = useState(subscription?.endDate ?? "");
+  const [note, setNote] = useState(subscription?.note ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const account = accounts.find((item) => item.id === accountId) ?? null;
@@ -319,12 +321,16 @@ export function SubscriptionDrawer({ open, subscription, dataset, onClose, onSav
   const save = async () => {
     if (!name.trim()) return setError("Nomini kiriting");
     if (!accountId) return setError("Hisobni tanlang");
-    if (!(Number(amount) > 0)) return setError("Summani kiriting");
+    if (!categoryId) return setError("Kategoriyani tanlang");
+    const currencyCode = (account?.currencyCode ?? "UZS") as Currency;
+    const amountMinor = parseMoneyInput(amount, currencyCode);
+    if (amountMinor === null || amountMinor <= 0) return setError("Summani kiriting");
     const body: NewSubscription = {
-      name: name.trim(), amount: Number(amount), currency: (account?.currency ?? "UZS") as Currency,
-      accountId, categoryId: categoryId || null, projectId: projectId || null, cadence,
+      name: name.trim(), direction, amountMinor, currencyCode,
+      accountId, categoryId, projectId: projectId || null, cadence,
       intervalMonths: cadence === "CUSTOM_MONTHS" ? Number(intervalMonths) || null : null,
-      nextDueDate, status: subscription?.status ?? "ACTIVE",
+      nextDueDate, startDate, endDate: endDate || null, archived: subscription?.archived ?? false,
+      note: note.trim() || null,
     };
     if (cadence === "CUSTOM_MONTHS" && cadenceMonths(body) === null) return setError("Necha oyda bir to‘lanadi?");
     setSaving(true); setError(null);
@@ -337,18 +343,23 @@ export function SubscriptionDrawer({ open, subscription, dataset, onClose, onSav
     <Drawer open={open} title={subscription ? "Obunani tahrirlash" : "Yangi obuna"} context="Finance"
       dirty={Boolean(name) && !saving} onClose={onClose} footer={<DrawerFooter onCancel={onClose} onSave={save} saving={saving} />}>
       <FormField label="Nomi" required><TextInput value={name} onChange={(event) => setName(event.target.value)} data-autofocus /></FormField>
+      <FormField label="Yo‘nalish" required>
+        <SelectInput value={direction} onChange={(event) => { setDirection(event.target.value as CategoryKind); setCategoryId(""); }}>
+          <option value="EXPENSE">Chiqim</option><option value="INCOME">Kirim</option>
+        </SelectInput>
+      </FormField>
       <FormField label="Hisob" required>
         <SelectInput value={accountId} onChange={(event) => setAccountId(event.target.value)}>
           <option value="">Tanlang</option>
-          {accounts.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.currency}</option>)}
+          {accounts.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.currencyCode}</option>)}
         </SelectInput>
       </FormField>
-      <FormField label="Summa" required hint={account ? `Valyuta: ${account.currency}` : undefined}>
+      <FormField label="Summa" required hint={account ? `Valyuta: ${account.currencyCode}` : undefined}>
         <NumberInput value={amount} min="0" step="0.01" onChange={(event) => setAmount(event.target.value)} />
       </FormField>
-      <FormField label="Kategoriya" hint="Ixtiyoriy">
+      <FormField label="Kategoriya" required>
         <SelectInput value={categoryId} onChange={(event) => setCategoryId(event.target.value)}>
-          <option value="">Kategoriyasiz</option>
+          <option value="">Tanlang</option>
           {categories.map((category) => <option key={category.id} value={category.id}>{category.parentId ? "— " : ""}{category.name}</option>)}
         </SelectInput>
       </FormField>
@@ -372,6 +383,9 @@ export function SubscriptionDrawer({ open, subscription, dataset, onClose, onSav
         hint="Bu faqat eslatma. Obuna yozuvni o‘zi yaratmaydi — to‘lovni qo‘lda kiritasiz.">
         <DateInput value={nextDueDate} onChange={(event) => setNextDueDate(event.target.value)} />
       </FormField>
+      <FormField label="Boshlanish sanasi" required><DateInput value={startDate} onChange={(event) => setStartDate(event.target.value)} /></FormField>
+      <FormField label="Tugash sanasi" hint="Ixtiyoriy"><DateInput value={endDate} onChange={(event) => setEndDate(event.target.value)} /></FormField>
+      <FormField label="Izoh"><Textarea value={note} onChange={(event) => setNote(event.target.value)} /></FormField>
       {error && <p className="form-error" role="alert">{error}</p>}
     </Drawer>
   );

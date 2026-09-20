@@ -14,9 +14,9 @@ import type { Currency, MoneyByCurrency } from "@/lib/finance-types";
  * mixed-currency total cannot reach the screen even by mistake.
  */
 
-export function Money({ amount, currency, tone }: { amount: number; currency: Currency; tone?: "income" | "expense" | "neutral" }) {
+export function Money({ amountMinor, currency, tone }: { amountMinor: number; currency: Currency; tone?: "income" | "expense" | "neutral" }) {
   const className = tone === "income" ? "fin-money income" : tone === "expense" ? "fin-money expense" : "fin-money";
-  return <span className={className}>{formatMoney(amount, currency)}</span>;
+  return <span className={className}>{formatMoney(amountMinor, currency)}</span>;
 }
 
 export function MoneyByCurrencyLines({ value, tone, emptyLabel = "—", includeZero = false }: {
@@ -30,7 +30,7 @@ export function MoneyByCurrencyLines({ value, tone, emptyLabel = "—", includeZ
   return (
     <span className="fin-money-lines">
       {lines.map((line) => (
-        <Money key={line.currency} amount={line.amount} currency={line.currency} tone={tone} />
+        <Money key={line.currency} amountMinor={line.amountMinor} currency={line.currency} tone={tone} />
       ))}
     </span>
   );
@@ -108,6 +108,10 @@ export function ArchivedBadge({ label = "Arxivlangan" }: { label?: string }) {
 
 export function StatusBadge({ status }: { status: "ACTIVE" | "ARCHIVED" }) {
   return status === "ARCHIVED" ? <ArchivedBadge /> : <span className="fin-badge active">Aktiv</span>;
+}
+
+export function ArchiveStatusBadge({ archived }: { archived: boolean }) {
+  return archived ? <ArchivedBadge /> : <span className="fin-badge active">Aktiv</span>;
 }
 
 /**

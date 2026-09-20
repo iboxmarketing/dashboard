@@ -1,113 +1,105 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
-import {
-  FINANCE_ENDPOINTS, FinanceError, createFinanceAdapter, createFixtureTransport,
-  createHttpTransport, emptyDataset,
-} from "../lib/finance-adapter";
+import { FINANCE_ENDPOINTS, FinanceError, createFinanceAdapter, createHttpTransport, emptyDataset } from "../lib/finance-adapter";
 import { cloneFixtures } from "../lib/finance-fixtures";
 
-/**
- * The Finance data boundary.
- *
- * Components never call `fetch`; they call the adapter. These tests pin the
- * endpoint contract `feat/finance-core` must serve, and the fixture fallback that
- * lets this branch run before the backend exists.
- */
+const RANGE = { from: "2026-09-01", to: "2026-09-30" };
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
-  status, headers: { "content-type": "application/json" },
-});
+function apiFetch(calls: Array<{ url: string; method: string; body: unknown }> = []) {
+  const fixture = cloneFixtures();
+  return (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    calls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(String(init.body)) : null });
+    if (init?.method === "POST") return json({ id: "new-id" }, 201);
+    if (init?.method === "PATCH") return json({ ok: true });
+    if (url.startsWith(FINANCE_ENDPOINTS.summary)) return json({ summary: fixture.summary });
+    if (url === FINANCE_ENDPOINTS.currencies) return json({ currencies: fixture.currencies });
+    for (const entity of ["accounts", "transactions", "categories", "projects", "subscriptions"] as const) {
+      if (url === `${FINANCE_ENDPOINTS[entity]}${entity === "transactions" ? "" : "?includeArchived=true"}`) return json({ [entity]: fixture[entity] });
+    }
+    return json({ error: "not found" }, 404);
+  }) as typeof fetch;
+}
 
-test("the endpoint contract is the one the backend lane is building", () => {
+test("adapter endpoint map matches every backend collection plus summary and currencies", () => {
   assert.deepEqual(FINANCE_ENDPOINTS, {
-    accounts: "/api/finance/accounts",
-    transactions: "/api/finance/transactions",
-    categories: "/api/finance/categories",
-    projects: "/api/finance/projects",
-    subscriptions: "/api/finance/subscriptions",
-    summary: "/api/finance/summary",
+    accounts: "/api/finance/accounts", transactions: "/api/finance/transactions",
+    categories: "/api/finance/categories", projects: "/api/finance/projects",
+    subscriptions: "/api/finance/subscriptions", summary: "/api/finance/summary",
+    currencies: "/api/finance/currencies",
   });
 });
 
-test("the adapter reads both `{items}` and a bare array, so either backend shape works", async () => {
-  const calls: string[] = [];
-  const fetchImpl = (async (url: string) => {
-    calls.push(String(url));
-    if (String(url).endsWith("/accounts")) return json({ items: [{ id: "a1" }] });
-    return json([]);
-  }) as unknown as typeof fetch;
-  const result = await createFinanceAdapter({ mode: "api", fetchImpl }).load();
-  assert.equal(result.source, "api");
+test("API responses hydrate the canonical backend Finance types", async () => {
+  const calls: Array<{ url: string; method: string; body: unknown }> = [];
+  const result = await createFinanceAdapter({ fetchImpl: apiFetch(calls) }).load(RANGE);
   assert.equal(result.error, null);
-  assert.deepEqual(result.dataset.accounts, [{ id: "a1" }]);
-  assert.deepEqual(result.dataset.transactions, []);
-  assert.equal(calls.length, 5, "one request per entity");
-  assert.ok(calls.every((url) => url.startsWith("/api/finance/")));
+  assert.equal(result.source, "api");
+  assert.equal(result.dataset.accounts[0].currencyCode, "UZS");
+  assert.equal(Number.isSafeInteger(result.dataset.accounts[0].openingBalanceMinor), true);
+  assert.equal(result.dataset.transactions[0].amountMinor, 4_200_000_000);
+  assert.equal(result.dataset.summary.range.from, "2026-09-01");
+  assert.equal(calls.length, 7);
+  assert.ok(calls.some((call) => call.url === "/api/finance/accounts?includeArchived=true"));
+  assert.ok(calls.some((call) => call.url === "/api/finance/summary?from=2026-09-01&to=2026-09-30"));
 });
 
-test("with no backend the adapter serves fixtures and says so, rather than showing an empty ledger", async () => {
-  const fetchImpl = (async () => new Response("Not found", { status: 404 })) as unknown as typeof fetch;
-  const result = await createFinanceAdapter({ mode: "auto", fetchImpl }).load();
-  assert.equal(result.source, "fixtures", "the UI can then warn that the data is sample data");
+test("production API failure is visible and never silently becomes fixture data", async () => {
+  const fetchImpl = (async () => json({ error: "D1 vaqtincha mavjud emas" }, 503)) as typeof fetch;
+  const result = await createFinanceAdapter({ fetchImpl }).load(RANGE);
+  assert.equal(result.source, "api");
+  assert.equal(result.error, "D1 vaqtincha mavjud emas");
+  assert.deepEqual(result.dataset, emptyDataset(RANGE));
+});
+
+test("fixture data requires explicit fixtures mode", async () => {
+  const result = await createFinanceAdapter({ mode: "fixtures" }).load(RANGE);
+  assert.equal(result.source, "fixtures");
   assert.equal(result.error, null);
   assert.ok(result.dataset.accounts.length > 0);
-  assert.ok(result.dataset.transactions.length > 0);
 });
 
-test("in strict api mode a failure surfaces as an error instead of silently faking data", async () => {
-  const fetchImpl = (async () => new Response("boom", { status: 500 })) as unknown as typeof fetch;
-  const result = await createFinanceAdapter({ mode: "api", fetchImpl }).load();
-  assert.equal(result.source, "api");
-  assert.match(result.error ?? "", /Finance API xatosi \(500\)/);
-  assert.deepEqual(result.dataset, emptyDataset(), "no invented rows");
+test("PATCH uses the real collection endpoint and carries id plus canonical archived boolean", async () => {
+  const calls: Array<{ url: string; method: string; body: unknown }> = [];
+  const adapter = createFinanceAdapter({ fetchImpl: apiFetch(calls) });
+  await adapter.updateAccount("acc-1", { archived: true });
+  assert.deepEqual(calls[0], { url: "/api/finance/accounts", method: "PATCH", body: { id: "acc-1", archived: true } });
 });
 
-test("a non-JSON or unreachable response is reported, not parsed", async () => {
-  const html = createHttpTransport((async () => new Response("<html>", { status: 200, headers: { "content-type": "text/html" } })) as unknown as typeof fetch);
-  await assert.rejects(() => html.list("accounts"), (error: unknown) => {
-    assert.ok(error instanceof FinanceError);
-    assert.match((error as Error).message, /JSON qaytarmadi/);
-    return true;
-  });
-  const offline = createHttpTransport((async () => { throw new TypeError("network"); }) as unknown as typeof fetch);
-  await assert.rejects(() => offline.list("accounts"), /aloqa yo‘q/);
-});
-
-test("the fixture transport supports create and patch so the UI is exercisable offline", async () => {
-  const transport = createFixtureTransport(cloneFixtures());
-  const before = (await transport.list<{ id: string }>("projects")).length;
-  const created = await transport.create<{ id: string; name: string }>("projects", { name: "Yangi", description: null, status: "ACTIVE" });
-  assert.match(created.id, /^pro-local-/);
-  assert.equal((await transport.list("projects")).length, before + 1);
-
-  const patched = await transport.patch<{ id: string; status: string }>("projects", created.id, { status: "ARCHIVED" });
-  assert.equal(patched.status, "ARCHIVED");
-  await assert.rejects(() => transport.patch("projects", "missing", {}), /topilmadi/);
-});
-
-test("fixture writes never leak between adapters", async () => {
-  const first = createFinanceAdapter({ mode: "fixtures" });
-  await first.createProject({ name: "Faqat birinchi", description: null, status: "ACTIVE" });
-  const second = await createFinanceAdapter({ mode: "fixtures" }).load();
-  assert.equal(second.dataset.projects.some((project) => project.name === "Faqat birinchi"), false);
-});
-
-test("every mutation goes through the adapter, so integration is one change", async () => {
-  const bodies: { url: string; method: string; body: unknown }[] = [];
-  const fetchImpl = (async (url: string, init: RequestInit) => {
-    bodies.push({ url: String(url), method: init?.method ?? "GET", body: init?.body ? JSON.parse(String(init.body)) : null });
-    return json({ id: "new" });
-  }) as unknown as typeof fetch;
-  const adapter = createFinanceAdapter({ mode: "api", fetchImpl });
+test("cross-currency transaction POST sends both explicit integer minor amounts", async () => {
+  const calls: Array<{ url: string; method: string; body: unknown }> = [];
+  const adapter = createFinanceAdapter({ fetchImpl: apiFetch(calls) });
   await adapter.createTransaction({
-    date: "2026-09-20", type: "EXPENSE", accountId: "a1", toAccountId: null, categoryId: null,
-    projectId: null, description: "test", amount: 10, currency: "UZS", toAmount: null, toCurrency: null,
+    date: "2026-09-20", type: "TRANSFER", note: "FX", projectId: null,
+    accountId: null, amountMinor: null, currencyCode: null, categoryId: null,
+    fromAccountId: "uzs", toAccountId: "usd", sourceAmountMinor: 1_250_000,
+    sourceCurrencyCode: "UZS", destinationAmountMinor: 100, destinationCurrencyCode: "USD",
   });
-  await adapter.updateAccount("a1", { status: "ARCHIVED" });
-  assert.deepEqual(bodies.map((call) => [call.method, call.url]), [
-    ["POST", "/api/finance/transactions"],
-    ["PATCH", "/api/finance/accounts/a1"],
-  ]);
-  assert.equal((bodies[0].body as { amount: number }).amount, 10);
+  const body = calls[0].body as Record<string, unknown>;
+  assert.equal(calls[0].url, FINANCE_ENDPOINTS.transactions);
+  assert.equal(body.sourceAmountMinor, 1_250_000);
+  assert.equal(body.destinationAmountMinor, 100);
+  assert.equal("amount" in body, false);
+  assert.equal("toAmount" in body, false);
+});
+
+test("creating a fixture subscription does not auto-post a transaction", async () => {
+  const adapter = createFinanceAdapter({ mode: "fixtures" });
+  const before = await adapter.load(RANGE);
+  await adapter.createSubscription({
+    name: "Manual reminder", direction: "EXPENSE", accountId: "acc-2", categoryId: "cat-ex-5",
+    projectId: null, amountMinor: 10_000, currencyCode: "UZS", cadence: "MONTHLY", intervalMonths: null,
+    nextDueDate: "2026-10-01", startDate: "2026-09-01", endDate: null, archived: false, note: null,
+  });
+  const after = await adapter.load(RANGE);
+  assert.equal(after.dataset.transactions.length, before.dataset.transactions.length);
+  assert.equal(after.dataset.subscriptions.length, before.dataset.subscriptions.length + 1);
+});
+
+test("transport rejects non-JSON success and unreachable responses", async () => {
+  const html = createHttpTransport((async () => new Response("<html>", { headers: { "content-type": "text/html" } })) as typeof fetch);
+  await assert.rejects(() => html.list("accounts"), (error: unknown) => error instanceof FinanceError && /JSON/.test(error.message));
+  const offline = createHttpTransport((async () => { throw new TypeError("network"); }) as typeof fetch);
+  await assert.rejects(() => offline.list("accounts"), /aloqa yo‘q/);
 });

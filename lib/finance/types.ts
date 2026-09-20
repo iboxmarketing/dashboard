@@ -92,4 +92,57 @@ export type FinanceSubscription = {
 
 export type FinanceDateRange = { from: string; to: string };
 
+/** Canonical request bodies accepted by the collection POST/PATCH endpoints. */
+export type FinanceAccountInput = Omit<FinanceAccount, "id" | "createdAt" | "updatedAt">;
+export type FinanceCategoryInput = Omit<FinanceCategory, "id">;
+export type FinanceProjectInput = Omit<FinanceProject, "id" | "createdAt" | "updatedAt">;
+export type FinanceTransactionInput = Omit<FinanceTransaction, "id" | "createdAt" | "updatedAt">;
+export type FinanceSubscriptionInput = Omit<FinanceSubscription, "id" | "createdAt" | "updatedAt">;
+
+export type FinanceCurrencyAmount = { currencyCode: string; amountMinor: number };
+export type FinanceOperatingAmount = {
+  currencyCode: string;
+  incomeMinor: number;
+  expenseMinor: number;
+  netCashFlowMinor: number;
+};
+export type FinanceAccountBalance = {
+  accountId: string;
+  accountName: string;
+  currencyCode: string;
+  configuredOpeningBalanceMinor: number;
+  openingBalanceMinor: number;
+  currentBalanceMinor: number;
+  archived: boolean;
+};
+export type FinanceCategoryAmount = {
+  currencyCode: string;
+  categoryId: string;
+  categoryName: string;
+  parentId: string | null;
+  amountMinor: number;
+};
+export type FinanceProjectAmount = {
+  currencyCode: string;
+  projectId: string | null;
+  projectName: string;
+  incomeMinor: number;
+  expenseMinor: number;
+  netCashFlowMinor: number;
+};
+export type FinanceSummary = {
+  range: FinanceDateRange;
+  projectId?: string | null;
+  operatingByCurrency: FinanceOperatingAmount[];
+  incomeByCurrency: FinanceCurrencyAmount[];
+  expenseByCurrency: FinanceCurrencyAmount[];
+  accountBalances: FinanceAccountBalance[];
+  accountBalancesByCurrency: FinanceCurrencyAmount[];
+  expensesByCategory: FinanceCategoryAmount[];
+  incomeByCategory: FinanceCategoryAmount[];
+  projectBreakdown: FinanceProjectAmount[];
+  upcomingSubscriptions: FinanceSubscription[];
+  overdueSubscriptions: FinanceSubscription[];
+};
+
 export type ValidationResult<T> = { ok: true; value: T } | { ok: false; error: string };

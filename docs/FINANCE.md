@@ -22,6 +22,47 @@ Expense and operating net cash flow. Every aggregate is partitioned by currency.
 Subscriptions are templates only. Creating or updating one never creates a
 Transaction.
 
+## UI and API contract
+
+`lib/finance/types.ts` is the persisted/wire domain. The browser keeps those
+field names unchanged through `lib/finance-adapter.ts`:
+
+- money is `openingBalanceMinor`, `amountMinor`, `sourceAmountMinor`, and
+  `destinationAmountMinor`;
+- currency is `currencyCode`, `sourceCurrencyCode`, and
+  `destinationCurrencyCode`;
+- archive/restore is `archived: boolean`;
+- PATCH uses the collection endpoint with `id` in the JSON body;
+- create returns `{ id }`, while PATCH returns `{ ok: true }`;
+- the Overview reads canonical totals from `/api/finance/summary` and only
+  reshapes its per-currency rows for presentation.
+
+Production mode is API-only. Fixture data is available only when a test or
+development caller explicitly constructs the adapter with `mode: "fixtures"`.
+An API failure is displayed and never replaced by samples.
+
+## Staging smoke checklist
+
+After the reviewed migration and staging deploy:
+
+1. Account: create, edit, archive, restore; confirm current balance stays
+   read-only and changes only through Transactions.
+2. Transactions: create Income, Expense, same-currency Transfer, and
+   cross-currency Transfer; confirm both cross-currency amounts are required.
+3. Overview: reconcile Income, Expense, net cash flow, and Account balances per
+   currency against the created fixtures; confirm there is no mixed total.
+4. Categories: create a parent and matching-kind child; confirm a cross-kind or
+   second-level child is rejected visibly.
+5. Finance Projects: create one, attach it to a Transaction, and verify the
+   selected-range Project summary; confirm management Projects are unchanged.
+6. Subscriptions: create upcoming and overdue reminders; confirm no Transaction
+   appears automatically.
+7. Archive and restore each archivable entity, checking backend errors are
+   visible.
+8. At desktop and a narrow viewport, open/close every drawer, use keyboard
+   focus, change the Finance date range, clear Transaction filters, and retry a
+   deliberately failed API request.
+
 ## Later staging application
 
 Do not apply while another D1-heavy operation is running. After the daily quota

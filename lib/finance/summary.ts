@@ -1,7 +1,7 @@
 import { addMinor } from "./money";
 import type {
   FinanceAccount, FinanceCategory, FinanceDateRange, FinanceProject,
-  FinanceSubscription, FinanceTransaction,
+  FinanceSubscription, FinanceSummary, FinanceTransaction,
 } from "./types";
 
 function addTo(map: Map<string, number>, key: string, amount: number) {
@@ -49,7 +49,7 @@ export function buildFinanceSummary(input: {
   range: FinanceDateRange;
   asOf: string;
   projectId?: string | null;
-}) {
+}): FinanceSummary {
   const categories = new Map(input.categories.map((category) => [category.id, category]));
   const projects = new Map(input.projects.map((project) => [project.id, project]));
   const ranged = filterFinanceTransactions(input.transactions, input.range, input.projectId);

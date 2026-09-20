@@ -9,14 +9,14 @@ import {
 import { MultiSelect } from "../ui/multi-select";
 import { DateInput } from "../ui/form";
 import {
-  ArchivedBadge, CurrencyKpiRow, EmptyState, ErrorState, FixtureNotice, LoadingState,
-  Money, MoneyByCurrencyLines, SectionHeading, StatusBadge,
+  ArchivedBadge, ArchiveStatusBadge, CurrencyKpiRow, EmptyState, ErrorState, FixtureNotice, LoadingState,
+  Money, MoneyByCurrencyLines, SectionHeading,
 } from "./finance-primitives";
 import { AccountDrawer, CategoryDrawer, ProjectDrawer, SubscriptionDrawer, TransactionDrawer } from "./finance-drawers";
 import { createFinanceAdapter, emptyDataset, type FinanceAdapter, type FinanceSource } from "@/lib/finance-adapter";
 import {
-  accountBalances, addDays, cadenceMonths, categoryTree, filterTransactions, overviewModel, projectSpending,
-  subscriptionBuckets, type FinanceFilters,
+  accountBalanceGroups, addDays, cadenceMonths, categoryAmountRows, categoryTree, filterTransactions,
+  operatingMaps, projectAmountRows, subscriptionBuckets, type FinanceFilters,
 } from "@/lib/finance-metrics";
 import {
   ACCOUNT_TYPE_LABELS, CADENCE_LABELS, CURRENCIES, TRANSACTION_TYPES, TRANSACTION_TYPE_LABELS,
@@ -56,8 +56,8 @@ export type FinanceRange = { from: string; to: string };
  * asked to re-render inside the effect body. `reload` may set `loading` up front
  * because it is always called from an event handler, never from an effect.
  */
-export function useFinanceData(adapter: FinanceAdapter) {
-  const [dataset, setDataset] = useState<FinanceDataset>(emptyDataset);
+export function useFinanceData(adapter: FinanceAdapter, range: FinanceRange) {
+  const [dataset, setDataset] = useState<FinanceDataset>(() => emptyDataset(range));
   const [source, setSource] = useState<FinanceSource>("api");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -73,31 +73,31 @@ export function useFinanceData(adapter: FinanceAdapter) {
 
   const reload = useCallback(async () => {
     setLoading(true);
-    try { apply(await adapter.load()); }
+    try { apply(await adapter.load(range)); }
     catch (caught) { apply({ error: caught instanceof Error ? caught.message : "Finance ma’lumotlari yuklanmadi" }); }
-  }, [adapter, apply]);
+  }, [adapter, apply, range]);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const result = await adapter.load();
+        const result = await adapter.load(range);
         if (!cancelled) apply(result);
       } catch (caught) {
         if (!cancelled) apply({ error: caught instanceof Error ? caught.message : "Finance ma’lumotlari yuklanmadi" });
       }
     })();
     return () => { cancelled = true; };
-  }, [adapter, apply]);
+  }, [adapter, apply, range]);
 
   return { dataset, source, loading, error, reload };
 }
 
 export function FinanceView({ adapter: injected }: { adapter?: FinanceAdapter } = {}) {
   const adapter = useMemo(() => injected ?? createFinanceAdapter(), [injected]);
-  const { dataset, source, loading, error, reload } = useFinanceData(adapter);
-  const [tab, setTab] = useState<FinanceTab>("overview");
   const [range, setRange] = useState<FinanceRange>({ from: monthStart(), to: todayKey() });
+  const { dataset, source, loading, error, reload } = useFinanceData(adapter, range);
+  const [tab, setTab] = useState<FinanceTab>("overview");
   const [addOpen, setAddOpen] = useState(false);
   const [addType, setAddType] = useState<TransactionType>("EXPENSE");
 
@@ -140,16 +140,16 @@ export function FinanceView({ adapter: injected }: { adapter?: FinanceAdapter } 
         : error ? <ErrorState message={error} onRetry={() => void reload()} />
         : (
           <>
-            {tab === "overview" && <OverviewTab dataset={dataset} range={range} />}
+            {tab === "overview" && <OverviewTab dataset={dataset} />}
             {tab === "transactions" && <TransactionsTab dataset={dataset} range={range} onAdd={openAdd} />}
             {tab === "accounts" && <AccountsTab dataset={dataset} adapter={adapter} onChanged={reload} />}
             {tab === "categories" && <CategoriesTab dataset={dataset} adapter={adapter} onChanged={reload} />}
-            {tab === "projects" && <ProjectsTab dataset={dataset} range={range} adapter={adapter} onChanged={reload} />}
+            {tab === "projects" && <ProjectsTab dataset={dataset} adapter={adapter} onChanged={reload} />}
             {tab === "subscriptions" && <SubscriptionsTab dataset={dataset} adapter={adapter} onChanged={reload} />}
           </>
         )}
 
-      <TransactionDrawer open={addOpen} dataset={dataset} initialType={addType}
+      <TransactionDrawer key={`${addOpen}-${addType}`} open={addOpen} dataset={dataset} initialType={addType}
         onClose={() => setAddOpen(false)}
         onSave={async (body) => { await adapter.createTransaction(body); await reload(); }} />
     </section>
@@ -158,34 +158,39 @@ export function FinanceView({ adapter: injected }: { adapter?: FinanceAdapter } 
 
 // ------------------------------------------------------------------ overview ---
 
-function OverviewTab({ dataset, range }: { dataset: FinanceDataset; range: FinanceRange }) {
-  const model = useMemo(() => overviewModel(dataset, { ...range }, todayKey()), [dataset, range]);
-  const { summary, balances, subscriptions } = model;
+function OverviewTab({ dataset }: { dataset: FinanceDataset }) {
+  const summary = dataset.summary;
+  const operating = useMemo(() => operatingMaps(summary), [summary]);
+  const balances = useMemo(() => accountBalanceGroups(summary), [summary]);
+  const expenseRows = useMemo(() => categoryAmountRows(summary.expensesByCategory), [summary.expensesByCategory]);
+  const incomeRows = useMemo(() => categoryAmountRows(summary.incomeByCategory), [summary.incomeByCategory]);
+  const projects = useMemo(() => projectAmountRows(summary.projectBreakdown), [summary.projectBreakdown]);
+  const subscriptions = { overdue: summary.overdueSubscriptions, upcoming: summary.upcomingSubscriptions };
 
   return (
     <div className="fin-stack">
       <div className="kpi-grid fin-kpi-grid">
-        <CurrencyKpiRow label="Kirim" value={summary.income} tone="income" icon={<ArrowDownLeft size={15} />} note="Tanlangan davr" />
-        <CurrencyKpiRow label="Chiqim" value={summary.expense} tone="expense" icon={<ArrowUpRight size={15} />} note="Tanlangan davr" />
-        <CurrencyKpiRow label="Net cash flow" value={summary.net} icon={<Wallet size={15} />} note="Kirim − Chiqim" />
+        <CurrencyKpiRow label="Kirim" value={operating.income} tone="income" icon={<ArrowDownLeft size={15} />} note="Server summary · tanlangan davr" />
+        <CurrencyKpiRow label="Chiqim" value={operating.expense} tone="expense" icon={<ArrowUpRight size={15} />} note="Server summary · tanlangan davr" />
+        <CurrencyKpiRow label="Net cash flow" value={operating.net} icon={<Wallet size={15} />} note="Kirim − Chiqim" />
         <CurrencyKpiRow label="Hisoblardagi pul" value={balances.totals} icon={<Wallet size={15} />} note={`${balances.activeCount} aktiv hisob`} />
       </div>
       <p className="fin-currency-note">Valyutalar hech qachon qo‘shilmaydi — har biri alohida ko‘rsatiladi.</p>
 
       <section className="panel">
         <SectionHeading title="Hisoblardagi qoldiq" subtitle="Har valyuta alohida jamlanadi" />
-        {balances.byCurrency.length ? balances.byCurrency.map((group) => (
-          <div key={group.currency} className="fin-balance-group">
-            <div className="fin-balance-head"><strong>{group.currency}</strong><Money amount={group.total} currency={group.currency} /></div>
+        {balances.groups.length ? balances.groups.map((group) => (
+          <div key={group.currencyCode} className="fin-balance-group">
+            <div className="fin-balance-head"><strong>{group.currencyCode}</strong><Money amountMinor={group.totalMinor} currency={group.currencyCode} /></div>
             <table className="fin-table">
               <thead><tr><th>Hisob</th><th>Turi</th><th>Valyuta</th><th className="right">Joriy balans</th></tr></thead>
               <tbody>
                 {group.accounts.map((account) => (
-                  <tr key={account.id}>
-                    <td>{account.name}</td>
-                    <td>{ACCOUNT_TYPE_LABELS[account.type]}</td>
-                    <td>{account.currency}</td>
-                    <td className="right"><Money amount={account.currentBalance} currency={account.currency} /></td>
+                  <tr key={account.accountId}>
+                    <td>{account.accountName}</td>
+                    <td>{ACCOUNT_TYPE_LABELS[dataset.accounts.find((item) => item.id === account.accountId)?.type ?? "OTHER"]}</td>
+                    <td>{account.currencyCode}</td>
+                    <td className="right"><Money amountMinor={account.currentBalanceMinor} currency={account.currencyCode as Currency} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -193,27 +198,26 @@ function OverviewTab({ dataset, range }: { dataset: FinanceDataset; range: Finan
           </div>
         )) : <EmptyState title="Hisob yo‘q" hint="Hisoblar bo‘limida birinchi hisobni qo‘shing." />}
         {balances.archived.length > 0 && (
-          <p className="fin-archived-note"><ArchivedBadge /> {balances.archived.length} arxivlangan hisob jamlanmaga kirmaydi.</p>
+          <p className="fin-archived-note"><ArchivedBadge /> {balances.archived.length} arxivlangan hisob qoldig‘i server jamlanmasida saqlanadi.</p>
         )}
       </section>
 
       <div className="fin-two-col">
-        <BreakdownPanel title="Chiqim kategoriyalari" rows={model.expenseByCategory} tone="expense"
+        <BreakdownPanel title="Chiqim kategoriyalari" rows={expenseRows} tone="expense"
           empty="Tanlangan davrda chiqim yo‘q" />
-        <BreakdownPanel title="Kirim kategoriyalari" rows={model.incomeByCategory} tone="income"
+        <BreakdownPanel title="Kirim kategoriyalari" rows={incomeRows} tone="income"
           empty="Tanlangan davrda kirim yo‘q" />
       </div>
 
       <section className="panel">
         <SectionHeading title="Project xarajatlari" subtitle="Project tanlanmagan yozuvlar alohida qatorda" />
-        <ProjectTable rows={model.projects} />
+        <ProjectTable rows={projects} />
       </section>
 
       <section className="panel">
         <SectionHeading title="Keyingi to‘lovlar" subtitle="Obuna faqat eslatma — to‘lov avtomatik yaratilmaydi" />
         {subscriptions.overdue.length + subscriptions.upcoming.length ? (
           <>
-            <p className="fin-subs-total">Kutilayotgan summa: <MoneyByCurrencyLines value={subscriptions.upcomingByCurrency} tone="expense" /></p>
             <SubscriptionTable rows={[...subscriptions.overdue, ...subscriptions.upcoming]} dataset={dataset} today={todayKey()} />
           </>
         ) : <EmptyState title="Yaqin 30 kunda to‘lov yo‘q" />}
@@ -224,7 +228,7 @@ function OverviewTab({ dataset, range }: { dataset: FinanceDataset; range: Finan
 
 function BreakdownPanel({ title, rows, tone, empty }: {
   title: string;
-  rows: { categoryId: string | null; label: string; byCurrency: Record<string, number | undefined>; transactions: number }[];
+  rows: { categoryId: string; label: string; byCurrency: Record<string, number | undefined> }[];
   tone: "income" | "expense";
   empty: string;
 }) {
@@ -233,12 +237,11 @@ function BreakdownPanel({ title, rows, tone, empty }: {
       <SectionHeading title={title} />
       {rows.length ? (
         <table className="fin-table">
-          <thead><tr><th>Kategoriya</th><th className="right">Yozuv</th><th className="right">Summa</th></tr></thead>
+          <thead><tr><th>Kategoriya</th><th className="right">Summa</th></tr></thead>
           <tbody>
             {rows.map((row) => (
               <tr key={row.categoryId ?? "none"}>
                 <td>{row.label}</td>
-                <td className="right">{row.transactions}</td>
                 <td className="right"><MoneyByCurrencyLines value={row.byCurrency} tone={tone} /></td>
               </tr>
             ))}
@@ -249,15 +252,15 @@ function BreakdownPanel({ title, rows, tone, empty }: {
   );
 }
 
-function ProjectTable({ rows }: { rows: ReturnType<typeof projectSpending> }) {
+function ProjectTable({ rows }: { rows: ReturnType<typeof projectAmountRows> }) {
   if (!rows.length) return <EmptyState title="Tanlangan davrda Project yozuvlari yo‘q" />;
   return (
     <table className="fin-table">
       <thead><tr><th>Project</th><th className="right">Kirim</th><th className="right">Chiqim</th><th className="right">Net</th></tr></thead>
       <tbody>
         {rows.map((row) => (
-          <tr key={row.projectId ?? "none"} className={row.status === "ARCHIVED" ? "fin-row-archived" : ""}>
-            <td>{row.name}{row.status === "ARCHIVED" && <> <ArchivedBadge /></>}</td>
+          <tr key={row.projectId ?? "none"}>
+            <td>{row.name}</td>
             <td className="right"><MoneyByCurrencyLines value={row.income} tone="income" /></td>
             <td className="right"><MoneyByCurrencyLines value={row.expense} tone="expense" /></td>
             <td className="right"><MoneyByCurrencyLines value={row.net} /></td>
@@ -332,14 +335,16 @@ function TransactionsTab({ dataset, range, onAdd }: {
                 <tr key={row.id}>
                   <td>{row.date}</td>
                   <td><span className={`fin-type ${row.type.toLowerCase()}`}>{TRANSACTION_TYPE_LABELS[row.type]}</span></td>
-                  <td>{row.type === "TRANSFER" ? `${accountName(row.accountId)} → ${accountName(row.toAccountId)}` : accountName(row.accountId)}</td>
+                  <td>{row.type === "TRANSFER" ? `${accountName(row.fromAccountId)} → ${accountName(row.toAccountId)}` : accountName(row.accountId)}</td>
                   <td>{row.type === "TRANSFER" ? "—" : categoryName(row.categoryId)}</td>
-                  <td>{row.type === "TRANSFER" ? "—" : projectName(row.projectId)}</td>
-                  <td>{row.description || "—"}</td>
+                  <td>{projectName(row.projectId)}</td>
+                  <td>{row.note || "—"}</td>
                   <td className="right">
-                    <Money amount={row.amount} currency={row.currency} tone={row.type === "INCOME" ? "income" : row.type === "EXPENSE" ? "expense" : "neutral"} />
-                    {row.toAmount !== null && row.toCurrency !== null && (
-                      <><br /><small className="fin-cross">→ <Money amount={row.toAmount} currency={row.toCurrency} /></small></>
+                    <Money amountMinor={(row.type === "TRANSFER" ? row.sourceAmountMinor : row.amountMinor) ?? 0}
+                      currency={(row.type === "TRANSFER" ? row.sourceCurrencyCode : row.currencyCode) as Currency}
+                      tone={row.type === "INCOME" ? "income" : row.type === "EXPENSE" ? "expense" : "neutral"} />
+                    {row.type === "TRANSFER" && row.destinationAmountMinor !== null && row.destinationCurrencyCode !== null && (
+                      <><br /><small className="fin-cross">→ <Money amountMinor={row.destinationAmountMinor} currency={row.destinationCurrencyCode as Currency} /></small></>
                     )}
                   </td>
                 </tr>
@@ -358,24 +363,26 @@ function TransactionsTab({ dataset, range, onAdd }: {
 function AccountsTab({ dataset, adapter, onChanged }: { dataset: FinanceDataset; adapter: FinanceAdapter; onChanged: () => Promise<void> }) {
   const [editing, setEditing] = useState<FinanceAccount | null>(null);
   const [open, setOpen] = useState(false);
-  const balances = accountBalances(dataset.accounts);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const balances = accountBalanceGroups(dataset.summary);
 
   const archive = async (account: FinanceAccount) => {
-    await adapter.updateAccount(account.id, { status: account.status === "ARCHIVED" ? "ACTIVE" : "ARCHIVED" });
-    await onChanged();
+    try { setActionError(null); await adapter.updateAccount(account.id, { archived: !account.archived }); await onChanged(); }
+    catch (error) { setActionError(error instanceof Error ? error.message : "Hisob holati saqlanmadi"); }
   };
 
   return (
     <div className="fin-stack">
       <SectionHeading title="Hisoblar" subtitle="Joriy balans yozuvlardan hisoblanadi — qo‘lda tahrirlanmaydi"
         action={<button type="button" className="button" onClick={() => { setEditing(null); setOpen(true); }}><Plus size={15} />Yangi hisob</button>} />
+      {actionError && <p className="form-error" role="alert">{actionError}</p>}
       {dataset.accounts.length ? (
         <>
           <div className="fin-cards">
-            {balances.byCurrency.map((group) => (
-              <div key={group.currency} className="fin-mini-card">
-                <span>{group.currency} jami</span>
-                <strong><Money amount={group.total} currency={group.currency} /></strong>
+            {balances.groups.map((group) => (
+              <div key={group.currencyCode} className="fin-mini-card">
+                <span>{group.currencyCode} jami</span>
+                <strong><Money amountMinor={group.totalMinor} currency={group.currencyCode} /></strong>
               </div>
             ))}
           </div>
@@ -384,17 +391,17 @@ function AccountsTab({ dataset, adapter, onChanged }: { dataset: FinanceDataset;
               <thead><tr><th>Nomi</th><th>Turi</th><th>Valyuta</th><th className="right">Boshlang‘ich</th><th className="right">Joriy</th><th>Holat</th><th /></tr></thead>
               <tbody>
                 {dataset.accounts.map((account) => (
-                  <tr key={account.id} className={account.status === "ARCHIVED" ? "fin-row-archived" : ""}>
+                  <tr key={account.id} className={account.archived ? "fin-row-archived" : ""}>
                     <td>{account.name}</td>
                     <td>{ACCOUNT_TYPE_LABELS[account.type]}</td>
-                    <td>{account.currency}</td>
-                    <td className="right"><Money amount={account.openingBalance} currency={account.currency} /></td>
-                    <td className="right"><Money amount={account.currentBalance} currency={account.currency} /></td>
-                    <td><StatusBadge status={account.status} /></td>
+                    <td>{account.currencyCode}</td>
+                    <td className="right"><Money amountMinor={account.openingBalanceMinor} currency={account.currencyCode as Currency} /></td>
+                    <td className="right"><Money amountMinor={dataset.summary.accountBalances.find((row) => row.accountId === account.id)?.currentBalanceMinor ?? account.openingBalanceMinor} currency={account.currencyCode as Currency} /></td>
+                    <td><ArchiveStatusBadge archived={account.archived} /></td>
                     <td className="right fin-row-actions">
                       <button type="button" className="button small secondary" onClick={() => { setEditing(account); setOpen(true); }}>Tahrirlash</button>
                       <button type="button" className="button small secondary" onClick={() => void archive(account)}>
-                        {account.status === "ARCHIVED" ? "Tiklash" : "Arxivlash"}
+                        {account.archived ? "Tiklash" : "Arxivlash"}
                       </button>
                     </td>
                   </tr>
@@ -419,17 +426,19 @@ function CategoriesTab({ dataset, adapter, onChanged }: { dataset: FinanceDatase
   const [kind, setKind] = useState<CategoryKind>("EXPENSE");
   const [editing, setEditing] = useState<FinanceCategory | null>(null);
   const [open, setOpen] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const tree = categoryTree(dataset.categories, kind);
 
   const archive = async (category: FinanceCategory) => {
-    await adapter.updateCategory(category.id, { status: category.status === "ARCHIVED" ? "ACTIVE" : "ARCHIVED" });
-    await onChanged();
+    try { setActionError(null); await adapter.updateCategory(category.id, { archived: !category.archived }); await onChanged(); }
+    catch (error) { setActionError(error instanceof Error ? error.message : "Kategoriya holati saqlanmadi"); }
   };
 
   return (
     <div className="fin-stack">
       <SectionHeading title="Kategoriyalar" subtitle="Kirim va chiqim kategoriyalari aralashmaydi"
         action={<button type="button" className="button" onClick={() => { setEditing(null); setOpen(true); }}><Plus size={15} />Yangi kategoriya</button>} />
+      {actionError && <p className="form-error" role="alert">{actionError}</p>}
       <div className="fin-type-switch" role="group" aria-label="Kategoriya turi">
         <button type="button" className={kind === "EXPENSE" ? "active" : ""} onClick={() => setKind("EXPENSE")}>Chiqim kategoriyalari</button>
         <button type="button" className={kind === "INCOME" ? "active" : ""} onClick={() => setKind("INCOME")}>Kirim kategoriyalari</button>
@@ -439,26 +448,26 @@ function CategoriesTab({ dataset, adapter, onChanged }: { dataset: FinanceDatase
           <ul className="fin-tree">
             {tree.map(({ parent, children }) => (
               <li key={parent.id}>
-                <div className={`fin-tree-row ${parent.status === "ARCHIVED" ? "fin-row-archived" : ""}`}>
+                <div className={`fin-tree-row ${parent.archived ? "fin-row-archived" : ""}`}>
                   <span className="fin-tree-name"><Layers size={13} aria-hidden="true" />{parent.name}</span>
-                  <StatusBadge status={parent.status} />
+                  <ArchiveStatusBadge archived={parent.archived} />
                   <span className="fin-row-actions">
                     <button type="button" className="button small secondary" onClick={() => { setEditing(parent); setOpen(true); }}>Tahrirlash</button>
                     <button type="button" className="button small secondary" onClick={() => void archive(parent)}>
-                      {parent.status === "ARCHIVED" ? "Tiklash" : "Arxivlash"}
+                      {parent.archived ? "Tiklash" : "Arxivlash"}
                     </button>
                   </span>
                 </div>
                 {children.length > 0 && (
                   <ul className="fin-subtree">
                     {children.map((child) => (
-                      <li key={child.id} className={`fin-tree-row ${child.status === "ARCHIVED" ? "fin-row-archived" : ""}`}>
+                      <li key={child.id} className={`fin-tree-row ${child.archived ? "fin-row-archived" : ""}`}>
                         <span className="fin-tree-name sub">{child.name}</span>
-                        <StatusBadge status={child.status} />
+                        <ArchiveStatusBadge archived={child.archived} />
                         <span className="fin-row-actions">
                           <button type="button" className="button small secondary" onClick={() => { setEditing(child); setOpen(true); }}>Tahrirlash</button>
                           <button type="button" className="button small secondary" onClick={() => void archive(child)}>
-                            {child.status === "ARCHIVED" ? "Tiklash" : "Arxivlash"}
+                            {child.archived ? "Tiklash" : "Arxivlash"}
                           </button>
                         </span>
                       </li>
@@ -481,22 +490,24 @@ function CategoriesTab({ dataset, adapter, onChanged }: { dataset: FinanceDatase
 
 // ------------------------------------------------------------------ projects ---
 
-function ProjectsTab({ dataset, range, adapter, onChanged }: {
-  dataset: FinanceDataset; range: FinanceRange; adapter: FinanceAdapter; onChanged: () => Promise<void>;
+function ProjectsTab({ dataset, adapter, onChanged }: {
+  dataset: FinanceDataset; adapter: FinanceAdapter; onChanged: () => Promise<void>;
 }) {
   const [editing, setEditing] = useState<FinanceProject | null>(null);
   const [open, setOpen] = useState(false);
-  const rows = useMemo(() => projectSpending(filterTransactions(dataset.transactions, range), dataset.projects), [dataset, range]);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const rows = useMemo(() => projectAmountRows(dataset.summary.projectBreakdown), [dataset.summary.projectBreakdown]);
 
   const archive = async (project: FinanceProject) => {
-    await adapter.updateProject(project.id, { status: project.status === "ARCHIVED" ? "ACTIVE" : "ARCHIVED" });
-    await onChanged();
+    try { setActionError(null); await adapter.updateProject(project.id, { archived: !project.archived }); await onChanged(); }
+    catch (error) { setActionError(error instanceof Error ? error.message : "Project holati saqlanmadi"); }
   };
 
   return (
     <div className="fin-stack">
       <SectionHeading title="Projectlar" subtitle="Finance cost-center — yozuvda Project bo‘lmasligi ham mumkin"
         action={<button type="button" className="button" onClick={() => { setEditing(null); setOpen(true); }}><Plus size={15} />Yangi Project</button>} />
+      {actionError && <p className="form-error" role="alert">{actionError}</p>}
       <section className="panel">
         <SectionHeading title="Tanlangan davr natijasi" />
         <ProjectTable rows={rows} />
@@ -508,14 +519,14 @@ function ProjectsTab({ dataset, range, adapter, onChanged }: {
             <thead><tr><th>Nomi</th><th>Izoh</th><th>Holat</th><th /></tr></thead>
             <tbody>
               {dataset.projects.map((project) => (
-                <tr key={project.id} className={project.status === "ARCHIVED" ? "fin-row-archived" : ""}>
+                <tr key={project.id} className={project.archived ? "fin-row-archived" : ""}>
                   <td><FolderKanban size={13} aria-hidden="true" /> {project.name}</td>
                   <td>{project.description || "—"}</td>
-                  <td><StatusBadge status={project.status} /></td>
+                  <td><ArchiveStatusBadge archived={project.archived} /></td>
                   <td className="right fin-row-actions">
                     <button type="button" className="button small secondary" onClick={() => { setEditing(project); setOpen(true); }}>Tahrirlash</button>
                     <button type="button" className="button small secondary" onClick={() => void archive(project)}>
-                      {project.status === "ARCHIVED" ? "Tiklash" : "Arxivlash"}
+                      {project.archived ? "Tiklash" : "Arxivlash"}
                     </button>
                   </td>
                 </tr>
@@ -544,11 +555,11 @@ function SubscriptionTable({ rows, dataset, today }: { rows: readonly FinanceSub
       <tbody>
         {rows.map((row) => {
           const months = cadenceMonths(row);
-          const overdue = row.status === "ACTIVE" && row.nextDueDate < today;
+          const overdue = !row.archived && row.nextDueDate < today;
           return (
-            <tr key={row.id} className={row.status === "ARCHIVED" ? "fin-row-archived" : ""}>
-              <td>{row.name}{row.status === "ARCHIVED" && <> <ArchivedBadge /></>}</td>
-              <td className="right"><Money amount={row.amount} currency={row.currency} tone="expense" /></td>
+            <tr key={row.id} className={row.archived ? "fin-row-archived" : ""}>
+              <td>{row.name}{row.archived && <> <ArchivedBadge /></>}</td>
+              <td className="right"><Money amountMinor={row.amountMinor} currency={row.currencyCode as Currency} tone={row.direction === "INCOME" ? "income" : "expense"} /></td>
               <td>{accountName(row.accountId)}</td>
               <td>{categoryName(row.categoryId)}</td>
               <td>{projectName(row.projectId)}</td>
@@ -565,12 +576,13 @@ function SubscriptionTable({ rows, dataset, today }: { rows: readonly FinanceSub
 function SubscriptionsTab({ dataset, adapter, onChanged }: { dataset: FinanceDataset; adapter: FinanceAdapter; onChanged: () => Promise<void> }) {
   const [editing, setEditing] = useState<FinanceSubscription | null>(null);
   const [open, setOpen] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const today = todayKey();
   const buckets = useMemo(() => subscriptionBuckets(dataset.subscriptions, { today }), [dataset.subscriptions, today]);
 
   const archive = async (subscription: FinanceSubscription) => {
-    await adapter.updateSubscription(subscription.id, { status: subscription.status === "ARCHIVED" ? "ACTIVE" : "ARCHIVED" });
-    await onChanged();
+    try { setActionError(null); await adapter.updateSubscription(subscription.id, { archived: !subscription.archived }); await onChanged(); }
+    catch (error) { setActionError(error instanceof Error ? error.message : "Obuna holati saqlanmadi"); }
   };
 
   const groups: { key: string; title: string; hint?: string; rows: FinanceSubscription[] }[] = [
@@ -584,6 +596,7 @@ function SubscriptionsTab({ dataset, adapter, onChanged }: { dataset: FinanceDat
     <div className="fin-stack">
       <SectionHeading title="Obunalar" subtitle="Obuna — takrorlanuvchi to‘lov shabloni. To‘lov avtomatik yaratilmaydi, uni qo‘lda kiritasiz."
         action={<button type="button" className="button" onClick={() => { setEditing(null); setOpen(true); }}><Plus size={15} />Yangi obuna</button>} />
+      {actionError && <p className="form-error" role="alert">{actionError}</p>}
       <div className="kpi-grid fin-kpi-grid">
         <CurrencyKpiRow label="Kutilayotgan to‘lov" value={buckets.upcomingByCurrency} tone="expense"
           icon={<CalendarClock size={15} />} note="Kechikkan + yaqin 30 kun" />
@@ -598,7 +611,7 @@ function SubscriptionsTab({ dataset, adapter, onChanged }: { dataset: FinanceDat
                 <span key={row.id} className="fin-subs-action">
                   <button type="button" className="button small secondary" onClick={() => { setEditing(row); setOpen(true); }}>{row.name}: tahrirlash</button>
                   <button type="button" className="button small secondary" onClick={() => void archive(row)}>
-                    {row.status === "ARCHIVED" ? "Tiklash" : "Arxivlash"}
+                    {row.archived ? "Tiklash" : "Arxivlash"}
                   </button>
                 </span>
               ))}
