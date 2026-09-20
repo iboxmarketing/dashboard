@@ -30,6 +30,7 @@ import {
   stageHistoryBatchFailure,
   STAGE_HISTORY_MAX_RETRIES,
 } from "./stage-history-retry";
+import { analyticsPageSql, safeD1WriteQuotaError } from "./sync-recovery";
 
 const stageDealBatchSize = 25;
 const analyticsDealBatchSize = 80;
@@ -446,7 +447,7 @@ async function lookupStep(job: StoredSyncJob) {
 }
 
 async function analyticsStep(job: StoredSyncJob) {
-  const dealResult = await getD1().prepare(`SELECT deal_id, payload FROM raw_deals WHERE synced_at = ? ORDER BY created_at DESC LIMIT ${analyticsDealBatchSize} OFFSET ?`).bind(job.runId, job.cursor).all<{ deal_id: string; payload: string }>();
+  const dealResult = await getD1().prepare(analyticsPageSql(analyticsDealBatchSize)).bind(job.runId, job.cursor).all<{ deal_id: string; payload: string }>();
   const rawDeals = dealResult.results ?? [];
   if (!rawDeals.length) {
     const completedAt = new Date().toISOString();
@@ -551,6 +552,8 @@ export async function runSyncStep() {
     if (next.status === "running") await saveSyncJob(next);
     return await getSyncState();
   } catch (error) {
+    const quotaError = safeD1WriteQuotaError(error);
+    if (quotaError) throw quotaError;
     const safe = safeBitrixMessage(error);
     const message = safe === "Kutilmagan xavfsiz server xatosi" && error instanceof Error ? error.message.slice(0, 240) : safe;
     await saveSyncJob({ ...job, status: "error", safeError: message, message: "Sync xatolik sabab to‘xtadi" });
