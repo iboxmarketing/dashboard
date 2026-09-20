@@ -2,6 +2,7 @@ import { defaultSettings } from "./business-time";
 import { resolveDashboardMetricIds } from "./dashboard-metrics";
 import { canonicalDealFieldKey } from "./crm-fields";
 import { stageIdList } from "./stage-config";
+import { normalizeSafeStableSellerField } from "./stable-seller-field";
 import type { DashboardSettings } from "./types";
 
 /**
@@ -70,7 +71,14 @@ function stringArray(payload: Record<string, unknown>, key: string, current: str
  */
 export function mergeSettingsPayload(current: DashboardSettings, raw: unknown): DashboardSettings {
   const payload = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
-  const base: DashboardSettings = { ...defaultSettings, ...current };
+  // Reading a legacy unsafe setting through any save path must cleanse it even
+  // when the PATCH omits salesManagerField. An operational owner field is not
+  // preserved merely because it was written before this guard existed.
+  const base: DashboardSettings = {
+    ...defaultSettings,
+    ...current,
+    salesManagerField: normalizeSafeStableSellerField(current.salesManagerField),
+  };
 
   const schedule = has(payload, "schedule") && payload.schedule && typeof payload.schedule === "object" && !Array.isArray(payload.schedule)
     ? { ...base.schedule, ...(payload.schedule as DashboardSettings["schedule"]) }
@@ -98,7 +106,9 @@ export function mergeSettingsPayload(current: DashboardSettings, raw: unknown): 
     // The three fields the incident cleared. Absent now preserves.
     failureReasonField: nullableText(payload, "failureReasonField", base.failureReasonField),
     marketingChannelField: nullableText(payload, "marketingChannelField", base.marketingChannelField),
-    salesManagerField: nullableText(payload, "salesManagerField", base.salesManagerField, canonicalDealFieldKey),
+    salesManagerField: has(payload, "salesManagerField")
+      ? normalizeSafeStableSellerField(payload.salesManagerField)
+      : base.salesManagerField,
 
     failureReasonFieldByPipeline: has(payload, "failureReasonFieldByPipeline")
       && payload.failureReasonFieldByPipeline && typeof payload.failureReasonFieldByPipeline === "object"

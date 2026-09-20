@@ -5,6 +5,7 @@ import { mergeSettingsPayload } from "../lib/settings-payload";
 import { normalizeSettings } from "../lib/settings-safety";
 import { stageConfigReadiness } from "../lib/diagnostics";
 import { settingsReadiness } from "../lib/settings-readiness";
+import { isSafeStableSellerField, normalizeSafeStableSellerField } from "../lib/stable-seller-field";
 import type { DashboardSettings } from "../lib/types";
 
 /**
@@ -25,17 +26,17 @@ const stored = (): DashboardSettings => normalizeSettings({
   failureReasonField: "UF_CRM_1748329407554",
   failureReasonFieldByPipeline: { "3": "UF_CRM_1748329407554" },
   marketingChannelField: "UF_CRM_1784823646",
-  salesManagerField: "ASSIGNED_BY_ID",
+  salesManagerField: "UF_CRM_9",
   historyDays: 90, autoSyncMinutes: 0, slaMinutes: 30, defaultStageLimitHours: 240,
   holidays: ["2026-01-01"], stageLimits: { "C3:WON": 48 },
   routingReasonPatterns: ["idoko", "sd"],
   dashboardMetricIds: ["leads", "sql", "revenue"],
 }) as DashboardSettings;
 
-test("A. an empty payload preserves salesManagerField — the exact incident", () => {
+test("A. an empty payload preserves a safe custom salesManagerField", () => {
   const current = stored();
   const next = mergeSettingsPayload(current, {});
-  assert.equal(next.salesManagerField, "ASSIGNED_BY_ID");
+  assert.equal(next.salesManagerField, "UF_CRM_9");
 });
 
 test("B. an omitted failureReasonField is preserved", () => {
@@ -53,7 +54,7 @@ test("an empty payload is a complete no-op across every setting", () => {
   // Also true for the shapes a hostile or broken client might send.
   for (const junk of [null, undefined, [], "", 0, "string", { unknownKey: "x" }]) {
     const result = mergeSettingsPayload(current, junk);
-    assert.equal(result.salesManagerField, "ASSIGNED_BY_ID", `junk payload ${JSON.stringify(junk)}`);
+    assert.equal(result.salesManagerField, "UF_CRM_9", `junk payload ${JSON.stringify(junk)}`);
     assert.equal(result.failureReasonField, "UF_CRM_1748329407554");
     assert.deepEqual(result.selectedPipelineIds, ["3"]);
     assert.deepEqual(result.qualifiedStageIds, ["C3:UC_9SUEMM"]);
@@ -93,7 +94,7 @@ test("D2. every single-field update leaves the rest identical", () => {
     { slaMinutes: 45 }, { historyDays: 30 }, { defaultStageLimitHours: 100 },
     { holidays: ["2026-03-08"] }, { routingReasonPatterns: ["передан"] },
     { dashboardMetricIds: ["leads"] }, { paymentStageIds: ["C3:FINAL_INVOICE"] },
-    { salesManagerField: "UF_CRM_9" }, { stageLimits: { "C3:LOSE": 12 } },
+    { salesManagerField: "UF_CRM_10" }, { stageLimits: { "C3:LOSE": 12 } },
   ];
   for (const edit of edits) {
     const key = Object.keys(edit)[0] as keyof DashboardSettings;
@@ -115,7 +116,8 @@ test("values are still validated and normalized, not stored blindly", () => {
   assert.deepEqual(mergeSettingsPayload(current, { holidays: ["nope", "2026-05-01"] }).holidays, ["2026-05-01"]);
   assert.equal(mergeSettingsPayload(current, { timezone: "UTC" }).timezone, "Asia/Tashkent", "timezone is not client-controlled");
   assert.deepEqual(mergeSettingsPayload(current, { schedule: "junk" }).schedule, current.schedule, "a malformed schedule is ignored");
-  assert.equal(mergeSettingsPayload(current, { salesManagerField: "  ASSIGNED_BY_ID  " }).salesManagerField, "ASSIGNED_BY_ID", "trimmed");
+  assert.equal(mergeSettingsPayload(current, { salesManagerField: "  ASSIGNED_BY_ID  " }).salesManagerField, null,
+    "operational owner is rejected, not preserved");
   assert.equal(mergeSettingsPayload(current, { salesManagerField: "ufCrm_123" }).salesManagerField, "UF_CRM_123", "camelCase custom seller field is canonicalized");
   assert.equal(mergeSettingsPayload(current, { failureReasonField: "ufCrm_loss" }).failureReasonField, "ufCrm_loss", "failure-reason field behavior is unchanged");
 });
@@ -124,6 +126,26 @@ test("legacy camelCase seller settings normalize without a manual re-save", () =
   const safe = normalizeSettings({ salesManagerField: "ufCrm_123", failureReasonField: "ufCrm_loss" } as never);
   assert.equal(safe.salesManagerField, "UF_CRM_123");
   assert.equal(safe.failureReasonField, "ufCrm_loss", "failure-reason field remains untouched");
+});
+
+test("unsafe system owner fields are never stable seller fields", () => {
+  for (const field of [
+    "ASSIGNED_BY_ID", "MOVED_BY_ID", "CREATED_BY_ID", "MODIFY_BY_ID",
+    "LAST_ACTIVITY_BY", "LAST_ACTIVITY_BY_ID", "OBSERVERS", "OBSERVER_IDS",
+  ]) {
+    assert.equal(isSafeStableSellerField(field), false, field);
+    assert.equal(normalizeSafeStableSellerField(field), null, field);
+    assert.equal(mergeSettingsPayload(stored(), { salesManagerField: field }).salesManagerField, null, field);
+  }
+  assert.equal(isSafeStableSellerField(null), true);
+  assert.equal(isSafeStableSellerField("UF_CRM_123"), true);
+  assert.equal(normalizeSafeStableSellerField("ufCrm_123"), "UF_CRM_123");
+});
+
+test("old persisted ASSIGNED_BY_ID becomes effectively null even when omitted", () => {
+  const legacy = { ...stored(), salesManagerField: "ASSIGNED_BY_ID" };
+  assert.equal(normalizeSettings(legacy).salesManagerField, null);
+  assert.equal(mergeSettingsPayload(legacy, {}).salesManagerField, null);
 });
 
 test("E. merged output still satisfies the Settings UI readiness expectations", () => {

@@ -4,6 +4,12 @@ import test from "node:test";
 import { buildAnalyticsRecords } from "../lib/analytics";
 import { defaultSettings } from "../lib/business-time";
 import { SALES_SNAPSHOT_UPSERT } from "../lib/sales-snapshots";
+import { buildDashboardMetrics } from "../lib/dashboard-metrics";
+import {
+  parseSellerSnapshotRepairManifest,
+  sellerSnapshotInvalidationSql,
+  sellerSnapshotRepairPreviewSql,
+} from "../lib/seller-snapshot-repair";
 import type { SalesSnapshot } from "../lib/storage";
 
 const MAIN = "3";
@@ -40,14 +46,14 @@ function build(deal: Record<string, unknown>, snapshots?: Map<string, SalesSnaps
 }
 
 /** Real analytics build for a Deal first observed after it reached post-sale. */
-function buildPostSale(deal: Record<string, unknown>, snapshots?: Map<string, SalesSnapshot>) {
+function buildPostSale(deal: Record<string, unknown>, snapshots?: Map<string, SalesSnapshot>, salesManagerField = SELLER_FIELD) {
   return buildAnalyticsRecords({
     deals: [{ ID: "1", TITLE: "T", DATE_CREATE: CREATED, CATEGORY_ID: POST_SALE, STAGE_ID: "SUPPORT", MOVED_TIME: JAN_12, ...deal }],
     stageHistories: [
       { OWNER_ID: "1", CATEGORY_ID: MAIN, STAGE_ID: "PAYMENT", CREATED_TIME: JAN_10 },
       { OWNER_ID: "1", CATEGORY_ID: POST_SALE, STAGE_ID: "SUPPORT", CREATED_TIME: JAN_12 },
     ],
-    settings: { ...defaultSettings, selectedPipelineIds: [MAIN], postSalePipelineIds: [POST_SALE], salesManagerField: SELLER_FIELD },
+    settings: { ...defaultSettings, selectedPipelineIds: [MAIN], postSalePipelineIds: [POST_SALE], salesManagerField },
     users: new Map([["7", "Ali"], ["20", "Madina"]]),
     pipelines: new Map([[MAIN, "IBOX Sales"], [POST_SALE, "IBOX Обучение/Сопровождение"]]),
     stages: new Map([["PAYMENT", "Оплата получена"], ["SUPPORT", "Сопровождение"]]),
@@ -198,6 +204,18 @@ test("Case 7b: first sync post-sale’dan keyin bo‘lsa onboarding owner sotuvc
   assert.equal(row.assignedManagerId, "20", "operational owner alohida saqlanadi");
 });
 
+test("unsafe ASSIGNED_BY_ID config post-sale onboarding owner’ini CUSTOM_FIELD sotuvchi qila olmaydi", () => {
+  const row = buildPostSale(
+    { ASSIGNED_BY_ID: "20", MOVED_BY_ID: "20", OPPORTUNITY: 559_000 },
+    undefined,
+    "ASSIGNED_BY_ID",
+  );
+  assert.equal(row.salesStatus, "WON");
+  assert.equal(row.assignedManager, "Madina", "live operational owner remains available");
+  assert.equal(row.salesManagerId, null);
+  assert.equal(row.salesManagerAttribution, "UNKNOWN");
+});
+
 test("Case 7c: oldin to‘g‘ri muzlatilgan Ali post-sale owner bilan qayta yozilmaydi", () => {
   const row = buildPostSale({ MOVED_BY_ID: "20", ASSIGNED_BY_ID: "20" }, snapshot("7"));
   assert.equal(row.salesManagerId, "7");
@@ -244,4 +262,68 @@ test("manager id “0” faqat current payment mover bo‘lsa qabul qilinadi", (
   assert.equal(build({ MOVED_BY_ID: "0", ASSIGNED_BY_ID: "7" }, snapshot(null)).salesManagerAttribution, "STAGE_MOVER");
   assert.equal(buildPostSale({ MOVED_BY_ID: "0", ASSIGNED_BY_ID: "0" }, snapshot(null)).salesManagerId, null);
   assert.equal(build({ ASSIGNED_BY_ID: "" }, snapshot(null)).salesManagerId, null);
+});
+
+test("reviewed seller snapshot invalidation is targeted, seller-only and idempotent", { skip: !DatabaseSync }, () => {
+  const db = new DatabaseSync!(":memory:");
+  db.exec(readFileSync(new URL("../drizzle/0002_flawless_king_cobra.sql", import.meta.url), "utf8").replace(/-->.*$/gm, ""));
+  const insert = db.prepare("INSERT INTO deal_sales_snapshots(deal_id, won_at, manager_id, manager_name, attribution_source, created_at) VALUES(?, ?, ?, ?, ?, ?)");
+  insert.run("1", JAN_10, "20", "Madina", "FIRST_CALL", "2026-01-10T13:00:00.000Z");
+  insert.run("2", JAN_10, "7", "Ali", "CUSTOM_FIELD", "2026-01-10T13:00:00.000Z");
+
+  const manifest = parseSellerSnapshotRepairManifest({ reviewed: true, dealIds: ["1", "1"] });
+  assert.deepEqual(manifest.dealIds, ["1"], "manifest is explicit and deduplicated");
+  const preview = db.prepare(sellerSnapshotRepairPreviewSql(manifest.dealIds)).get()! as Record<string, number>;
+  assert.equal(Number(preview.matched), 1);
+  assert.equal(Number(preview.would_change), 1);
+
+  const before = db.prepare("SELECT COUNT(*) AS deals, COUNT(won_at) AS sales FROM deal_sales_snapshots").get()! as Record<string, number>;
+  const first = db.prepare(sellerSnapshotInvalidationSql(manifest.dealIds)).run();
+  assert.equal(first.changes, 1);
+  const repaired = db.prepare("SELECT * FROM deal_sales_snapshots WHERE deal_id = '1'").get()! as Record<string, string | null>;
+  assert.equal(repaired.manager_id, null);
+  assert.equal(repaired.manager_name, null);
+  assert.equal(repaired.attribution_source, "UNKNOWN");
+  assert.equal(repaired.won_at, JAN_10, "won_at is outside the repair SET clause");
+  assert.equal(repaired.created_at, "2026-01-10T13:00:00.000Z");
+
+  const trusted = db.prepare("SELECT * FROM deal_sales_snapshots WHERE deal_id = '2'").get()! as Record<string, string | null>;
+  assert.equal(trusted.manager_id, "7", "unlisted trustworthy snapshot is untouched");
+  assert.equal(trusted.manager_name, "Ali");
+  assert.equal(trusted.attribution_source, "CUSTOM_FIELD");
+
+  const second = db.prepare(sellerSnapshotInvalidationSql(manifest.dealIds)).run();
+  assert.equal(second.changes, 0, "repeated invalidation is a no-op");
+  const after = db.prepare("SELECT COUNT(*) AS deals, COUNT(won_at) AS sales FROM deal_sales_snapshots").get()! as Record<string, number>;
+  assert.deepEqual(after, before, "Deal and Sale row counts are preserved");
+});
+
+test("Backfill semantics after invalidation keep the sale and revenue but may honestly leave seller Unknown", () => {
+  const badSnapshot = attributedSnapshot("20", "FIRST_CALL");
+  const deal = { ASSIGNED_BY_ID: "20", MOVED_BY_ID: "20", OPPORTUNITY: 559_000, CURRENCY_ID: "UZS" };
+  const before = buildPostSale(deal, badSnapshot, "ASSIGNED_BY_ID");
+  const invalidated = new Map<string, SalesSnapshot>([["1", {
+    dealId: "1", wonAt: JAN_10, managerId: null, managerName: null, attributionSource: "UNKNOWN",
+  }]]);
+  const after = buildPostSale(deal, invalidated, "ASSIGNED_BY_ID");
+
+  assert.equal(before.salesManagerId, "20", "fixture proves the reviewed legacy snapshot was previously trusted");
+  assert.equal(after.salesManagerId, null);
+  assert.equal(after.salesManagerAttribution, "UNKNOWN");
+  assert.equal(after.wonAt, before.wonAt);
+  assert.equal(after.opportunity, before.opportunity);
+
+  const beforeMetrics = buildDashboardMetrics([before], [before]);
+  const afterMetrics = buildDashboardMetrics([after], [after]);
+  assert.equal(afterMetrics.counts.leads, beforeMetrics.counts.leads);
+  assert.equal(afterMetrics.counts.cohort_sales, beforeMetrics.counts.cohort_sales);
+  assert.equal(afterMetrics.counts.period_sales, beforeMetrics.counts.period_sales);
+  assert.equal(afterMetrics.money.revenue, 559_000);
+  assert.equal(afterMetrics.money.revenue, beforeMetrics.money.revenue);
+});
+
+test("seller repair manifest refuses implicit or unreviewed targets", () => {
+  assert.throws(() => parseSellerSnapshotRepairManifest({ dealIds: ["1"] }), /reviewed/);
+  assert.throws(() => parseSellerSnapshotRepairManifest({ reviewed: true, dealIds: [] }), /explicit/);
+  assert.throws(() => parseSellerSnapshotRepairManifest({ reviewed: true, dealIds: ["1 OR 1=1"] }), /positive integer/);
 });

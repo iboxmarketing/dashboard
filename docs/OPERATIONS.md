@@ -145,7 +145,7 @@ plus post-sale evidence does not multiply analytics rows.
 ## Repairing seller attribution semantics
 
 Seller attribution is stored in each analytics payload, so after deploying the
-version-9 seller rule run the analytics Backfill to rebuild existing records
+version-10 seller-field safety rule run the analytics Backfill to rebuild existing records
 from the raw Deals, histories, configured Sales Manager field and snapshots
 already in D1. A Full Sync is not required for this rule change and cannot
 manufacture a historical sale-transition actor: Bitrix stage history does not
@@ -159,6 +159,46 @@ had already entered post-sale cannot be distinguished from one captured in the
 payment stage with the current schema. Those exceptional rows require an
 evidence-led audit/correction; neither Backfill nor Full Sync can safely guess
 them. Do not delete or bulk-rewrite snapshots merely to remove Unknown values.
+
+### Targeted invalidation of reviewed bad seller snapshots
+
+When an evidence audit proves that specific snapshot seller values came from an
+unsafe historical configuration (for example `ASSIGNED_BY_ID`) or a legacy
+`FIRST_CALL` source, repair only an explicit reviewed Deal-ID manifest. Never
+derive the execution set from a category, seller name or attribution source.
+
+The local-only manifest shape is:
+
+```json
+{
+  "reviewed": true,
+  "dealIds": ["12345", "12346"]
+}
+```
+
+Keep live manifests out of Git. The command is dry-run by default and prints
+counts only — no seller names, seller IDs or secrets:
+
+```bash
+npm run repair:seller-snapshots -- \
+  --manifest /secure/path/reviewed-seller-repair.json \
+  --target staging \
+  --database ibox-dashboard-staging \
+  --config wrangler.generated.jsonc \
+  --dry-run
+```
+
+After reviewing the count, repeat with `--apply` instead of `--dry-run`. The
+config is rejected unless both its Worker name and D1 database name match the
+explicit target. Production additionally requires `--confirm-production` and a
+production-specific config; never reuse a staging config for production.
+
+Apply changes only `manager_id`, `manager_name` and `attribution_source` in
+`deal_sales_snapshots`, setting them to `NULL`, `NULL` and `UNKNOWN`. The SQL
+does not update `deal_id`, `won_at` or `created_at`, and its state predicate
+makes repeat execution a zero-row no-op. Run Analytics Backfill afterward so
+the analytics payload resolves trustworthy current-payment evidence or reports
+the seller honestly as `Aniqlanmagan`.
 
 ## Rolling back a release that changed stored analytics semantics
 

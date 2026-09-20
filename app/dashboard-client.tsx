@@ -28,6 +28,7 @@ import type { CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOpt
 import { ANALYTICS_VERSION } from "@/lib/analytics";
 import { canonicalizeFieldOptions, normalizeCrmFields } from "@/lib/crm-fields";
 import { normalizeSettings } from "@/lib/settings-safety";
+import { isSafeStableSellerField } from "@/lib/stable-seller-field";
 import {
   DEADLINE_STATES, deadlineState, filterProjects, isOverdue, latestUpdate, projectUpdates,
   statusBreakdown, statusOptions, summarizeProjects, wasEdited, type Project, type ProjectUpdate,
@@ -1431,7 +1432,10 @@ function SettingsView({ settings, syncing, lastSyncAt, onSave, onFullSync, onDir
     finally { setSaving(false); }
   }
 
-  const fieldOptions = fields.map((field) => <option key={field.key} value={field.key}>{field.title}{field.sampleValue ? ` · namuna: ${field.sampleValue}` : ""}</option>);
+  const sellerFieldOptions = fields
+    .filter((field) => isSafeStableSellerField(field.key) && Boolean(field.key))
+    .map((field) => <option key={field.key} value={field.key}>{field.title}{field.sampleValue ? ` · namuna: ${field.sampleValue}` : ""}</option>);
+  const unsafeSellerField = Boolean(draft.salesManagerField) && !isSafeStableSellerField(draft.salesManagerField);
   const stageConflicts = stageConfigConflicts(draft);
   // Enumeration fields are the only sensible Причина провала candidates.
   const reasonFieldOptions = canonicalizeFieldOptions(fields.filter((field) => /enum/i.test(field.type) || (field.options ?? []).length > 0));
@@ -1580,9 +1584,11 @@ function SettingsView({ settings, syncing, lastSyncAt, onSave, onFullSync, onDir
       </section>
       <section className="panel"><SectionHeader title="Qo‘shimcha Bitrix maydonlari" subtitle="Sotuvchi maydoni. Manba doim standart SOURCE_ID’dan olinadi." />
         <div className={`field-discovery ${customFieldCount ? "ok" : "warning"}`}>{customFieldCount ? `${customFieldCount} ta maxsus maydon topildi. Nom yoki kod bo‘yicha qidiring.` : "Webhook maxsus maydon nomlarini bermadi. UF_CRM_... kodini qo‘lda kiritish mumkin."}</div>
-        <datalist id="crm-field-options">{fieldOptions}</datalist>
+        <datalist id="crm-field-options">{sellerFieldOptions}</datalist>
         <div className="config-fields">
-          <FormField label="Sotuvchi maydoni" hint="Sotuvchi yozilgan employee maydoni bo‘lsa. Bo‘sh bo‘lsa avtomatik attribution ishlaydi.">
+          <FormField label="Sotuvchi maydoni"
+            hint="Faqat barqaror UF_CRM_* employee maydoni. Bo‘sh bo‘lsa avtomatik attribution ishlaydi."
+            error={unsafeSellerField ? "Joriy owner/system maydoni tarixiy sotuvchi sifatida ishlatilmaydi; UF_CRM_* maydonini tanlang." : undefined}>
             <TextInput list="crm-field-options" value={draft.salesManagerField ?? ""} placeholder="Bo‘sh bo‘lsa avtomatik"
               onChange={(event) => setDraft({ ...draft, salesManagerField: event.target.value.trim() || null })} />
           </FormField>
@@ -1594,7 +1600,7 @@ function SettingsView({ settings, syncing, lastSyncAt, onSave, onFullSync, onDir
       <strong>Saqlanmagan o‘zgarishlar</strong>
       <div className="save-bar-actions">
         <button className="button secondary" onClick={resetDraft} disabled={saving}>Bekor qilish</button>
-        <button className="button primary" onClick={() => void save()} disabled={saving || !validConfig}>
+        <button className="button primary" onClick={() => void save()} disabled={saving || !validConfig || unsafeSellerField}>
           {saving ? <Loader2 size={17} className="spin" /> : <Check size={17} />}Saqlash
         </button>
       </div>
@@ -2451,10 +2457,10 @@ export default function DashboardClient() {
   const openPage = pages.find((page) => page.id === openPageId) ?? null;
   const openPageWidgets = openPage ? pageWidgets(widgets, openPage.id) : [];
   const hasLegacyData = records.some((record) => record.analyticsVersion < ANALYTICS_VERSION);
-  // v8 already has the raw Deal/history coverage needed for the v9 seller
-  // correction, so an analytics-only Backfill is sufficient. Older persisted
-  // semantics may still require the broader Full Sync path documented for
-  // their release; do not overstate v9's API requirement in the banner.
+  // v8+ already has the raw Deal/history coverage needed for the v10 seller
+  // safety correction, so an analytics-only Backfill is sufficient. Older
+  // persisted semantics may still require the broader Full Sync path documented
+  // for their release; do not overstate v10's API requirement in the banner.
   const sellerBackfillOnly = hasLegacyData && records.every((record) => record.analyticsVersion >= 8);
   const syncOptions = settings.selectedPipelineIds.map((id, index) => ({ id, name: settings.selectedPipelineNames[index] ?? `Sales funnel #${id}` }));
   const activeSyncPipelineId = syncOptions.some((pipeline) => pipeline.id === syncPipelineId) ? syncPipelineId : syncOptions[0]?.id ?? "";

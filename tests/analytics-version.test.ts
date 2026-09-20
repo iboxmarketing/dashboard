@@ -27,9 +27,10 @@ test("1: analyticsVersion 4 yozuvi eskirgan deb hisoblanadi", () => {
   assert.equal(isStale(3), true);
 });
 
-test("2: analyticsVersion 9 joriy, 8 esa eskirgan deb belgilanadi", () => {
-  assert.equal(ANALYTICS_VERSION, 9);
-  assert.equal(isStale(9), false);
+test("2: analyticsVersion 10 joriy, 9 esa unsafe seller guard sabab eskirgan", () => {
+  assert.equal(ANALYTICS_VERSION, 10);
+  assert.equal(isStale(9), true, "version 9 could read ASSIGNED_BY_ID as a CUSTOM_FIELD seller");
+  assert.equal(isStale(10), false);
   assert.equal(isStale(8), true, "version 8 could freeze a post-sale assignee as seller");
   assert.equal(isStale(7), true, "version 7 has no persisted canonical Lead membership");
   // Version 6 was written under the old pre-SQL exclusion — a direct close
@@ -39,8 +40,8 @@ test("2: analyticsVersion 9 joriy, 8 esa eskirgan deb belgilanadi", () => {
   assert.equal(isStale(5), true);
 });
 
-test("3: yangi qurilgan yozuvlar 9-versiya bilan saqlanadi", () => {
-  assert.equal(record().analyticsVersion, 9);
+test("3: yangi qurilgan yozuvlar 10-versiya bilan saqlanadi", () => {
+  assert.equal(record().analyticsVersion, 10);
   assert.equal(record().analyticsVersion, ANALYTICS_VERSION);
   assert.equal(record().projectLeadMembership, "INCLUDED");
 });
@@ -54,7 +55,7 @@ test("4: Full Sync yo‘li yozuvlarni aynan shu builder orqali qayta quradi", ()
   const ui = read("../app/dashboard-client.tsx");
   assert.equal(/analyticsVersion\s*<\s*\d/.test(ui), false, "UI qattiq raqam emas, ANALYTICS_VERSION ishlatadi");
   assert.ok(ui.includes("record.analyticsVersion < ANALYTICS_VERSION"));
-  assert.ok(ui.includes("record.analyticsVersion >= 8"), "v8 → v9 seller correction Backfill-only deb ko‘rsatiladi");
+  assert.ok(ui.includes("record.analyticsVersion >= 8"), "v8/v9 → v10 seller correction Backfill-only deb ko‘rsatiladi");
   assert.match(ui, /Analytics Backfill[\s\S]*Full Sync shart emas/, "UI seller attribution uchun Full Sync talab qilmaydi");
 });
 

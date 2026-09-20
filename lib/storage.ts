@@ -4,6 +4,7 @@ import { defaultSettings } from "./business-time";
 import { SALES_SNAPSHOT_UPSERT } from "./sales-snapshots";
 import { stageIdList } from "./stage-config";
 import { resolveDashboardMetricIds } from "./dashboard-metrics";
+import { normalizeSafeStableSellerField } from "./stable-seller-field";
 import type { AnalyticsRecord, DashboardSettings, ProviderDiagnostic, SyncProgressState } from "./types";
 
 export async function ensureSchema() {
@@ -40,6 +41,9 @@ export async function getSettings(): Promise<DashboardSettings> {
     return {
       ...defaultSettings,
       ...parsed,
+      // Legacy owner fields are operational evidence, never a stable seller.
+      // Read them as an empty setting; the next save persists the safe value.
+      salesManagerField: normalizeSafeStableSellerField(parsed.salesManagerField),
       schedule: { ...defaultSettings.schedule, ...(parsed.schedule ?? {}) },
       holidays: Array.isArray(parsed.holidays) ? parsed.holidays : [],
       selectedPipelineIds: Array.isArray(parsed.selectedPipelineIds) ? parsed.selectedPipelineIds.map(String) : [],
@@ -68,7 +72,10 @@ export async function saveSettings(settings: DashboardSettings) {
   const now = new Date().toISOString();
   await getD1()
     .prepare("INSERT INTO app_settings(key, value, updated_at) VALUES(?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
-    .bind("dashboard", JSON.stringify(settings), now)
+    .bind("dashboard", JSON.stringify({
+      ...settings,
+      salesManagerField: normalizeSafeStableSellerField(settings.salesManagerField),
+    }), now)
     .run();
 }
 

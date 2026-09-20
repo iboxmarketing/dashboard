@@ -12,6 +12,7 @@ export { normalizePipelineName, resolvePipelineSelection } from "./pipelines";
 import { normalizePipelineName, pairPostSalePipeline, resolvePipelineSelection, resolvePostSalePipelines } from "./pipelines";
 import { resolveSyncWindow } from "./sync-window";
 import { canonicalDealFieldKey, canonicalizeFieldOptions } from "./crm-fields";
+import { normalizeSafeStableSellerField } from "./stable-seller-field";
 import { runPostSyncReconciliation } from "./post-sync-reconciliation";
 import {
   persistStageHistoryRows,
@@ -249,7 +250,12 @@ export async function startSync(options: { days?: number; full?: boolean; pipeli
       ? settings.failureReasonField
       : detectFailureReasonField(crmFields),
     marketingChannelField: settings.marketingChannelField ?? detectField(crmFields, /маркет.*канал|marketing.*kanal|marketing.*channel/),
-    salesManagerField: settings.salesManagerField ?? detectField(crmFields, /менеджер.*продаж|sales.*manager|sotuv.*menejer/, /employee|user/),
+    salesManagerField: normalizeSafeStableSellerField(settings.salesManagerField)
+      ?? normalizeSafeStableSellerField(detectField(
+        crmFields.filter((field) => normalizeSafeStableSellerField(field.key)),
+        /менеджер.*продаж|sales.*manager|sotuv.*menejer/,
+        /employee|user/,
+      )),
   };
   const selectedIds = allSelected.map((item) => item.id);
   const scopeState = await getDictionary<{ lastSyncAt: string | null }>(`syncScope:${scopedMain.id}`, { lastSyncAt: null });
@@ -288,7 +294,11 @@ async function dealStep(job: StoredSyncJob) {
   const postSaleCategoryIds = job.reportingPipelines.map((item) => item.id);
   const paymentStageIds = [...new Set(settings.paymentStageIds.map(String).filter(Boolean))];
   // Source comes from SOURCE_ID; the legacy marketing-channel field is no longer read.
-  const customFields = [...new Set([settings.failureReasonField, ...Object.values(settings.failureReasonFieldByPipeline ?? {}), settings.salesManagerField])]
+  const customFields = [...new Set([
+    settings.failureReasonField,
+    ...Object.values(settings.failureReasonFieldByPipeline ?? {}),
+    normalizeSafeStableSellerField(settings.salesManagerField),
+  ])]
     .filter((field): field is string => Boolean(field)).map(canonicalDealFieldKey);
   // CLOSED is current-state evidence for reconciliation only. Won/lost
   // classification stays with the canonical stage and stage-history rules;

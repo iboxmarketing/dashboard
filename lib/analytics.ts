@@ -4,6 +4,7 @@ import { classifyLossReasonGroup, MISSING_LOSS_REASON, classifySalesStatus, fiel
 import { sqlThresholdsByCategory, type StageMeta, type StageSemantics } from "./stage-config";
 import { canonicalDealFieldKey } from "./crm-fields";
 import { decideCanonicalLeadMembership } from "./canonical-lead-membership.js";
+import { normalizeSafeStableSellerField } from "./stable-seller-field";
 import type { SalesSnapshot } from "./storage";
 import type { AnalyticsRecord, DashboardSettings, ProcessingSource, SalesManagerAttribution } from "./types";
 
@@ -40,8 +41,12 @@ import type { AnalyticsRecord, DashboardSettings, ProcessingSource, SalesManager
  *     owner. A won Deal may use MOVED_BY_ID only while its current stage is the
  *     payment stage; otherwise it needs a stable custom field or an already
  *     frozen snapshot and remains Unknown when neither exists.
+ * 10 — Stable seller configuration is custom-field-only. Generic operational
+ *      owners such as ASSIGNED_BY_ID can no longer be read and mislabeled as
+ *      CUSTOM_FIELD seller evidence. Existing unsafe snapshots are repaired
+ *      only through the explicit reviewed-ID invalidation workflow.
  */
-export const ANALYTICS_VERSION = 9;
+export const ANALYTICS_VERSION = 10;
 
 export type RawDeal = Record<string, unknown>;
 export type RawActivity = Record<string, unknown>;
@@ -247,9 +252,10 @@ export function buildAnalyticsRecords(input: {
     // camelCase spelling. Deal SELECT payloads use UF_CRM_*; read the canonical
     // key first while retaining the raw-key fallback for controlled fixtures and
     // any legacy payload that happened to use the stored spelling.
-    const salesManagerField = input.settings.salesManagerField ? canonicalDealFieldKey(input.settings.salesManagerField) : "";
+    const safeSellerField = normalizeSafeStableSellerField(input.settings.salesManagerField);
+    const salesManagerField = safeSellerField ? canonicalDealFieldKey(safeSellerField) : "";
     const customManagerId = salesManagerField
-      ? employeeId(deal[salesManagerField] ?? deal[input.settings.salesManagerField as string])
+      ? employeeId(deal[salesManagerField] ?? deal[safeSellerField as string])
       : "";
     const moverId = string(deal.MOVED_BY_ID);
     // Two different immutability rules. The sale date is frozen as soon as a
@@ -260,7 +266,10 @@ export function buildAnalyticsRecords(input: {
     // that value may already have been the post-sale owner. Keep their wonAt,
     // but let trustworthy evidence repair their manager. CUSTOM_FIELD and
     // STAGE_MOVER snapshots stay immutable because they may have been captured
-    // at the actual payment transition and no later field is stronger.
+    // at the actual payment transition and no later field is stronger. A known
+    // bad legacy CUSTOM_FIELD/FIRST_CALL snapshot is not weakened globally:
+    // the reviewed-ID repair first clears only its seller fields to UNKNOWN,
+    // after which this normal unresolved-snapshot fallback chain applies.
     const snapshotManagerId = snapshot?.attributionSource === "CURRENT_RESPONSIBLE" ? "" : snapshot?.managerId ?? "";
     let salesManagerId = snapshotManagerId;
     let salesManager = snapshotManagerId ? snapshot?.managerName ?? "" : "";
