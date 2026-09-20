@@ -3,6 +3,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { backfillBatchCount, backfillProgress } from "../lib/backfill-plan";
 import { buildFieldOptionMap, buildStatusMaps, buildUserMap } from "../lib/analytics-dictionaries";
+import { SALES_SNAPSHOT_UPSERT } from "../lib/sales-snapshots";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 /**
@@ -11,6 +12,9 @@ const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf
  * that text would fail the very files that document the guarantee.
  */
 const code = (path: string) => read(path).replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+
+let DatabaseSync: typeof import("node:sqlite").DatabaseSync | null = null;
+try { ({ DatabaseSync } = await import("node:sqlite")); } catch { /* Older Node runtimes skip SQLite proof. */ }
 
 test("3/9: the backfill makes no Bitrix network calls", () => {
   const backfill = code("../lib/analytics-backfill.ts");
@@ -57,6 +61,39 @@ test("4/6: paging is bounded and idempotent by construction", () => {
   assert.doesNotMatch(route, /for\s*\(|while\s*\(/, "the route must not loop over batches");
   assert.match(route, /if \(state\.status === "running"\) state = await runAnalyticsBackfillBatch\(state\);/,
     "exactly one batch per request");
+});
+
+test("seller repair flow B: Backfill persists recovered attribution through the shared safe upsert", () => {
+  const backfill = code("../lib/analytics-backfill.ts");
+  const analyticsWrite = backfill.indexOf("await upsertAnalyticsRecords(records)");
+  const snapshotWrite = backfill.indexOf("await saveSalesSnapshots(records)");
+  assert.ok(analyticsWrite >= 0 && analyticsWrite < snapshotWrite,
+    "each rebuilt page persists its recovered seller before advancing the cursor");
+  assert.equal((backfill.match(/saveSalesSnapshots\(records\)/g) ?? []).length, 1);
+});
+
+test("repeated Backfill snapshot persistence upgrades UNKNOWN once without changing won_at or duplicating", { skip: !DatabaseSync }, () => {
+  const db = new DatabaseSync!(":memory:");
+  db.exec(read("../drizzle/0002_flawless_king_cobra.sql").replace(/-->.*$/gm, ""));
+  db.prepare("INSERT INTO deal_sales_snapshots(deal_id, won_at, manager_id, manager_name, attribution_source, created_at) VALUES(?, ?, ?, ?, ?, ?)")
+    .run("41", "2026-09-05T10:00:00.000Z", null, null, "UNKNOWN", "2026-09-05T10:00:00.000Z");
+  const persist = db.prepare(SALES_SNAPSHOT_UPSERT);
+
+  // First Backfill recovers Ali from post-sale observer evidence; a repeated
+  // Backfill and later conflicting evidence must both be harmless.
+  persist.run("41", "2026-09-07T10:00:00.000Z", "7", "Ali", "POST_SALE_OBSERVER", "2026-09-20T00:00:00.000Z");
+  persist.run("41", "2026-09-07T10:00:00.000Z", "7", "Ali", "POST_SALE_OBSERVER", "2026-09-20T00:01:00.000Z");
+  persist.run("41", "2026-09-08T10:00:00.000Z", "20", "Madina", "POST_SALE_OBSERVER", "2026-09-20T00:02:00.000Z");
+
+  const rows = db.prepare("SELECT deal_id, won_at, manager_id, manager_name, attribution_source FROM deal_sales_snapshots").all() as Record<string, string | null>[];
+  assert.equal(rows.length, 1, "deal_id primary key prevents duplicate snapshots");
+  assert.deepEqual({ ...rows[0] }, {
+    deal_id: "41",
+    won_at: "2026-09-05T10:00:00.000Z",
+    manager_id: "7",
+    manager_name: "Ali",
+    attribution_source: "POST_SALE_OBSERVER",
+  });
 });
 
 test("5: currentScope written by reconciliation survives a rebuild", () => {

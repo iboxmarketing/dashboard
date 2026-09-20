@@ -3,7 +3,7 @@ import { buildFieldOptionMap, buildStatusMaps, buildUserMap } from "./analytics-
 import { getBitrixDomain } from "./bitrix";
 import { backfillProgress, type BackfillState } from "./backfill-plan";
 import { getD1 } from "@/db";
-import { getDictionary, getSalesSnapshots, getSettings, upsertAnalyticsRecords } from "./storage";
+import { getDictionary, getSalesSnapshots, getSettings, saveSalesSnapshots, upsertAnalyticsRecords } from "./storage";
 import type { CrmFieldOption } from "./types";
 
 /**
@@ -22,8 +22,10 @@ import type { CrmFieldOption } from "./types";
  * Backfills can then reuse that persisted evidence after targeted invalidation.
  *
  * It never deletes a raw row, never writes a management table, and never moves
- * a sync checkpoint. Records are written with INSERT OR REPLACE keyed on
- * `deal_id`, so the row count cannot grow and re-running is a no-op.
+ * a sync checkpoint. Analytics records are written with INSERT OR REPLACE
+ * keyed on `deal_id`. Recovered seller evidence is persisted through the same
+ * guarded snapshot upsert as Full Sync: won_at is immutable, trustworthy
+ * sellers cannot be replaced, and unresolved snapshots can be upgraded.
  */
 
 /**
@@ -128,6 +130,7 @@ export async function runAnalyticsBackfillBatch(state: BackfillState): Promise<B
     if (scope) record.currentScope = scope as never;
   }
   await upsertAnalyticsRecords(records);
+  await saveSalesSnapshots(records);
 
   const cursor = state.cursor + pageSize;
   return {
