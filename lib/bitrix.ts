@@ -10,10 +10,12 @@ type BitrixResponse<T> = {
 
 export class SafeBitrixError extends Error {
   code: string;
+  statusClass: string | null;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, statusClass: string | null = null) {
     super(message);
     this.code = code;
+    this.statusClass = statusClass;
   }
 }
 
@@ -52,7 +54,11 @@ export async function bitrixCall<T>(method: string, params: Record<string, unkno
       signal: controller.signal,
     });
   } catch {
-    throw new SafeBitrixError("NETWORK_ERROR", controller.signal.aborted ? "Bitrix24 so‘rovi 25 soniyada javob bermadi" : "Bitrix24 bilan aloqa o‘rnatilmadi");
+    throw new SafeBitrixError(
+      "NETWORK_ERROR",
+      controller.signal.aborted ? "Bitrix24 so‘rovi 25 soniyada javob bermadi" : "Bitrix24 bilan aloqa o‘rnatilmadi",
+      controller.signal.aborted ? "TIMEOUT" : "NETWORK",
+    );
   } finally {
     clearTimeout(timeout);
   }
@@ -61,7 +67,7 @@ export async function bitrixCall<T>(method: string, params: Record<string, unkno
   try {
     payload = (await response.json()) as BitrixResponse<T>;
   } catch {
-    throw new SafeBitrixError("INVALID_RESPONSE", "Bitrix24 noto‘g‘ri javob qaytardi");
+    throw new SafeBitrixError("INVALID_RESPONSE", "Bitrix24 noto‘g‘ri javob qaytardi", `HTTP_${Math.floor(response.status / 100)}XX`);
   }
 
   if (!response.ok || payload.error) {
@@ -72,7 +78,11 @@ export async function bitrixCall<T>(method: string, params: Record<string, unkno
     const safeCode = payload.error || `HTTP_${response.status}`;
     const raw = payload.error_description ?? "Bitrix24 API so‘rovi bajarilmadi";
     const safeMessage = raw.replace(/https?:\/\/\S+/gi, "[yashirilgan]").slice(0, 240);
-    throw new SafeBitrixError(safeCode, safeMessage);
+    throw new SafeBitrixError(
+      safeCode,
+      safeMessage,
+      response.ok ? "BITRIX" : `HTTP_${Math.floor(response.status / 100)}XX`,
+    );
   }
   return payload;
 }

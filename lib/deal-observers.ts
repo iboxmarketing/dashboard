@@ -54,15 +54,15 @@ export function observerItemIds(items: readonly Record<string, unknown>[]) {
 }
 
 /**
- * A post-sale observer is commercial handoff evidence only when Bitrix exposes
- * one unique, non-zero observer and that person is not the operational owner.
- * Multiple observers remain ambiguous; the current assignee is never removed
- * from the list to manufacture a single candidate.
+ * Post-sale seller candidates are the unique, valid observers after removing
+ * the current operational owner. The handoff process may legitimately leave
+ * that assignee in the observer list, so ambiguity is evaluated only after the
+ * subtraction.
  */
 export function singlePostSaleObserverId(raw: unknown, assignedManagerId: unknown) {
   if (!Array.isArray(raw)) return "";
-  const observers = [...new Set(raw.map(positiveIntegerId).filter(Boolean))];
-  if (observers.length !== 1) return "";
   const assigned = positiveIntegerId(assignedManagerId);
-  return observers[0] === assigned ? "" : observers[0];
+  const candidates = [...new Set(raw.map(positiveIntegerId).filter(Boolean))]
+    .filter((observerId) => observerId !== assigned);
+  return candidates.length === 1 ? candidates[0] : "";
 }

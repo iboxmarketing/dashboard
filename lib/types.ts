@@ -108,6 +108,17 @@ export type SyncProgressState = {
   counts: Record<string, number>;
   permissions: Record<string, string>;
   safeError: string | null;
+  runId?: string | null;
+  stageHistoryDiagnostics?: {
+    method: "crm.stagehistory.list";
+    lastCode: string;
+    lastStatusClass: string | null;
+    retryCount: number;
+    transientFailures: number;
+    permissionFailures: number;
+    exhausted: boolean;
+    cursor: number;
+  } | null;
 };
 
 export type CallOutcome =

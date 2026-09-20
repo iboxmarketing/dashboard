@@ -231,6 +231,15 @@ test("observer A: Ali sotadi, post-sale observer Ali va assignee Madina — sell
   assert.equal(row.assignedManagerId, "20");
 });
 
+test("observer A2: observerlar [seller, assigned operator] bo‘lsa operator ayrilib seller qoladi", () => {
+  const row = buildPostSale({ observers: [7, 20], ASSIGNED_BY_ID: "20", MOVED_BY_ID: "20" }, snapshot(null));
+  assert.equal(row.salesStatus, "WON");
+  assert.equal(row.salesManagerId, "7");
+  assert.equal(row.salesManager, "Ali");
+  assert.equal(row.salesManagerAttribution, "POST_SALE_OBSERVER");
+  assert.equal(row.assignedManagerId, "20");
+});
+
 test("observer B: observer va current assignee bir odam bo‘lsa handoff dalili emas", () => {
   const row = buildPostSale({ observers: [7], ASSIGNED_BY_ID: "7", MOVED_BY_ID: "7" });
   assert.equal(row.salesManagerId, null);
@@ -244,7 +253,7 @@ test("observer C: observer yo‘q bo‘lsa Unknown", () => {
 });
 
 test("observer D: bir nechta observer bo‘lsa taxmin qilinmaydi", () => {
-  const row = buildPostSale({ observers: [7, 9], ASSIGNED_BY_ID: "20" });
+  const row = buildPostSale({ observers: [7, 9, 20], ASSIGNED_BY_ID: "20" });
   assert.equal(row.salesManagerId, null);
   assert.equal(row.salesManagerAttribution, "UNKNOWN");
 });

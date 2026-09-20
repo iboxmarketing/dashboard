@@ -6,6 +6,7 @@ import { stageIdList } from "./stage-config";
 import { resolveDashboardMetricIds } from "./dashboard-metrics";
 import { normalizeSafeStableSellerField } from "./stable-seller-field";
 import type { AnalyticsRecord, DashboardSettings, ProviderDiagnostic, SyncProgressState } from "./types";
+import type { StageHistoryDiagnostics, StageHistoryRetryState } from "./stage-history-retry";
 
 export async function ensureSchema() {
   const db = getD1();
@@ -364,6 +365,8 @@ export async function getSyncState() {
     selectedPipelines: [],
     scopePipelineId: null,
     safeError: base.status === "running" ? "Avvalgi sync server timeout’i sabab yakunlanmagan." : base.safeError,
+    runId: null,
+    stageHistoryDiagnostics: null,
   } satisfies SyncProgressState;
   const heartbeat = Date.parse(job.heartbeatAt ?? job.updatedAt ?? "");
   const stale = job.status === "running" && (!Number.isFinite(heartbeat) || Date.now() - heartbeat > 180_000);
@@ -378,7 +381,11 @@ export async function getSyncState() {
     stale,
     selectedPipelines: job.selectedPipelines,
     scopePipelineId: job.scopePipelineId ?? job.selectedPipelines[0]?.id ?? null,
+    counts: job.counts,
+    permissions: job.permissions,
     safeError: job.safeError ?? base.safeError,
+    runId: job.runId,
+    stageHistoryDiagnostics: job.stageHistoryDiagnostics ?? null,
   } satisfies SyncProgressState;
 }
 
@@ -401,6 +408,8 @@ export type StoredSyncJob = {
   counts: Record<string, number>;
   permissions: Record<string, string>;
   safeError: string | null;
+  stageHistoryRetry?: StageHistoryRetryState;
+  stageHistoryDiagnostics?: StageHistoryDiagnostics;
   heartbeatAt: string;
   updatedAt: string;
 };

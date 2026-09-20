@@ -33,13 +33,15 @@ test("universal observer values are persisted on the existing raw Deal input", (
   assert.deepEqual([...observerItemIds(items)], ["41"]);
 });
 
-test("observer handoff evidence is unique, non-zero and distinct from assignee", () => {
+test("observer handoff candidates are evaluated after subtracting the assigned operator", () => {
   assert.equal(singlePostSaleObserverId([7], "20"), "7");
   assert.equal(singlePostSaleObserverId([], "20"), "");
   assert.equal(singlePostSaleObserverId([0], "20"), "");
   assert.equal(singlePostSaleObserverId([7, 9], "20"), "");
-  assert.equal(singlePostSaleObserverId([7, 20], "20"), "",
-    "the assignee is not removed to manufacture one remaining candidate");
+  assert.equal(singlePostSaleObserverId([7, 20], "20"), "7",
+    "[seller, assigned operator] leaves the seller as the one handoff candidate");
+  assert.equal(singlePostSaleObserverId([7, 9, 20], "20"), "",
+    "two non-assignee observers remain ambiguous");
   assert.equal(singlePostSaleObserverId([7], "7"), "");
   assert.equal(singlePostSaleObserverId([7, 7], "20"), "7", "duplicate copies of one user are still one candidate");
 });

@@ -25,6 +25,11 @@ import {
   uniqueDiscoveryIds,
 } from "./period-sales-coverage";
 import { attachDealObservers, buildDealObserverRead, observerItemIds } from "./deal-observers";
+import {
+  decideStageHistoryFailure,
+  stageHistoryBatchFailure,
+  STAGE_HISTORY_MAX_RETRIES,
+} from "./stage-history-retry";
 
 const stageDealBatchSize = 25;
 const analyticsDealBatchSize = 80;
@@ -402,11 +407,14 @@ async function dealStep(job: StoredSyncJob) {
 }
 
 async function stageStep(job: StoredSyncJob) {
+  const cleanJob = { ...job, stageHistoryRetry: undefined };
   const result = await getD1().prepare(`SELECT deal_id FROM raw_deals WHERE synced_at = ? ORDER BY created_at DESC LIMIT ${stageDealBatchSize} OFFSET ?`).bind(job.runId, job.cursor).all<{ deal_id: string }>();
   const ids = (result.results ?? []).map((row) => String(row.deal_id));
-  if (!ids.length) return move(job, "lookups", "Menejer, pipeline va status nomlari yangilanmoqda…", 1);
+  if (!ids.length) return move(cleanJob, "lookups", "Menejer, pipeline va status nomlari yangilanmoqda…", 1);
   const cmd = Object.fromEntries(ids.map((id) => [`deal_${id}`, query("crm.stagehistory.list", { OWNER_ID: id }, ["ID", "OWNER_ID", "CATEGORY_ID", "STAGE_ID", "STAGE_SEMANTIC_ID", "TYPE_ID", "CREATED_TIME"], { ID: "ASC" }).replace("?", "?entityTypeId=2&")]));
   const response = await bitrixCall<Record<string, unknown>>("batch", { halt: 0, cmd });
+  const commandFailure = stageHistoryBatchFailure(response as unknown as Record<string, unknown>);
+  if (commandFailure) throw new SafeBitrixError(commandFailure.code, commandFailure.message, commandFailure.statusClass);
   const rows: StageHistoryPersistenceRow[] = [];
   for (const id of ids) for (const history of batchItems(response as unknown as Record<string, unknown>, `deal_${id}`)) {
     const createdAt = value(history, "CREATED_TIME");
@@ -422,7 +430,7 @@ async function stageStep(job: StoredSyncJob) {
   await persistStageHistoryRows(getD1(), ids, rows);
   const cursor = job.cursor + ids.length;
   const counts = { ...job.counts, stageHistory: (job.counts.stageHistory ?? 0) + rows.length };
-  return { ...job, cursor, processed: cursor, total: job.counts.deals, counts, progress: phaseProgress("stageHistory", cursor, job.counts.deals), message: `${Math.min(cursor, job.counts.deals)} / ${job.counts.deals} ta Deal stage history’si tekshirildi` };
+  return { ...cleanJob, cursor, processed: cursor, total: job.counts.deals, counts, progress: phaseProgress("stageHistory", cursor, job.counts.deals), message: `${Math.min(cursor, job.counts.deals)} / ${job.counts.deals} ta Deal stage history’si tekshirildi` };
 }
 
 async function lookupStep(job: StoredSyncJob) {
@@ -492,7 +500,51 @@ export async function runSyncStep() {
     let next: StoredSyncJob;
     if (job.phase === "deals") next = await dealStep(job);
     else if (job.phase === "stageHistory") {
-      try { next = await stageStep(job); } catch { next = move({ ...job, permissions: { ...job.permissions, stageHistory: "error" } }, "lookups", "Stage history cheklangan; nomlar yangilanmoqda…", job.total); }
+      const retryAt = job.stageHistoryRetry?.cursor === job.cursor
+        ? Date.parse(job.stageHistoryRetry.nextAttemptAt)
+        : Number.NaN;
+      if (Number.isFinite(retryAt) && retryAt > Date.now()) {
+        next = {
+          ...job,
+          message: `Stage history vaqtinchalik xatodan keyin qayta urinadi (${job.stageHistoryRetry?.retryCount ?? 0}/${STAGE_HISTORY_MAX_RETRIES})…`,
+        };
+      } else try {
+        next = await stageStep(job);
+      } catch (error) {
+        const decision = decideStageHistoryFailure({
+          error,
+          cursor: job.cursor,
+          previousRetry: job.stageHistoryRetry,
+          previousDiagnostics: job.stageHistoryDiagnostics,
+        });
+        if (decision.action === "RETRY") {
+          next = {
+            ...job,
+            stageHistoryRetry: decision.retry,
+            stageHistoryDiagnostics: decision.diagnostics,
+            message: `Stage history vaqtinchalik xato; shu paket qayta urinadi (${decision.retry.retryCount}/${STAGE_HISTORY_MAX_RETRIES})…`,
+          };
+        } else if (decision.action === "DEGRADE_PERMISSION") {
+          next = move({
+            ...job,
+            stageHistoryRetry: undefined,
+            stageHistoryDiagnostics: decision.diagnostics,
+            permissions: { ...job.permissions, stageHistory: "error" },
+          }, "lookups", "Stage history uchun ruxsat yo‘q; nomlar yangilanmoqda…", job.total);
+        } else {
+          const failed: StoredSyncJob = {
+            ...job,
+            status: "error",
+            stageHistoryRetry: undefined,
+            stageHistoryDiagnostics: decision.diagnostics,
+            safeError: decision.safeError,
+            message: "Stage history vaqtinchalik xatolari tugamadi; sync xavfsiz to‘xtadi",
+          };
+          await saveSyncJob(failed);
+          await saveSyncState({ status: "error", safeError: decision.safeError, permissions: job.permissions });
+          return await getSyncState();
+        }
+      }
     } else if (job.phase === "lookups") next = await lookupStep(job);
     else if (job.phase === "analytics") next = await analyticsStep(job);
     else next = job;
