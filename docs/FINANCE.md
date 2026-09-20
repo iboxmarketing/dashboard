@@ -27,13 +27,26 @@ Transaction.
 Do not apply while another D1-heavy operation is running. After the daily quota
 is available:
 
-1. confirm the target config names the staging Worker and staging D1;
-2. build and run `npm run cf:migrate:remote` against that staging config;
-3. inspect the migration result and the four seeded currencies;
-4. deploy the same reviewed commit to staging;
-5. smoke-test each `/api/finance/*` GET, then create controlled fixtures;
-6. reconcile Account balances and per-currency summary totals from those fixtures;
-7. only after staging approval repeat migration then deploy for production.
+1. confirm no Sync, Backfill, or other D1-heavy job is running;
+2. export the reviewed staging values for `CLOUDFLARE_WORKER_NAME`,
+   `CLOUDFLARE_D1_DATABASE_NAME`, and `CLOUDFLARE_D1_DATABASE_ID`, then run
+   `npm run cf:config`;
+3. inspect `wrangler.generated.jsonc` and confirm it names only the staging
+   Worker and staging D1;
+4. apply only the new migration with
+   `npx wrangler d1 execute DB --remote --config wrangler.generated.jsonc --file drizzle/0007_finance_core.sql --yes`;
+5. query `sqlite_master` and `finance_currencies` through the same reviewed
+   config, confirming all six Finance tables plus UZS/USD/EUR/KZT;
+6. deploy the reviewed commit with the same staging environment using
+   `npm run cf:deploy`;
+7. smoke-test each `/api/finance/*` GET, then create controlled fixtures and
+   reconcile Account balances and per-currency summary totals;
+8. only after staging approval repeat the single-file migration and deployment
+   against separately reviewed production identifiers.
+
+Do not use `npm run cf:migrate:remote` on an existing populated database for
+this change: the repository helper intentionally walks every historical SQL
+file, while staging needs only migration `0007`.
 
 Migration `0007_finance_core.sql` is additive. No CRM resync or Analytics
 Backfill is required because no existing analytics table or payload changes.
