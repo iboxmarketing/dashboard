@@ -233,3 +233,35 @@ test("the conservative classifier never consults the current dashboard configura
   assert.doesNotMatch(fn, /salesManagerField|configuredFieldWasAssignedBy/,
     "the conservative path must not depend on the setting, whose history is unknown");
 });
+
+// ------------------------- TASK B: job-title vs deal-footprint contradiction ---
+
+import { resolveRoleConflict } from "../scripts/seller-repair-manifest.mjs";
+
+test("a stale job title is overridden by an overwhelming Sales footprint on a Deal that never left Sales", () => {
+  // Oybek Shukurillayev: titled "Customer Care Team Lead" but currently holds
+  // 101 category-3 cards and none in post-sale.
+  const r = resolveRoleConflict({ footprint: { 3: 101 }, dealCurrentCategoryId: "3", dealEverInPostSale: false });
+  assert.equal(r.resolution, "KEEP");
+  assert.match(r.basis, /FOOTPRINT_100PCT_SALES_OF_101_AND_DEAL_NEVER_LEFT_SALES/);
+});
+
+test("no footprint at all cannot settle the contradiction, so it goes to a human", () => {
+  // Diyorbek Samadov: titled "Marketing", zero deals anywhere.
+  const r = resolveRoleConflict({ footprint: {}, dealCurrentCategoryId: "3", dealEverInPostSale: false });
+  assert.equal(r.resolution, "REVIEW");
+  assert.equal(r.basis, "NO_DEAL_FOOTPRINT_TO_CORROBORATE_OR_REFUTE_THE_JOB_TITLE");
+});
+
+test("the override is refused whenever the handoff could actually have contaminated the row", () => {
+  const inPostSale = resolveRoleConflict({ footprint: { 3: 101 }, dealCurrentCategoryId: "13" });
+  assert.equal(inPostSale.resolution, "REVIEW", "the Deal is in post-sale, so the contamination applies");
+  const wentThrough = resolveRoleConflict({ footprint: { 3: 101 }, dealCurrentCategoryId: "3", dealEverInPostSale: true });
+  assert.equal(wentThrough.resolution, "REVIEW", "it entered post-sale at some point");
+  const alsoPostSale = resolveRoleConflict({ footprint: { 3: 50, 13: 20 }, dealCurrentCategoryId: "3" });
+  assert.equal(alsoPostSale.resolution, "REVIEW", "the person does post-sale work too");
+  const tooFew = resolveRoleConflict({ footprint: { 3: 4 }, dealCurrentCategoryId: "3" });
+  assert.equal(tooFew.resolution, "REVIEW", "a handful of cards is not a career");
+  const mixed = resolveRoleConflict({ footprint: { 3: 60, 17: 40 }, dealCurrentCategoryId: "3" });
+  assert.equal(mixed.resolution, "REVIEW", "only 60% Sales");
+});

@@ -304,3 +304,36 @@ export function classifyConservative({ snapshot, record, postSaleEnteredAt, user
   }
   return out(FINAL_BUCKETS.REVIEW, EVIDENCE.INSUFFICIENT, priorBucket === BUCKETS.UNKNOWN ? "NO_SALE_TIME_EVIDENCE" : "UNCLASSIFIED");
 }
+
+/**
+ * Resolves a job-title/payment-evidence contradiction using the person's actual
+ * deal footprint — which categories they are currently responsible for.
+ *
+ * A stale `WORK_POSITION` is common: someone who moved from Customer Care into
+ * Sales keeps the old title. So a title alone must not demote payment-stage
+ * evidence. The footprint is behavioural and much harder to be wrong about:
+ * whoever currently holds a hundred IBOX Sales cards is working in Sales.
+ *
+ * The conflict is resolved in favour of KEEP only when all three hold:
+ *   - the person's footprint is overwhelmingly the Sales category,
+ *   - they have no post-sale footprint worth speaking of,
+ *   - and this Deal never left Sales, so the handoff contamination that the
+ *     whole audit is about cannot apply to it.
+ *
+ * Anything else stays a contradiction for a human to settle. No seller is
+ * invented and none is discarded on a title alone.
+ */
+export function resolveRoleConflict({ footprint = {}, salesCategoryId = "3", postSaleCategoryId = "13", dealCurrentCategoryId, dealEverInPostSale = false, minFootprint = 10, salesShareThreshold = 0.9 }) {
+  const total = Object.values(footprint).reduce((sum, n) => sum + n, 0);
+  const salesShare = total ? (footprint[String(salesCategoryId)] ?? 0) / total : 0;
+  const postSaleShare = total ? (footprint[String(postSaleCategoryId)] ?? 0) / total : 0;
+  const dealStillInSales = String(dealCurrentCategoryId) === String(salesCategoryId) && !dealEverInPostSale;
+
+  if (!total) {
+    return { resolution: "REVIEW", basis: "NO_DEAL_FOOTPRINT_TO_CORROBORATE_OR_REFUTE_THE_JOB_TITLE", salesShare, total };
+  }
+  if (total >= minFootprint && salesShare >= salesShareThreshold && postSaleShare === 0 && dealStillInSales) {
+    return { resolution: "KEEP", basis: `FOOTPRINT_${Math.round(salesShare * 100)}PCT_SALES_OF_${total}_AND_DEAL_NEVER_LEFT_SALES`, salesShare, total };
+  }
+  return { resolution: "REVIEW", basis: `FOOTPRINT_DOES_NOT_OVERRIDE_JOB_TITLE (sales ${Math.round(salesShare * 100)}% of ${total}, post-sale ${Math.round(postSaleShare * 100)}%, deal still in Sales: ${dealStillInSales})`, salesShare, total };
+}
