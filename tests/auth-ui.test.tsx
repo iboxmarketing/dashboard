@@ -15,9 +15,11 @@ import {
   createAuthAdapter, createFixtureAuthAdapter, createHttpAuthAdapter, readUser,
 } from "../lib/auth-adapter";
 import { AUTH_FIXTURE_USERS, cloneAuthFixtures } from "../lib/auth-fixtures";
-import { checkEmail, checkNewPassword, checkTemporaryPassword, PASSWORD_MIN_LENGTH } from "../lib/auth-password";
+import { checkEmail, checkNewPassword, checkTemporaryPassword, normalizeEmailInput, PASSWORD_MIN_LENGTH } from "../lib/auth-password";
+import { validatePassword } from "../lib/auth/password";
+import { PASSWORD_CHANGED_NOTICE } from "../app/auth/auth-shell";
 import {
-  DERIVED_VIEWS, NAV_ENTRIES, accessSummary, allowedNavEntries, canAccess, canAccessView,
+  ASSIGNABLE_PERMISSIONS, DERIVED_VIEWS, NAV_ENTRIES, accessSummary, allowedNavEntries, canAccess, canAccessView,
   effectivePermissions, firstAllowedView, hasAnySection, normalizePermissions, permissionGroups,
   resolveView, togglePermission,
 } from "../lib/auth-permissions";
@@ -86,10 +88,14 @@ test("permission decisions never branch on an identity", () => {
     assert.doesNotMatch(source, /\.email\s*===/, `${name} decides access by email`);
     assert.doesNotMatch(source, /\.name\s*===\s*["'`]/, `${name} decides access by name`);
   }
-  // The dashboard asks the mapping instead of keeping its own allow-list.
-  assert.match(client, /allowedNavEntries\(session\.user\)/);
-  assert.match(client, /resolveView\(session\.user, requestedView\)/);
-  assert.match(client, /<nav>\{visibleNavItems\.map/);
+  // The dashboard asks the mapping instead of keeping its own allow-list: one
+  // `canAccess` derived from the server rule feeds the nav, the landing view,
+  // the view guard and every data fetch.
+  assert.match(client, /const allowedNavItems = navItems\.filter\(\(item\) => canAccess\(item\.permission\)\);/);
+  assert.match(client, /canAccessView\(authUser, requestedView\)/);
+  // The client's own access helper is the server's rule, not a second copy.
+  assert.match(client, /hasPermission\(authUser\.role, authUser\.permissions, permission\)/);
+  assert.match(client, /<nav>\{allowedNavItems\.map/);
 });
 
 test("derived views inherit their parent section's permission", () => {
@@ -124,7 +130,8 @@ test("the landing view is the first allowed section, never a hardcoded dashboard
   assert.equal(firstAllowedView(user({ permissions: ["finance", "projects"] })), "finance");
   assert.equal(firstAllowedView(admin()), "dashboard");
   assert.equal(firstAllowedView(user({ permissions: [] })), null);
-  assert.match(client, /useState<View>\(\(\) => \(firstAllowedView\(session\.user\) \?\? "dashboard"\) as View\)/);
+  assert.match(client, /const defaultView = allowedNavItems\[0\]\?\.id \?\? "dashboard";/);
+  assert.match(client, /useState<View>\(defaultView\)/);
 });
 
 test("losing a permission moves the user to an allowed section instead of leaving them on it", () => {
@@ -212,26 +219,43 @@ test("the same screen is cancellable when opened voluntarily", () => {
   assert.match(html, /Bekor qilish/);
 });
 
-test("password rules are advisory client checks, not the policy", () => {
-  assert.equal(PASSWORD_MIN_LENGTH, 8);
-  assert.equal(checkNewPassword("", "abcdefgh", "abcdefgh").ok, false);
-  assert.match(checkNewPassword("old12345", "short", "short").error ?? "", /8 belgidan/);
-  assert.equal(checkNewPassword("old12345", "old12345", "old12345").ok, false);
-  assert.match(checkNewPassword("old12345", "new12345", "new1234").error ?? "", /mos kelmadi/);
-  assert.equal(checkNewPassword("old12345", "new12345", "new12345").ok, true);
+test("the client password check is the server policy, not a looser copy", () => {
+  assert.equal(PASSWORD_MIN_LENGTH, 12);
+  // Every rule below is decided by lib/auth/password.ts, which the API uses too,
+  // so the form can never accept a password the server will reject.
+  assert.equal(validatePassword("Correct1Horse").ok, true);
+  assert.equal(checkNewPassword("OldPassword1", "Correct1Horse", "Correct1Horse").ok, true);
+  assert.equal(checkNewPassword("", "Correct1Horse", "Correct1Horse").ok, false);
+  assert.equal(checkNewPassword("OldPassword1", "Short1aa", "Short1aa").ok, false);
+  assert.equal(checkNewPassword("OldPassword1", "nouppercase1", "nouppercase1").ok, false);
+  assert.equal(checkNewPassword("OldPassword1", "NoDigitsHereAtAll", "NoDigitsHereAtAll").ok, false);
+  assert.equal(checkNewPassword("Correct1Horse", "Correct1Horse", "Correct1Horse").ok, false);
+  assert.match(checkNewPassword("OldPassword1", "Correct1Horse", "Correct1Hors").error ?? "", /mos kelmadi/);
   assert.equal(checkTemporaryPassword("short").ok, false);
-  assert.equal(checkTemporaryPassword("temp1234").ok, true);
+  assert.equal(checkTemporaryPassword("Temporary1Pass").ok, true);
   assert.equal(checkEmail("not-an-email").ok, false);
   assert.equal(checkEmail(" a@b.uz ").ok, true);
+  assert.equal(normalizeEmailInput("  Sanjar@IBOX.uz "), "sanjar@ibox.uz");
 });
 
-test("a successful change clears the gate even if the response forgets the flag", async () => {
-  assert.match(shellSource, /settle\(\{ \.\.\.user, mustChangePassword: false \}\)/);
+test("a password change ends the session, so the UI returns to login rather than pretending", async () => {
+  // The API revokes every session and clears the cookie; claiming to stay signed
+  // in would leave every later call failing with an unexplainable 401.
+  assert.match(shellSource, /if \(result\.loginRequired\)/);
+  assert.match(shellSource, /status: "unauthenticated", error: null, notice: PASSWORD_CHANGED_NOTICE/);
+  assert.match(PASSWORD_CHANGED_NOTICE, /qaytadan kiring/);
   const fixture = createFixtureAuthAdapter({ signedInAs: "u-new" });
-  const before = await fixture.me();
-  assert.equal(before?.mustChangePassword, true);
-  const after = await fixture.changePassword({ currentPassword: "temp1234", newPassword: "real12345" });
-  assert.equal(after.mustChangePassword, false);
+  assert.equal((await fixture.me())?.mustChangePassword, true);
+  const result = await fixture.changePassword({ currentPassword: "Temporary1Pass", newPassword: "Correct1Horse" });
+  assert.equal(result.loginRequired, true);
+  assert.equal(await fixture.me(), null);
+  // The flag is cleared on the stored user, so the next login goes straight in.
+  const users = await fixture.listUsers();
+  assert.equal(users.find((row) => row.id === "u-new")?.mustChangePassword, false);
+  // The notice is neutral: it never states whether the account exists.
+  const html = renderToStaticMarkup(<LoginScreen onLogin={noop} notice={PASSWORD_CHANGED_NOTICE} />);
+  assert.match(html, /auth-notice/);
+  assert.match(html, /role="status"/);
 });
 
 /* ---------- 8. empty access and forbidden states ---------- */
@@ -314,29 +338,37 @@ test("the screen distinguishes loading, an empty list and an API failure", async
 
 /* ---------- 11. create / edit drawers ---------- */
 
-test("creating a user asks for a temporary password and whether it must be changed", () => {
+test("creating a user asks for a temporary password the first login must replace", () => {
   const html = renderToStaticMarkup(
     <UserDrawer open user={null} selfId="u-admin" onClose={() => {}} onCreate={async () => {}} onPatch={async () => {}} />,
   );
   assert.match(html, /Yangi foydalanuvchi/);
   assert.match(html, /Vaqtinchalik parol/);
-  assert.match(html, /Keyingi kirishda parol almashtirilsin/);
   assert.match(html, /type="password"/);
-  // Defaults: MEMBER, must change on first login.
   assert.match(html, /value="MEMBER"/);
-  assert.match(drawerSource, /useState\(user \? user\.mustChangePassword : true\)/);
+  // The API forces mustChangePassword on every create, so the form states the
+  // outcome instead of offering a toggle it cannot honour.
+  assert.match(html, /Yangi foydalanuvchi birinchi kirishda parolini albatta almashtiradi/);
+  assert.doesNotMatch(html, /Keyingi kirishda parol almashtirilsin/);
+  assert.match(drawerSource, /mustChangePassword: true,/);
   assert.match(drawerSource, /checkTemporaryPassword\(temporaryPassword\)/);
+  // The policy shown is the server's.
+  assert.match(html, /Kamida 12 ta belgi/);
 });
 
 test("permissions are grouped checkboxes, never a raw JSON field", () => {
   const groups = permissionGroups();
   assert.deepEqual(groups.map((group) => group.group), ["sales", "finance", "management", "administration"]);
-  assert.equal(groups.reduce((total, group) => total + group.entries.length, 0), PERMISSIONS.length);
+  // Eleven boxes, not twelve: the server refuses `users` to every MEMBER, so
+  // offering the box would promise access that cannot exist.
+  assert.equal(groups.reduce((total, group) => total + group.entries.length, 0), PERMISSIONS.length - 1);
+  assert.deepEqual(groups.flatMap((group) => group.entries).filter((entry) => entry.permission === "users"), []);
+  assert.deepEqual(ASSIGNABLE_PERMISSIONS, PERMISSIONS.filter((key) => key !== "users"));
   const html = renderToStaticMarkup(
     <UserDrawer open user={user({ permissions: ["dashboard"] })} selfId="u-admin" onClose={() => {}} onCreate={async () => {}} onPatch={async () => {}} />,
   );
   assert.match(html, /<fieldset class="auth-perm-group"/);
-  assert.equal((html.match(/type="checkbox"/g) ?? []).length >= PERMISSIONS.length, true);
+  assert.equal((html.match(/type="checkbox"/g) ?? []).length >= PERMISSIONS.length - 1, true);
   assert.doesNotMatch(html, /<textarea/);
   assert.doesNotMatch(drawerSource, /JSON\.parse|JSON\.stringify/);
   assert.match(html, /Belgilanmagan bo‘lim foydalanuvchiga butunlay ko‘rinmaydi/);
@@ -349,7 +381,7 @@ test("an ADMIN's permission boxes are locked with the agreed explanation", () =>
   assert.match(html, /Admin barcha bo‘limlarga kiradi/);
   assert.match(html, /<fieldset class="auth-perm-group" disabled=""/);
   // Locked boxes still read as granted, so the access shown matches reality.
-  assert.equal((html.match(/checked=""/g) ?? []).length >= PERMISSIONS.length, true);
+  assert.equal((html.match(/checked=""/g) ?? []).length >= PERMISSIONS.length - 1, true);
 });
 
 test("a saved password is never displayed again", () => {

@@ -102,7 +102,9 @@ test("the filter bar and the funnel/sync controls are gated on view type", () =>
   assert.match(client, /\{isSalesView\(view\) && <FiltersBar/, "FiltersBar is rendered only for sales views");
   assert.doesNotMatch(client, /view !== "settings" && view !== "diagnostics" && <FiltersBar/, "the old catch-all gate is gone");
   const topActions = client.slice(client.indexOf('<div className="top-actions">'), client.indexOf("</header>"));
-  assert.match(topActions, /\{!isManagementView\(view\) && <>/, "top actions are gated on view type");
+  // Auth integration added a second condition: the sync controls are an
+  // administrative action, so they now also require the `settings` permission.
+  assert.match(topActions, /\{!isManagementView\(view\) && canSettings && <>/, "top actions are gated on view type and on the settings permission");
   for (const control of ["Sinxronizatsiya funnel", "Tanlangan funnelni sinxronlash", "Oxirgi sinxronizatsiya"]) {
     assert.ok(topActions.includes(control), `${control} lives inside the gated block`);
     const gateAt = topActions.indexOf("!isManagementView(view)");

@@ -69,7 +69,6 @@ import {
 import { Drawer } from "./ui/drawer";
 import { FinanceView } from "./finance/finance-view";
 import { StatusCombobox } from "./ui/combobox";
-import type { PublicAuthUser } from "@/lib/auth/types";
 import { hasPermission, type PermissionKey } from "@/lib/auth/permissions";
 
 /** Sales analytics views. Only these carry the global cohort filter bar. */
