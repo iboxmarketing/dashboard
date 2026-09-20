@@ -1,6 +1,7 @@
 import { safeBitrixMessage } from "@/lib/bitrix";
 import { pauseSync, resumeSync, runSyncSteps, startSync } from "@/lib/sync";
 import { isSyncAction, type SyncAction } from "@/lib/sync-actions";
+import { authorizePermission } from "@/lib/auth/http";
 
 /**
  * Sync control endpoint.
@@ -10,6 +11,8 @@ import { isSyncAction, type SyncAction } from "@/lib/sync-actions";
  * was enough to launch a sync against production.
  */
 export async function POST(request: Request) {
+  const denied = await authorizePermission(request, "settings");
+  if (denied) return denied;
   try {
     const payload = (await request.json().catch(() => ({}))) as {
       action?: unknown; days?: number; full?: boolean; steps?: number; pipelineId?: string;

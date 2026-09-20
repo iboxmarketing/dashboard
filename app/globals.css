@@ -27,6 +27,21 @@ a { color: inherit; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .app-loading, .fatal-error { min-height: 100vh; display: grid; place-content: center; justify-items: center; gap: 12px; color: var(--muted); }
+.auth-page { min-height: 100vh; padding: 24px; display: grid; place-items: center; background: radial-gradient(circle at 50% -10%, #dfe9ff 0, transparent 38%), var(--bg); }
+.auth-card { width: min(430px, 100%); padding: 34px; display: grid; gap: 16px; border: 1px solid var(--line); border-radius: 22px; background: white; box-shadow: 0 30px 80px rgba(29, 46, 82, .12); }
+.auth-card h1, .auth-card h2 { margin: 0; color: var(--navy); }
+.auth-copy { margin: -7px 0 3px; color: var(--muted); font-size: 13px; line-height: 1.55; }
+.auth-mark { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 14px; background: var(--blue); color: white; font-size: 12px; font-weight: 900; box-shadow: 0 10px 24px rgba(36,107,253,.23); }
+.auth-card label { display: grid; gap: 7px; color: #45516a; font-size: 11px; font-weight: 750; }
+.auth-card input, .auth-card select { width: 100%; height: 42px; padding: 0 12px; border: 1px solid #dce2ec; border-radius: 10px; outline: none; background: white; color: var(--ink); }
+.auth-card input:focus, .auth-card select:focus { border-color: #92b0f7; box-shadow: 0 0 0 3px rgba(36,107,253,.09); }
+.auth-modal { position: fixed; z-index: 80; inset: 0; padding: 24px; display: grid; place-items: center; overflow: auto; background: rgba(11, 19, 34, .55); }
+.user-form { width: min(600px, 100%); max-height: calc(100vh - 48px); overflow: auto; }
+.user-form fieldset { padding: 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; border: 1px solid var(--line); border-radius: 12px; }
+.user-form legend { padding: 0 6px; color: var(--muted); font-size: 11px; font-weight: 750; }
+.auth-card .check-line { display: flex; align-items: center; gap: 8px; }
+.auth-card .check-line input { width: 16px; height: 16px; }
+.auth-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .loading-mark { width: 56px; height: 56px; border-radius: 18px; display: grid; place-items: center; background: #e7efff; color: var(--blue); }
 .app-loading p { font-size: 14px; font-weight: 700; color: var(--ink); }
 .skeleton-line { width: 220px; height: 8px; border-radius: 8px; background: #e3e7ee; animation: pulse 1.2s ease-in-out infinite alternate; }
@@ -119,7 +134,7 @@ aside nav button i { margin-left: auto; width: 7px; height: 7px; border-radius: 
 .top-actions .select-wrap { min-width: 150px; }
 .sync-time { color: #8a94a6; font-size: 9px; }
 .sync-time strong { color: #5a667b; }
-.avatar { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: #e8eefc; color: var(--blue); font-size: 10px; font-weight: 850; }
+.avatar { width: 34px; height: 34px; border: 0; border-radius: 10px; display: grid; place-items: center; background: #e8eefc; color: var(--blue); font-size: 10px; font-weight: 850; }
 .menu-button { display: none; border: 0; background: transparent; color: var(--ink); }
 .content-inner { width: min(1560px, 100%); margin: 0 auto; padding: 19px 24px 42px; }
 

@@ -1,5 +1,6 @@
 import { getSettings, saveSettings } from "@/lib/storage";
 import { mergeSettingsPayload } from "@/lib/settings-payload";
+import { authorizePermission } from "@/lib/auth/http";
 
 /**
  * Settings write endpoint.
@@ -9,6 +10,8 @@ import { mergeSettingsPayload } from "@/lib/settings-payload";
  * body is a no-op; it previously cleared three fields on production.
  */
 export async function POST(request: Request) {
+  const denied = await authorizePermission(request, "settings");
+  if (denied) return denied;
   try {
     const current = await getSettings();
     const payload = await request.json().catch(() => ({}));

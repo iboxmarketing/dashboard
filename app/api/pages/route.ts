@@ -7,8 +7,11 @@ import {
   type PageWidget,
 } from "@/lib/custom-pages";
 import { deleteShareWidgetLinks, deleteSharesForPage } from "@/lib/share-storage";
+import { authorizePermission } from "@/lib/auth/http";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const denied = await authorizePermission(request, "pages");
+  if (denied) return denied;
   try {
     const [pages, widgets] = await Promise.all([listPages(), listPageWidgets()]);
     return Response.json({ pages, widgets });
@@ -18,6 +21,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const denied = await authorizePermission(request, "pages");
+  if (denied) return denied;
   try {
     const payload = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const action = String(payload.action ?? "");

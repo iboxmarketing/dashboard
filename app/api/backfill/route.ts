@@ -1,6 +1,7 @@
 import { BACKFILL_BATCH_SIZE, runAnalyticsBackfillBatch, startAnalyticsBackfill } from "@/lib/analytics-backfill";
 import { backfillBatchCount, type BackfillState } from "@/lib/backfill-plan";
 import { getDictionary, saveDictionary } from "@/lib/storage";
+import { authorizePermission } from "@/lib/auth/http";
 
 const STATE_KEY = "analyticsBackfill";
 /**
@@ -12,13 +13,17 @@ const STATE_KEY = "analyticsBackfill";
  * work batched into a single invocation.
  */
 
-export async function GET() {
+export async function GET(request: Request) {
+  const denied = await authorizePermission(request, "settings");
+  if (denied) return denied;
   const state = await getDictionary<BackfillState | null>(STATE_KEY, null);
   if (!state) return Response.json({ status: null });
   return Response.json({ status: state.status, cursor: state.cursor, total: state.total, progress: state.progress, lastError: state.lastError });
 }
 
 export async function POST(request: Request) {
+  const denied = await authorizePermission(request, "settings");
+  if (denied) return denied;
   try {
     const payload = (await request.json().catch(() => ({}))) as { action?: unknown };
     const action = payload.action === "start" ? "start" : "step";

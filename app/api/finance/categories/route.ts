@@ -1,13 +1,18 @@
 import { financeApiError, financeId, financePayload, includeArchived } from "@/lib/finance/api";
 import { createFinanceCategory, getFinanceCategory, listFinanceCategories, updateFinanceCategory } from "@/lib/finance/storage";
 import { validateCategoryInput } from "@/lib/finance/validation";
+import { authorizePermission } from "@/lib/auth/http";
 
 export async function GET(request: Request) {
+  const denied = await authorizePermission(request, "finance");
+  if (denied) return denied;
   try { return Response.json({ categories: await listFinanceCategories(includeArchived(request)) }); }
   catch (error) { return financeApiError(error); }
 }
 
 export async function POST(request: Request) {
+  const denied = await authorizePermission(request, "finance");
+  if (denied) return denied;
   try {
     const parsed = validateCategoryInput(await financePayload(request));
     if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 });
@@ -16,6 +21,8 @@ export async function POST(request: Request) {
 }
 
 export async function PATCH(request: Request) {
+  const denied = await authorizePermission(request, "finance");
+  if (denied) return denied;
   try {
     const payload = await financePayload(request);
     const id = financeId(payload);

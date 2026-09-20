@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, index, integer, sqliteTable, text, type AnySQLiteColumn } from "drizzle-orm/sqlite-core";
+import { check, index, integer, sqliteTable, text, uniqueIndex, type AnySQLiteColumn } from "drizzle-orm/sqlite-core";
 
 export const appSettings = sqliteTable("app_settings", {
   key: text("key").primaryKey(),
@@ -279,3 +279,53 @@ export const financeSubscriptions = sqliteTable("finance_subscriptions", {
   index("finance_subscriptions_category_idx").on(table.categoryId),
   index("finance_subscriptions_project_idx").on(table.projectId),
 ]);
+
+// Authentication is isolated from CRM analytics and Finance. Password hashes
+// are one-way KDF outputs; raw session tokens never enter this schema.
+export const appUsers = sqliteTable("app_users", {
+  id: text("id").primaryKey(),
+  email: text("email").notNull(),
+  name: text("name").notNull(),
+  role: text("role").notNull(),
+  passwordHash: text("password_hash").notNull(),
+  mustChangePassword: integer("must_change_password", { mode: "boolean" }).notNull().default(true),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  lastLoginAt: text("last_login_at"),
+}, (table) => [
+  uniqueIndex("app_users_email_idx").on(table.email),
+  check("app_users_role_check", sql`${table.role} IN ('ADMIN', 'MEMBER')`),
+]);
+
+export const appUserPermissions = sqliteTable("app_user_permissions", {
+  userId: text("user_id").notNull().references(() => appUsers.id, { onDelete: "cascade", onUpdate: "cascade" }),
+  permissionKey: text("permission_key").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("app_user_permissions_user_key_idx").on(table.userId, table.permissionKey),
+  index("app_user_permissions_user_idx").on(table.userId),
+  check("app_user_permissions_key_check", sql`${table.permissionKey} IN ('dashboard','managers','leadFlow','quality','stages','deals','finance','projects','pages','diagnostics','settings','users')`),
+]);
+
+export const appSessions = sqliteTable("app_sessions", {
+  id: text("id").primaryKey(),
+  tokenHash: text("token_hash").notNull(),
+  userId: text("user_id").notNull().references(() => appUsers.id, { onDelete: "cascade", onUpdate: "cascade" }),
+  createdAt: text("created_at").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  lastSeenAt: text("last_seen_at").notNull(),
+  revokedAt: text("revoked_at"),
+}, (table) => [
+  uniqueIndex("app_sessions_token_hash_idx").on(table.tokenHash),
+  index("app_sessions_user_idx").on(table.userId),
+  index("app_sessions_expiry_idx").on(table.expiresAt),
+]);
+
+export const appLoginAttempts = sqliteTable("app_login_attempts", {
+  keyHash: text("key_hash").primaryKey(),
+  failureCount: integer("failure_count").notNull(),
+  windowStartedAt: text("window_started_at").notNull(),
+  blockedUntil: text("blocked_until"),
+  updatedAt: text("updated_at").notNull(),
+});
