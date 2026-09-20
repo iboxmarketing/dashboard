@@ -4,8 +4,10 @@ import { useMemo, useState } from "react";
 
 import { Drawer } from "../ui/drawer";
 import { DateInput, FormField, NumberInput, SelectInput, TextInput, Textarea } from "../ui/form";
-import { formatMoney, moneyInputValue, parseMoneyInput } from "@/lib/finance-money";
+import { useFinanceCurrency } from "./finance-primitives";
+import { formatMoney, moneyInputStep, moneyInputValue, parseMoneyInput } from "@/lib/finance-money";
 import { buildTransactionBody, cadenceMonths, selectableCategories, transferShape, validateTransaction } from "@/lib/finance-metrics";
+import { validateSubscriptionInput } from "@/lib/finance/validation";
 import {
   ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, CADENCES, CADENCE_LABELS, CURRENCIES,
   TRANSACTION_TYPES, TRANSACTION_TYPE_LABELS,
@@ -60,6 +62,8 @@ export function TransactionDrawer({ open, dataset, initialType = "EXPENSE", onCl
 
   const from = accounts.find((account) => account.id === accountId) ?? null;
   const to = accounts.find((account) => account.id === toAccountId) ?? null;
+  const fromCurrency = useFinanceCurrency(from?.currencyCode);
+  const toCurrency = useFinanceCurrency(to?.currencyCode);
   const crossCurrency = type === "TRANSFER" && transferShape(from, to).crossCurrency;
   const categories = useMemo(() => selectableCategories(dataset.categories, type), [dataset.categories, type]);
   const dirty = Boolean(accountId || amount || description);
@@ -74,8 +78,8 @@ export function TransactionDrawer({ open, dataset, initialType = "EXPENSE", onCl
     // without rendering, and so the transfer rule has exactly one definition.
     const draft = {
       type, date, accountId, toAccountId: toAccountId || null,
-      amountMinor: from && amount !== "" ? parseMoneyInput(amount, from.currencyCode as Currency) : null,
-      destinationAmountMinor: to && toAmount !== "" ? parseMoneyInput(toAmount, to.currencyCode as Currency) : null,
+      amountMinor: fromCurrency && amount !== "" ? parseMoneyInput(amount, fromCurrency) : null,
+      destinationAmountMinor: toCurrency && toAmount !== "" ? parseMoneyInput(toAmount, toCurrency) : null,
       categoryId: categoryId || null, projectId: projectId || null,
     };
     const check = validateTransaction(draft, accounts);
@@ -123,13 +127,15 @@ export function TransactionDrawer({ open, dataset, initialType = "EXPENSE", onCl
 
       <FormField label={crossCurrency ? `Yuboriladigan summa (${from?.currencyCode})` : "Summa"} required
         hint={from ? `Valyuta: ${from.currencyCode}` : undefined}>
-        <NumberInput value={amount} min="0" step="0.01" onChange={(event) => setAmount(event.target.value)} />
+        <NumberInput value={amount} min="0" step={fromCurrency ? moneyInputStep(fromCurrency) : "any"}
+          onChange={(event) => setAmount(event.target.value)} />
       </FormField>
 
       {crossCurrency && (
         <FormField label={`Tushadigan summa (${to?.currencyCode})`} required
           hint="Valyutalar farq qiladi — ikkala summani o‘zingiz kiritasiz. Kurs avtomatik hisoblanmaydi.">
-          <NumberInput value={toAmount} min="0" step="0.01" onChange={(event) => setToAmount(event.target.value)} />
+          <NumberInput value={toAmount} min="0" step={toCurrency ? moneyInputStep(toCurrency) : "any"}
+            onChange={(event) => setToAmount(event.target.value)} />
         </FormField>
       )}
 
@@ -168,7 +174,8 @@ export function AccountDrawer({ open, account, onClose, onSave }: {
   const [name, setName] = useState(account?.name ?? "");
   const [type, setType] = useState<AccountType>(account?.type ?? "CASH");
   const [currency, setCurrency] = useState<Currency>((account?.currencyCode as Currency) ?? "UZS");
-  const [openingBalance, setOpeningBalance] = useState(account ? moneyInputValue(account.openingBalanceMinor, currency) : "");
+  const currencyDefinition = useFinanceCurrency(currency);
+  const [openingBalance, setOpeningBalance] = useState(account && currencyDefinition ? moneyInputValue(account.openingBalanceMinor, currencyDefinition) : "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -176,9 +183,10 @@ export function AccountDrawer({ open, account, onClose, onSave }: {
     if (!name.trim()) return setError("Nomini kiriting");
     setSaving(true); setError(null);
     try {
+      if (!currencyDefinition) return setError("Valyuta metama’lumoti topilmadi");
       const openingBalanceMinor = openingBalance === "" && account
         ? account.openingBalanceMinor
-        : parseMoneyInput(openingBalance || "0", currency);
+        : parseMoneyInput(openingBalance || "0", currencyDefinition);
       if (openingBalanceMinor === null) return setError("Boshlang‘ich balans noto‘g‘ri");
       await onSave({ name: name.trim(), type, currencyCode: currency, openingBalanceMinor, archived: account?.archived ?? false }, account?.id ?? null);
       onClose();
@@ -201,9 +209,10 @@ export function AccountDrawer({ open, account, onClose, onSave }: {
         </SelectInput>
       </FormField>
       <FormField label="Boshlang‘ich balans" hint="Joriy balans yozuvlardan hisoblanadi — qo‘lda tahrirlanmaydi">
-        <NumberInput value={openingBalance} step="0.01" onChange={(event) => setOpeningBalance(event.target.value)} disabled={Boolean(account)} />
+        <NumberInput value={openingBalance} step={currencyDefinition ? moneyInputStep(currencyDefinition) : "any"}
+          onChange={(event) => setOpeningBalance(event.target.value)} disabled={Boolean(account)} />
       </FormField>
-      {account && <p className="field-hint">Saqlangan boshlang‘ich balans: {formatMoney(account.openingBalanceMinor, currency)}. Joriy balans faqat server summary’dan o‘qiladi.</p>}
+      {account && currencyDefinition && <p className="field-hint">Saqlangan boshlang‘ich balans: {formatMoney(account.openingBalanceMinor, currencyDefinition)}. Joriy balans faqat server summary’dan o‘qiladi.</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
     </Drawer>
   );
@@ -317,13 +326,15 @@ export function SubscriptionDrawer({ open, subscription, dataset, onClose, onSav
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const account = accounts.find((item) => item.id === accountId) ?? null;
+  const currencyDefinition = useFinanceCurrency(account?.currencyCode);
 
   const save = async () => {
     if (!name.trim()) return setError("Nomini kiriting");
     if (!accountId) return setError("Hisobni tanlang");
     if (!categoryId) return setError("Kategoriyani tanlang");
-    const currencyCode = (account?.currencyCode ?? "UZS") as Currency;
-    const amountMinor = parseMoneyInput(amount, currencyCode);
+    if (!currencyDefinition) return setError("Valyuta metama’lumoti topilmadi");
+    const currencyCode = currencyDefinition.code as Currency;
+    const amountMinor = parseMoneyInput(amount, currencyDefinition);
     if (amountMinor === null || amountMinor <= 0) return setError("Summani kiriting");
     const body: NewSubscription = {
       name: name.trim(), direction, amountMinor, currencyCode,
@@ -333,8 +344,10 @@ export function SubscriptionDrawer({ open, subscription, dataset, onClose, onSav
       note: note.trim() || null,
     };
     if (cadence === "CUSTOM_MONTHS" && cadenceMonths(body) === null) return setError("Necha oyda bir to‘lanadi?");
+    const validated = validateSubscriptionInput(body);
+    if (!validated.ok) return setError(validated.error);
     setSaving(true); setError(null);
-    try { await onSave(body, subscription?.id ?? null); onClose(); }
+    try { await onSave(validated.value, subscription?.id ?? null); onClose(); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Saqlanmadi"); }
     finally { setSaving(false); }
   };
@@ -355,7 +368,8 @@ export function SubscriptionDrawer({ open, subscription, dataset, onClose, onSav
         </SelectInput>
       </FormField>
       <FormField label="Summa" required hint={account ? `Valyuta: ${account.currencyCode}` : undefined}>
-        <NumberInput value={amount} min="0" step="0.01" onChange={(event) => setAmount(event.target.value)} />
+        <NumberInput value={amount} min="0" step={currencyDefinition ? moneyInputStep(currencyDefinition) : "any"}
+          onChange={(event) => setAmount(event.target.value)} />
       </FormField>
       <FormField label="Kategoriya" required>
         <SelectInput value={categoryId} onChange={(event) => setCategoryId(event.target.value)}>

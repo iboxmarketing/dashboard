@@ -234,6 +234,7 @@ test("database rejects account-currency mismatch and locks Account currency afte
 test("database enforces one-row transfer shape and refuses invented or unequal same-currency value", { skip: !DatabaseSync }, () => {
   const db = migratedDb();
   assert.throws(() => db.prepare(transferSql).run("bad", "2026-09-01", "TRANSFER", "", null, null, null, null, null, "cash", "cash-2", 100, "UZS", 90, "UZS", CREATED, CREATED), /CHECK constraint/);
+  assert.throws(() => db.prepare(transferSql).run("categorized", "2026-09-01", "TRANSFER", "", null, null, null, null, "exp", "cash", "cash-2", 100, "UZS", 100, "UZS", CREATED, CREATED), /CHECK constraint/);
   db.prepare(transferSql).run("fx", "2026-09-01", "TRANSFER", "", null, null, null, null, null, "cash", "usd", 1_250_000, "UZS", 100, "USD", CREATED, CREATED);
   assert.equal((db.prepare("SELECT count(*) AS count FROM finance_transactions WHERE id='fx'").get() as { count: number }).count, 1);
 });
@@ -241,6 +242,7 @@ test("database enforces one-row transfer shape and refuses invented or unequal s
 test("database rejects category mismatch, deeper hierarchy, and new activity on archived entities", { skip: !DatabaseSync }, () => {
   const db = migratedDb();
   assert.throws(() => db.prepare(incomeSql).run("wrong-kind", "2026-09-01", "INCOME", "", null, "cash", 100, "UZS", "exp", null, null, null, null, null, null, CREATED, CREATED), /references are invalid/);
+  assert.throws(() => db.prepare("INSERT INTO finance_categories(id,name,kind,parent_id,archived,sort_order) VALUES(?,?,?,?,?,?)").run("wrong-child", "Wrong", "INCOME", "exp", 0, 0), /same-kind root/);
   db.prepare("INSERT INTO finance_categories(id,name,kind,parent_id,archived,sort_order) VALUES(?,?,?,?,?,?)").run("child", "Software", "EXPENSE", "exp", 0, 0);
   assert.throws(() => db.prepare("INSERT INTO finance_categories(id,name,kind,parent_id,archived,sort_order) VALUES(?,?,?,?,?,?)").run("deep", "Cloud", "EXPENSE", "child", 0, 0), /same-kind root/);
   db.prepare("UPDATE finance_accounts SET archived=1 WHERE id='cash'").run();

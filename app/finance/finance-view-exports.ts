@@ -5,7 +5,7 @@
  * stateful view into a test module graph.
  */
 export {
-  ArchivedBadge, ArchiveStatusBadge, CurrencyKpiRow, EmptyState, ErrorState, FixtureNotice, LoadingState,
-  Money, MoneyByCurrencyLines, SectionHeading, StatusBadge,
+  ArchivedBadge, ArchiveStatusBadge, CurrencyKpiRow, EmptyState, ErrorState, FinanceCurrencyProvider,
+  FixtureNotice, LoadingState, Money, MoneyByCurrencyLines, SectionHeading,
 } from "./finance-primitives";
 export { FINANCE_TABS, FINANCE_TAB_LABELS, type FinanceTab, type FinanceRange } from "./finance-view";

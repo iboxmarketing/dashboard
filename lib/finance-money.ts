@@ -1,5 +1,17 @@
-import { addMinor, currencyDefinition, formatCurrencyAmount, parseCurrencyAmount } from "./finance/money";
-import { CURRENCIES, type Currency, type MoneyByCurrency } from "./finance-types";
+import {
+  addMinor, currencyDefinition, formatMinorAmount, parseMinorAmount,
+  type FinanceMoneyDefinition,
+} from "./finance/money";
+import { CURRENCIES, type Currency, type FinanceCurrency, type MoneyByCurrency } from "./finance-types";
+
+export type UiMoneyDefinition = Pick<FinanceCurrency, "code" | "minorUnit">;
+
+function definition(value: Currency | UiMoneyDefinition): FinanceMoneyDefinition | null {
+  const resolved = typeof value === "string" ? currencyDefinition(value) : value;
+  return resolved && Number.isSafeInteger(resolved.minorUnit) && resolved.minorUnit >= 0 && resolved.minorUnit <= 6
+    ? resolved
+    : null;
+}
 
 /** UI money helpers; every number passed here is integer minor units. */
 export function addMoney(into: MoneyByCurrency, currency: Currency, amountMinor: number): MoneyByCurrency {
@@ -34,16 +46,31 @@ export function nonZero(map: MoneyByCurrency): MoneyByCurrency {
   return out;
 }
 
-export const parseMoneyInput = (value: unknown, currency: Currency) => parseCurrencyAmount(value, currency);
-export const formatMoney = (amountMinor: number, currency: Currency) => formatCurrencyAmount(amountMinor, currency);
-export function moneyInputValue(amountMinor: number, currency: Currency) {
-  const definition = currencyDefinition(currency);
-  if (!definition || !Number.isSafeInteger(amountMinor)) return "";
+export const parseMoneyInput = (value: unknown, currency: Currency | UiMoneyDefinition) => {
+  const resolved = definition(currency);
+  return resolved ? parseMinorAmount(value, resolved.minorUnit) : null;
+};
+
+export const formatMoney = (amountMinor: number, currency: Currency | UiMoneyDefinition) => {
+  const resolved = definition(currency);
+  return resolved ? formatMinorAmount(amountMinor, resolved) : "—";
+};
+
+export function moneyInputValue(amountMinor: number, currency: Currency | UiMoneyDefinition) {
+  const resolved = definition(currency);
+  if (!resolved || !Number.isSafeInteger(amountMinor)) return "";
   const sign = amountMinor < 0 ? "-" : "";
-  const digits = String(Math.abs(amountMinor)).padStart(definition.minorUnit + 1, "0");
-  const minorUnit = Number(definition.minorUnit);
+  const digits = String(Math.abs(amountMinor)).padStart(resolved.minorUnit + 1, "0");
+  const minorUnit = Number(resolved.minorUnit);
   if (minorUnit === 0) return `${sign}${digits}`;
   return `${sign}${digits.slice(0, -minorUnit)}.${digits.slice(-minorUnit)}`;
+}
+
+export function moneyInputStep(currency: Currency | UiMoneyDefinition) {
+  const resolved = definition(currency);
+  if (!resolved) return "any";
+  if (resolved.minorUnit === 0) return "1";
+  return `0.${"0".repeat(resolved.minorUnit - 1)}1`;
 }
 
 export function moneyLines(map: MoneyByCurrency, { includeZero = false } = {}) {
@@ -51,6 +78,5 @@ export function moneyLines(map: MoneyByCurrency, { includeZero = false } = {}) {
   return currenciesIn(source).map((currency) => ({
     currency,
     amountMinor: source[currency] ?? 0,
-    formatted: formatMoney(source[currency] ?? 0, currency),
   }));
 }

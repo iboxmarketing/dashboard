@@ -105,6 +105,7 @@ export function validateTransactionInput(payload: unknown): ValidationResult<Tra
   const toAccountId = id(input.toAccountId);
   const sourceCurrencyCode = normalizeCurrencyCode(input.sourceCurrencyCode);
   const destinationCurrencyCode = normalizeCurrencyCode(input.destinationCurrencyCode);
+  if (id(input.categoryId)) return { ok: false, error: "Transfer cannot use an income or expense category" };
   if (!fromAccountId || !toAccountId) return { ok: false, error: "Both transfer accounts are required" };
   if (fromAccountId === toAccountId) return { ok: false, error: "Transfer accounts must be different" };
   if (!sourceCurrencyCode || !destinationCurrencyCode) return { ok: false, error: "Both transfer currencies are required" };

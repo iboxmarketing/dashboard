@@ -1,4 +1,5 @@
 import { addMoney } from "./finance-money";
+import { addMinor } from "./finance/money";
 import type {
   Cadence, Currency, FinanceAccount, FinanceCategory, FinanceProjectAmount, FinanceSubscription,
   FinanceSummary, FinanceTransaction, MoneyByCurrency, NewTransaction, TransactionType,
@@ -62,19 +63,27 @@ export function operatingMaps(summary: FinanceSummary) {
 }
 
 export function accountBalanceGroups(summary: FinanceSummary) {
-  const active = summary.accountBalances.filter((row) => !row.archived);
-  const archived = summary.accountBalances.filter((row) => row.archived);
-  const currencies = [...new Set(summary.accountBalances.map((row) => row.currencyCode))].sort();
+  const valid = summary.accountBalances.filter((row) => Number.isSafeInteger(row.currentBalanceMinor));
+  const active = valid.filter((row) => !row.archived);
+  const archived = valid.filter((row) => row.archived);
+  const currencies = [...new Set(valid.map((row) => row.currencyCode))].sort();
   return {
     groups: currencies.map((currencyCode) => ({
       currencyCode: currencyCode as Currency,
-      totalMinor: summary.accountBalances.filter((row) => row.currencyCode === currencyCode).reduce((sum, row) => sum + row.currentBalanceMinor, 0),
-      accounts: summary.accountBalances.filter((row) => row.currencyCode === currencyCode),
+      totalMinor: valid.filter((row) => row.currencyCode === currencyCode)
+        .reduce((sum, row) => addMinor(sum, row.currentBalanceMinor), 0),
+      accounts: valid.filter((row) => row.currencyCode === currencyCode),
     })),
     totals: currencyAmountMap(summary.accountBalancesByCurrency),
     archived,
     activeCount: active.length,
   };
+}
+
+/** Accounts carry configuration only; a current balance exists only in the server summary. */
+export function accountCurrentBalanceMinor(summary: FinanceSummary, accountId: string): number | null {
+  const amount = summary.accountBalances.find((row) => row.accountId === accountId)?.currentBalanceMinor;
+  return typeof amount === "number" && Number.isSafeInteger(amount) ? amount : null;
 }
 
 export type CategoryPresentationRow = {

@@ -1,10 +1,11 @@
 "use client";
 
 import { Archive, Inbox, Loader2, TriangleAlert } from "lucide-react";
-import type { ReactNode } from "react";
+import { createContext, useContext, type ReactNode } from "react";
 
 import { formatMoney, moneyLines } from "@/lib/finance-money";
-import type { Currency, MoneyByCurrency } from "@/lib/finance-types";
+import { FINANCE_CURRENCIES } from "@/lib/finance/money";
+import type { Currency, FinanceCurrency, MoneyByCurrency } from "@/lib/finance-types";
 
 /**
  * Shared Finance display primitives.
@@ -14,9 +15,22 @@ import type { Currency, MoneyByCurrency } from "@/lib/finance-types";
  * mixed-currency total cannot reach the screen even by mistake.
  */
 
+const DEFAULT_CURRENCIES: FinanceCurrency[] = FINANCE_CURRENCIES.map((currency) => ({ ...currency, archived: false }));
+const FinanceCurrencyContext = createContext<readonly FinanceCurrency[]>(DEFAULT_CURRENCIES);
+
+export function FinanceCurrencyProvider({ currencies, children }: { currencies: readonly FinanceCurrency[]; children: ReactNode }) {
+  return <FinanceCurrencyContext.Provider value={currencies}>{children}</FinanceCurrencyContext.Provider>;
+}
+
+export function useFinanceCurrency(currencyCode: string | null | undefined) {
+  const currencies = useContext(FinanceCurrencyContext);
+  return currencies.find((currency) => currency.code === currencyCode) ?? null;
+}
+
 export function Money({ amountMinor, currency, tone }: { amountMinor: number; currency: Currency; tone?: "income" | "expense" | "neutral" }) {
   const className = tone === "income" ? "fin-money income" : tone === "expense" ? "fin-money expense" : "fin-money";
-  return <span className={className}>{formatMoney(amountMinor, currency)}</span>;
+  const definition = useFinanceCurrency(currency);
+  return <span className={className}>{definition ? formatMoney(amountMinor, definition) : "—"}</span>;
 }
 
 export function MoneyByCurrencyLines({ value, tone, emptyLabel = "—", includeZero = false }: {
@@ -51,7 +65,7 @@ export function CurrencyKpiRow({ label, value, tone, icon, note }: {
       {lines.length ? (
         <div className="fin-kpi-values">
           {lines.map((line) => (
-            <strong key={line.currency}>{line.formatted}</strong>
+            <strong key={line.currency}><Money amountMinor={line.amountMinor} currency={line.currency} tone={tone} /></strong>
           ))}
         </div>
       ) : (
@@ -104,10 +118,6 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry?: ()
 /** Archived rows stay visible but must never read as active. */
 export function ArchivedBadge({ label = "Arxivlangan" }: { label?: string }) {
   return <span className="fin-badge archived"><Archive size={11} aria-hidden="true" />{label}</span>;
-}
-
-export function StatusBadge({ status }: { status: "ACTIVE" | "ARCHIVED" }) {
-  return status === "ARCHIVED" ? <ArchivedBadge /> : <span className="fin-badge active">Aktiv</span>;
 }
 
 export function ArchiveStatusBadge({ archived }: { archived: boolean }) {

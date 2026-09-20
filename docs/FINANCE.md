@@ -9,8 +9,10 @@ nor API imports CRM analytics, Sync, seller attribution, or Sales metrics.
 Persisted money is a safe integer in minor units. UZS, USD, EUR and KZT are
 seeded with ISO-style two-decimal minor units. Inputs to the API use fields such
 as `amountMinor`; decimal parsing and display formatting live in
-`lib/finance/money.ts`. Cross-currency transfers store both user-entered amounts
-and never store or infer an authoritative FX rate.
+`lib/finance/money.ts`. The browser consumes the runtime `/api/finance/currencies`
+metadata for input precision and display; it does not hardcode a decimal step.
+Cross-currency transfers store both user-entered amounts and never store or infer
+an authoritative FX rate.
 
 ## Balances and reporting
 
@@ -21,6 +23,11 @@ Expense and operating net cash flow. Every aggregate is partitioned by currency.
 
 Subscriptions are templates only. Creating or updating one never creates a
 Transaction.
+
+Income and Expense Transactions require a Category whose kind matches the
+Transaction type. Transfers carry no Category. Category nesting is exactly one
+level (root → child), and a child must have the same kind as its root. These
+rules are enforced in UI shaping, server storage validation, and D1 protection.
 
 ## UI and API contract
 
@@ -36,6 +43,11 @@ field names unchanged through `lib/finance-adapter.ts`:
 - create returns `{ id }`, while PATCH returns `{ ok: true }`;
 - the Overview reads canonical totals from `/api/finance/summary` and only
   reshapes its per-currency rows for presentation.
+
+Account list rows contain configuration and `openingBalanceMinor` only. Derived
+current balances are rendered exclusively from the matching server Summary row;
+a missing or malformed Summary balance is displayed as unavailable and is never
+replaced with the opening balance.
 
 Production mode is API-only. Fixture data is available only when a test or
 development caller explicitly constructs the adapter with `mode: "fixtures"`.

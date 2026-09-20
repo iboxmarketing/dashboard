@@ -4,8 +4,8 @@ import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { AccountDrawer, CategoryDrawer, ProjectDrawer, SubscriptionDrawer, TransactionDrawer } from "../app/finance/finance-drawers";
 import {
-  ArchiveStatusBadge, CurrencyKpiRow, EmptyState, ErrorState, FixtureNotice, LoadingState,
-  MoneyByCurrencyLines,
+  ArchiveStatusBadge, CurrencyKpiRow, EmptyState, ErrorState, FinanceCurrencyProvider, FixtureNotice,
+  LoadingState, Money, MoneyByCurrencyLines,
 } from "../app/finance/finance-view-exports";
 import { FINANCE_TABS, FINANCE_TAB_LABELS } from "../app/finance/finance-view-exports";
 import { isFinanceView, isManagementView, isSalesView } from "../app/dashboard-client";
@@ -37,6 +37,16 @@ test("money components render separate minor-unit totals per currency", () => {
   assert.equal((card.match(/<strong/g) ?? []).length, 2);
 });
 
+test("Money display consumes runtime currency metadata from the backend dataset", () => {
+  const html = renderToStaticMarkup(
+    <FinanceCurrencyProvider currencies={[{ code: "UZS", name: "Som", minorUnit: 0, symbol: "so‘m", archived: false }]}>
+      <Money amountMinor={1_250} currency="UZS" />
+    </FinanceCurrencyProvider>,
+  );
+  assert.match(html, /1[,.\s]250/);
+  assert.doesNotMatch(html, /12[,.]50/);
+});
+
 test("Overview consumes the server summary instead of recalculating canonical totals", () => {
   assert.match(view, /const summary = dataset\.summary/);
   assert.match(view, /operatingMaps\(summary\)/);
@@ -49,7 +59,9 @@ test("transaction drawer maps human input through minor-unit parsing", () => {
   assert.match(html, /Kirim/);
   assert.match(html, /Chiqim/);
   assert.match(html, /O‘tkazma/);
-  assert.match(drawers, /parseMoneyInput\(amount, from\.currencyCode/);
+  assert.match(drawers, /parseMoneyInput\(amount, fromCurrency\)/);
+  assert.match(drawers, /moneyInputStep\(fromCurrency\)/);
+  assert.doesNotMatch(drawers, /step="0\.01"/);
   assert.match(drawers, /destinationAmountMinor/);
   assert.doesNotMatch(drawers, /amount:\s*Number\(amount\)/);
 });
@@ -68,6 +80,7 @@ test("income and expense category is required while Finance Project remains opti
   assert.match(html, /Kategoriya/);
   assert.match(html, /Project belgilanmagan/);
   assert.match(html, /Ixtiyoriy — Project tanlanmasa ham yozuv saqlanadi/);
+  assert.doesNotMatch(html, /Kategoriyasiz/);
 });
 
 test("Account uses openingBalanceMinor and never exposes an editable current balance", () => {
@@ -76,6 +89,8 @@ test("Account uses openingBalanceMinor and never exposes an editable current bal
   assert.match(html, /Joriy balans faqat server summary’dan o‘qiladi/);
   assert.match(drawers, /openingBalanceMinor/);
   assert.doesNotMatch(drawers, /currentBalanceMinor:\s*/);
+  assert.match(view, /accountCurrentBalanceMinor\(dataset\.summary, account\.id\)/);
+  assert.doesNotMatch(view, /currentBalanceMinor\s*\?\?\s*account\.openingBalanceMinor/);
 });
 
 test("category hierarchy and archive UI use canonical archived boolean", () => {
@@ -103,6 +118,7 @@ test("subscription form matches backend direction, category, dates and reminder-
   assert.match(html, /Keyingi to‘lov sanasi/);
   assert.match(html, /Obuna yozuvni o‘zi yaratmaydi/);
   assert.match(drawers, /amountMinor/);
+  assert.match(drawers, /validateSubscriptionInput\(body\)/);
 });
 
 test("production error, loading, and empty states are visible", () => {

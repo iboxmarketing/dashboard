@@ -9,14 +9,14 @@ import {
 import { MultiSelect } from "../ui/multi-select";
 import { DateInput } from "../ui/form";
 import {
-  ArchivedBadge, ArchiveStatusBadge, CurrencyKpiRow, EmptyState, ErrorState, FixtureNotice, LoadingState,
-  Money, MoneyByCurrencyLines, SectionHeading,
+  ArchivedBadge, ArchiveStatusBadge, CurrencyKpiRow, EmptyState, ErrorState, FinanceCurrencyProvider,
+  FixtureNotice, LoadingState, Money, MoneyByCurrencyLines, SectionHeading,
 } from "./finance-primitives";
 import { AccountDrawer, CategoryDrawer, ProjectDrawer, SubscriptionDrawer, TransactionDrawer } from "./finance-drawers";
 import { createFinanceAdapter, emptyDataset, type FinanceAdapter, type FinanceSource } from "@/lib/finance-adapter";
 import {
-  accountBalanceGroups, addDays, cadenceMonths, categoryAmountRows, categoryTree, filterTransactions,
-  operatingMaps, projectAmountRows, subscriptionBuckets, type FinanceFilters,
+  accountBalanceGroups, accountCurrentBalanceMinor, addDays, cadenceMonths, categoryAmountRows, categoryTree,
+  filterTransactions, operatingMaps, projectAmountRows, subscriptionBuckets, type FinanceFilters,
 } from "@/lib/finance-metrics";
 import {
   ACCOUNT_TYPE_LABELS, CADENCE_LABELS, CURRENCIES, TRANSACTION_TYPES, TRANSACTION_TYPE_LABELS,
@@ -104,7 +104,8 @@ export function FinanceView({ adapter: injected }: { adapter?: FinanceAdapter } 
   const openAdd = (type: TransactionType) => { setAddType(type); setAddOpen(true); };
 
   return (
-    <section className="fin-shell" aria-label="Finance">
+    <FinanceCurrencyProvider currencies={dataset.currencies}>
+      <section className="fin-shell" aria-label="Finance">
       <div className="page-title">
         <div>
           <p className="eyebrow">FINANCE</p>
@@ -149,10 +150,11 @@ export function FinanceView({ adapter: injected }: { adapter?: FinanceAdapter } 
           </>
         )}
 
-      <TransactionDrawer key={`${addOpen}-${addType}`} open={addOpen} dataset={dataset} initialType={addType}
-        onClose={() => setAddOpen(false)}
-        onSave={async (body) => { await adapter.createTransaction(body); await reload(); }} />
-    </section>
+        <TransactionDrawer key={`${addOpen}-${addType}`} open={addOpen} dataset={dataset} initialType={addType}
+          onClose={() => setAddOpen(false)}
+          onSave={async (body) => { await adapter.createTransaction(body); await reload(); }} />
+      </section>
+    </FinanceCurrencyProvider>
   );
 }
 
@@ -390,22 +392,27 @@ function AccountsTab({ dataset, adapter, onChanged }: { dataset: FinanceDataset;
             <table className="fin-table">
               <thead><tr><th>Nomi</th><th>Turi</th><th>Valyuta</th><th className="right">Boshlang‘ich</th><th className="right">Joriy</th><th>Holat</th><th /></tr></thead>
               <tbody>
-                {dataset.accounts.map((account) => (
-                  <tr key={account.id} className={account.archived ? "fin-row-archived" : ""}>
-                    <td>{account.name}</td>
-                    <td>{ACCOUNT_TYPE_LABELS[account.type]}</td>
-                    <td>{account.currencyCode}</td>
-                    <td className="right"><Money amountMinor={account.openingBalanceMinor} currency={account.currencyCode as Currency} /></td>
-                    <td className="right"><Money amountMinor={dataset.summary.accountBalances.find((row) => row.accountId === account.id)?.currentBalanceMinor ?? account.openingBalanceMinor} currency={account.currencyCode as Currency} /></td>
-                    <td><ArchiveStatusBadge archived={account.archived} /></td>
-                    <td className="right fin-row-actions">
-                      <button type="button" className="button small secondary" onClick={() => { setEditing(account); setOpen(true); }}>Tahrirlash</button>
-                      <button type="button" className="button small secondary" onClick={() => void archive(account)}>
-                        {account.archived ? "Tiklash" : "Arxivlash"}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {dataset.accounts.map((account) => {
+                  const currentBalanceMinor = accountCurrentBalanceMinor(dataset.summary, account.id);
+                  return (
+                    <tr key={account.id} className={account.archived ? "fin-row-archived" : ""}>
+                      <td>{account.name}</td>
+                      <td>{ACCOUNT_TYPE_LABELS[account.type]}</td>
+                      <td>{account.currencyCode}</td>
+                      <td className="right"><Money amountMinor={account.openingBalanceMinor} currency={account.currencyCode as Currency} /></td>
+                      <td className="right">{currentBalanceMinor === null
+                        ? <span className="fin-money muted" title="Server summary’da balans yo‘q">—</span>
+                        : <Money amountMinor={currentBalanceMinor} currency={account.currencyCode as Currency} />}</td>
+                      <td><ArchiveStatusBadge archived={account.archived} /></td>
+                      <td className="right fin-row-actions">
+                        <button type="button" className="button small secondary" onClick={() => { setEditing(account); setOpen(true); }}>Tahrirlash</button>
+                        <button type="button" className="button small secondary" onClick={() => void archive(account)}>
+                          {account.archived ? "Tiklash" : "Arxivlash"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </section>

@@ -38,24 +38,33 @@ export function addMinor(left: number, right: number) {
   return result;
 }
 
+export type FinanceMoneyDefinition = { code: string; minorUnit: number };
+
+function validMinorUnit(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 6;
+}
+
 /** Exact decimal-string parser. Commas are rejected because their meaning is locale-ambiguous. */
-export function parseCurrencyAmount(value: unknown, currencyCode: unknown): number | null {
-  const currency = currencyDefinition(currencyCode);
-  if (!currency) return null;
+export function parseMinorAmount(value: unknown, minorUnit: unknown): number | null {
+  if (!validMinorUnit(minorUnit)) return null;
   const raw = String(value ?? "").trim().replace(/[ _]/g, "");
   const match = /^([+-]?)(\d+)(?:\.(\d+))?$/.exec(raw);
   if (!match) return null;
   const fraction = match[3] ?? "";
-  if (fraction.length > currency.minorUnit) return null;
-  const digits = `${match[2]}${fraction.padEnd(currency.minorUnit, "0")}`.replace(/^0+(?=\d)/, "");
+  if (fraction.length > minorUnit) return null;
+  const digits = `${match[2]}${fraction.padEnd(minorUnit, "0")}`.replace(/^0+(?=\d)/, "");
   const absoluteMinor = Number(digits || "0");
   if (!Number.isSafeInteger(absoluteMinor)) return null;
   return match[1] === "-" ? -absoluteMinor : absoluteMinor;
 }
 
-export function formatCurrencyAmount(amountMinor: number, currencyCode: unknown, locale = "uz-UZ") {
+export function parseCurrencyAmount(value: unknown, currencyCode: unknown): number | null {
   const currency = currencyDefinition(currencyCode);
-  if (!currency || !Number.isSafeInteger(amountMinor)) return "—";
+  return currency ? parseMinorAmount(value, currency.minorUnit) : null;
+}
+
+export function formatMinorAmount(amountMinor: number, currency: FinanceMoneyDefinition, locale = "uz-UZ") {
+  if (!validMinorUnit(currency.minorUnit) || !Number.isSafeInteger(amountMinor)) return "—";
   const scale = 10 ** currency.minorUnit;
   return new Intl.NumberFormat(locale, {
     style: "currency",
@@ -63,4 +72,10 @@ export function formatCurrencyAmount(amountMinor: number, currencyCode: unknown,
     minimumFractionDigits: currency.minorUnit,
     maximumFractionDigits: currency.minorUnit,
   }).format(amountMinor / scale);
+}
+
+export function formatCurrencyAmount(amountMinor: number, currencyCode: unknown, locale = "uz-UZ") {
+  const currency = currencyDefinition(currencyCode);
+  if (!currency || !Number.isSafeInteger(amountMinor)) return "—";
+  return formatMinorAmount(amountMinor, currency, locale);
 }

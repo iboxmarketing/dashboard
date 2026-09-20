@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildFinanceSummary } from "../lib/finance/summary";
-import { addMoney, formatMoney, moneyInputValue, parseMoneyInput, subtractByCurrency } from "../lib/finance-money";
+import { addMoney, formatMoney, moneyInputStep, moneyInputValue, parseMoneyInput, subtractByCurrency } from "../lib/finance-money";
 import {
-  accountBalanceGroups, advanceDueDate, buildTransactionBody, cadenceMonths, categoryTree,
+  accountBalanceGroups, accountCurrentBalanceMinor, advanceDueDate, buildTransactionBody, cadenceMonths, categoryTree,
   filterTransactions, operatingMaps, projectAmountRows, selectableCategories, subscriptionBuckets,
   transferShape, validateTransaction,
 } from "../lib/finance-metrics";
@@ -33,6 +33,15 @@ test("human major input parses exactly to integer minor units", () => {
 test("minor-unit formatting uses backend currency metadata", () => {
   assert.match(formatMoney(420_050, "USD"), /4[,.\s]200[,.]50|4,200\.50/);
   assert.match(formatMoney(12_500_000, "UZS"), /125[,.\s]000/);
+});
+
+test("UI parsing, formatting and input precision follow supplied backend currency metadata", () => {
+  const zeroDecimalUzs = { code: "UZS", minorUnit: 0 };
+  assert.equal(parseMoneyInput("1250", zeroDecimalUzs), 1_250);
+  assert.equal(parseMoneyInput("12.50", zeroDecimalUzs), null);
+  assert.equal(moneyInputValue(1_250, zeroDecimalUzs), "1250");
+  assert.equal(moneyInputStep(zeroDecimalUzs), "1");
+  assert.match(formatMoney(1_250, zeroDecimalUzs), /1[,.\s]250/);
 });
 
 test("integer money adds per currency and never creates a mixed grand total", () => {
@@ -100,6 +109,17 @@ test("server account balances are grouped by currency without blending", () => {
   assert.deepEqual(balances.groups.map((row) => row.currencyCode), ["USD", "UZS"]);
   assert.equal(Object.keys(balances.totals).length, 2);
   assert.equal(balances.archived.length, 1);
+});
+
+test("Account current balance comes only from summary and malformed or missing values never become NaN", () => {
+  const accountId = FINANCE_FIXTURES.accounts[0].id;
+  const expected = FINANCE_FIXTURES.summary.accountBalances.find((row) => row.accountId === accountId)!.currentBalanceMinor;
+  assert.equal(accountCurrentBalanceMinor(FINANCE_FIXTURES.summary, accountId), expected);
+  assert.equal(accountCurrentBalanceMinor(FINANCE_FIXTURES.summary, "missing"), null);
+  const malformed = structuredClone(FINANCE_FIXTURES.summary);
+  malformed.accountBalances[0].currentBalanceMinor = Number.NaN;
+  assert.equal(accountCurrentBalanceMinor(malformed, accountId), null);
+  assert.equal(accountBalanceGroups(malformed).groups.every((group) => Number.isSafeInteger(group.totalMinor)), true);
 });
 
 test("server project rows are only presentation-grouped, never recomputed from transactions", () => {

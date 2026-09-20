@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { FINANCE_ENDPOINTS, FinanceError, createFinanceAdapter, createHttpTransport, emptyDataset } from "../lib/finance-adapter";
 import { cloneFixtures } from "../lib/finance-fixtures";
@@ -31,6 +32,12 @@ test("adapter endpoint map matches every backend collection plus summary and cur
   });
 });
 
+test("backend archived listing is opt-in while management loads request it explicitly", () => {
+  const api = readFileSync(new URL("../lib/finance/api.ts", import.meta.url), "utf8");
+  assert.match(api, /searchParams\.get\("includeArchived"\) === "true"/);
+  assert.doesNotMatch(api, /includeArchived[^\n]*\?\?\s*true/);
+});
+
 test("API responses hydrate the canonical backend Finance types", async () => {
   const calls: Array<{ url: string; method: string; body: unknown }> = [];
   const result = await createFinanceAdapter({ fetchImpl: apiFetch(calls) }).load(RANGE);
@@ -41,16 +48,26 @@ test("API responses hydrate the canonical backend Finance types", async () => {
   assert.equal(result.dataset.transactions[0].amountMinor, 4_200_000_000);
   assert.equal(result.dataset.summary.range.from, "2026-09-01");
   assert.equal(calls.length, 7);
-  assert.ok(calls.some((call) => call.url === "/api/finance/accounts?includeArchived=true"));
+  for (const entity of ["accounts", "categories", "projects", "subscriptions"] as const) {
+    assert.ok(calls.some((call) => call.url === `/api/finance/${entity}?includeArchived=true`), entity);
+  }
+  assert.ok(calls.some((call) => call.url === "/api/finance/transactions"));
+  assert.equal(calls.some((call) => call.url === "/api/finance/transactions?includeArchived=true"), false);
   assert.ok(calls.some((call) => call.url === "/api/finance/summary?from=2026-09-01&to=2026-09-30"));
 });
 
-test("production API failure is visible and never silently becomes fixture data", async () => {
-  const fetchImpl = (async () => json({ error: "D1 vaqtincha mavjud emas" }, 503)) as typeof fetch;
-  const result = await createFinanceAdapter({ fetchImpl }).load(RANGE);
-  assert.equal(result.source, "api");
-  assert.equal(result.error, "D1 vaqtincha mavjud emas");
-  assert.deepEqual(result.dataset, emptyDataset(RANGE));
+test("production API 400, 404, 500 and offline failures stay visible and never become fixtures", async () => {
+  for (const status of [400, 404, 500]) {
+    const fetchImpl = (async () => json({ error: `Finance failure ${status}` }, status)) as typeof fetch;
+    const result = await createFinanceAdapter({ fetchImpl }).load(RANGE);
+    assert.equal(result.source, "api");
+    assert.equal(result.error, `Finance failure ${status}`);
+    assert.deepEqual(result.dataset, emptyDataset(RANGE));
+  }
+  const offline = await createFinanceAdapter({ fetchImpl: (async () => { throw new TypeError("offline"); }) as typeof fetch }).load(RANGE);
+  assert.equal(offline.source, "api");
+  assert.equal(offline.error, "Finance API bilan aloqa yo‘q");
+  assert.deepEqual(offline.dataset, emptyDataset(RANGE));
 });
 
 test("fixture data requires explicit fixtures mode", async () => {
