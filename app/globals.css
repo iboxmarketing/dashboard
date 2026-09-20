@@ -136,6 +136,109 @@ aside nav button i { margin-left: auto; width: 7px; height: 7px; border-radius: 
 .clear-filter { border: 0; background: transparent; color: #9099a8; }
 .filters-extra { padding-top: 9px; }
 
+/* ---------------------------------------------------------------- Finance ---
+   Reuses the existing tokens (--line, --navy, --blue, --shadow) and the panel /
+   kpi-card rhythm. Finance adds no new palette and no decorative graphics: it is
+   a management view, so the numbers carry the page. */
+.fin-shell { display: flex; flex-direction: column; gap: 14px; }
+.fin-stack { display: flex; flex-direction: column; gap: 14px; }
+.fin-quick-actions { display: flex; gap: 7px; flex-wrap: wrap; }
+.fin-notice { margin: 0; }
+
+.fin-tabs { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 11px; background: white; overflow-x: auto; }
+.fin-tabs button { flex: 0 0 auto; height: 31px; padding: 0 13px; border: 0; border-radius: 8px; background: transparent; color: #5a6679; font-size: 11px; font-weight: 650; white-space: nowrap; }
+.fin-tabs button:hover { background: #f4f7fc; }
+.fin-tabs button.active { background: var(--blue); color: white; }
+
+.fin-range { display: flex; gap: 9px; flex-wrap: wrap; }
+.fin-range label { display: flex; align-items: center; gap: 7px; color: #768196; font-size: 10px; font-weight: 650; }
+.fin-filters { position: static; margin: 0; padding: 10px; border: 1px solid var(--line); border-bottom: 1px solid var(--line); border-radius: 11px; background: white; backdrop-filter: none; }
+
+/* One KPI card may hold several currency lines; it never sums them. */
+.fin-kpi-grid { align-items: stretch; }
+.fin-kpi .fin-kpi-values { display: flex; flex-direction: column; gap: 3px; margin-top: 10px; }
+.fin-kpi .fin-kpi-values strong { display: block; color: var(--navy); font-size: 19px; line-height: 1.15; letter-spacing: -.02em; }
+.fin-kpi .fin-kpi-values strong.muted { color: #aab3c2; }
+.fin-kpi.income .kpi-icon { color: var(--green); background: #e7f7f0; }
+.fin-kpi.expense .kpi-icon { color: #d2554e; background: #fdeceb; }
+.fin-currency-note { margin: -4px 0 0; color: #98a2b3; font-size: 10px; }
+
+.fin-money { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fin-money.income { color: var(--green); }
+.fin-money.expense { color: #d2554e; }
+.fin-money.muted { color: #aab3c2; }
+.fin-money-lines { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+
+.fin-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
+.fin-section-head h3 { margin: 0; color: var(--navy); font-size: 13px; letter-spacing: -.01em; }
+.fin-section-head p { margin: 3px 0 0; color: #8b95a6; font-size: 10px; }
+
+.fin-table { width: 100%; border-collapse: collapse; }
+.fin-table th, .fin-table td { padding: 9px 10px; border-bottom: 1px solid #f0f3f8; text-align: left; font-size: 11px; color: #46536b; vertical-align: top; }
+.fin-table th { color: #7c869a; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.fin-table td.right, .fin-table th.right { text-align: right; }
+.fin-table tbody tr:last-child td { border-bottom: 0; }
+.fin-table tbody tr:hover { background: #fafbfe; }
+.fin-row-archived { opacity: .55; }
+.fin-row-archived td:first-child { text-decoration: line-through; text-decoration-color: #c3cad6; }
+.fin-row-actions { display: inline-flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+
+.fin-two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.fin-cards { display: flex; gap: 10px; flex-wrap: wrap; }
+.fin-mini-card { min-width: 168px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 11px; background: white; box-shadow: var(--shadow); }
+.fin-mini-card span { display: block; color: #7c869a; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.fin-mini-card strong { display: block; margin-top: 6px; color: var(--navy); font-size: 17px; }
+
+.fin-balance-group + .fin-balance-group { margin-top: 15px; }
+.fin-balance-head { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; border-radius: 8px; background: #f6f8fc; }
+.fin-balance-head strong { color: #59657c; font-size: 10px; font-weight: 700; letter-spacing: .04em; }
+.fin-archived-note { margin: 10px 0 0; color: #98a2b3; font-size: 10px; display: flex; align-items: center; gap: 6px; }
+.fin-subs-total { margin: 0 0 10px; color: #59657c; font-size: 11px; display: flex; align-items: center; gap: 8px; }
+.fin-subs-actions { margin-top: 10px; justify-content: flex-start; }
+.fin-subs-action { display: inline-flex; gap: 4px; }
+
+.fin-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 6px; font-size: 9px; font-weight: 700; }
+.fin-badge.active { background: #e7f7f0; color: #167a53; }
+.fin-badge.archived { background: #eef1f6; color: #78839a; }
+.fin-badge.overdue { margin-left: 6px; background: #fdeceb; color: #b33f38; }
+.fin-type { display: inline-block; padding: 2px 7px; border-radius: 6px; font-size: 9px; font-weight: 700; }
+.fin-type.income { background: #e7f7f0; color: #167a53; }
+.fin-type.expense { background: #fdeceb; color: #b33f38; }
+.fin-type.transfer { background: #eef0ff; color: #5167d8; }
+.fin-cross { color: #8b95a6; font-size: 9px; }
+
+.fin-type-switch { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: white; }
+.fin-type-switch button { height: 29px; padding: 0 12px; border: 0; border-radius: 7px; background: transparent; color: #5a6679; font-size: 11px; font-weight: 650; }
+.fin-type-switch button.active { background: var(--blue); color: white; }
+
+.fin-tree, .fin-subtree { margin: 0; padding: 0; list-style: none; }
+.fin-tree > li + li { margin-top: 5px; }
+.fin-tree-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; background: #fafbfe; }
+.fin-tree-row .fin-row-actions { margin-left: auto; }
+.fin-tree-name { display: inline-flex; align-items: center; gap: 6px; color: var(--navy); font-size: 11px; font-weight: 650; }
+.fin-tree-name.sub { color: #55617a; font-weight: 600; }
+.fin-subtree { margin: 4px 0 0 18px; border-left: 2px solid #e8edf5; padding-left: 10px; }
+.fin-subtree > li + li { margin-top: 4px; }
+
+.fin-empty { padding: 30px 18px; display: flex; flex-direction: column; align-items: center; gap: 7px; color: #98a2b3; text-align: center; }
+.fin-empty strong { color: #59657c; font-size: 12px; }
+.fin-empty p { margin: 0; font-size: 10px; max-width: 320px; }
+.fin-loading { padding: 26px; display: flex; align-items: center; justify-content: center; gap: 9px; color: #7c869a; font-size: 11px; }
+.fin-error { padding: 14px; display: flex; align-items: center; gap: 11px; border: 1px solid #f3d3cf; border-radius: 11px; background: #fdf6f5; color: #a24840; }
+.fin-error strong { display: block; font-size: 11px; }
+.fin-error p { margin: 2px 0 0; font-size: 10px; }
+.fin-error button { margin-left: auto; }
+
+@media (max-width: 1100px) {
+  .fin-two-col { grid-template-columns: 1fr; }
+}
+@media (max-width: 720px) {
+  .fin-quick-actions { width: 100%; }
+  .fin-quick-actions .button { flex: 1 1 auto; }
+  .fin-table { display: block; overflow-x: auto; }
+  .fin-kpi .fin-kpi-values strong { font-size: 16px; }
+}
+
 /* Multi-value filter (Menejer, Manba). Matches .select-wrap metrics so the
    filter row keeps one rhythm; the panel is anchored, not a portal, because the
    filters shell is the sticky positioning context. */

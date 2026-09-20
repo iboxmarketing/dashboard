@@ -4,7 +4,7 @@ import {
   Activity, AlertTriangle, ArrowLeft, BarChart3, CalendarDays, Check,
   ChevronDown, Clock3, Database, Download, ExternalLink, Gauge, LayoutDashboard,
   Loader2, Menu, RefreshCw, Search, Settings, ShieldCheck,
-  SlidersHorizontal, TimerReset, Users, X, XCircle, CircleDollarSign, ClipboardList, Layers3, GripVertical, ChevronUp
+  SlidersHorizontal, TimerReset, Users, Wallet, X, XCircle, CircleDollarSign, ClipboardList, Layers3, GripVertical, ChevronUp
 } from "lucide-react";
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ErrorInfo, ReactNode } from "react";
@@ -63,16 +63,22 @@ import {
   CheckCard, DateInput, FormField, NumberInput, SelectInput, TextInput, Textarea, TimeInput,
 } from "./ui/form";
 import { Drawer } from "./ui/drawer";
+import { FinanceView } from "./finance/finance-view";
 import { StatusCombobox } from "./ui/combobox";
 
 /** Sales analytics views. Only these carry the global cohort filter bar. */
 const SALES_VIEWS = ["dashboard", "managers", "managerDetail", "leadFlow", "quality", "stages", "deals"] as const;
 /** Management views: no sales filters, no funnel/sync controls. */
-const MANAGEMENT_VIEWS = ["projects", "projectDetail", "pages", "pageDetail", "settings", "diagnostics"] as const;
+const MANAGEMENT_VIEWS = ["projects", "projectDetail", "pages", "pageDetail", "settings", "diagnostics", "finance"] as const;
+/**
+ * Finance is its own lane. It holds its own date filter and dataset and shares no
+ * state with the Sales cohort filter, so opening Finance cannot move a Sales number.
+ */
+export const isFinanceView = (view: string) => view === "finance";
 export const isSalesView = (view: string) => (SALES_VIEWS as readonly string[]).includes(view);
 export const isManagementView = (view: string) => (MANAGEMENT_VIEWS as readonly string[]).includes(view);
 
-type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "projects" | "projectDetail" | "pages" | "pageDetail" | "diagnostics" | "settings";
+type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "projects" | "projectDetail" | "pages" | "pageDetail" | "diagnostics" | "settings" | "finance";
 type SyncState = SyncProgressState;
 type Filters = {
   range: "today" | "yesterday" | "7" | "30" | "month" | "lastMonth" | "custom";
@@ -102,6 +108,7 @@ const navItems: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "quality", label: "Lead sifati", icon: ClipboardList },
   { id: "stages", label: "Stage nazorati", icon: Layers3 },
   { id: "deals", label: "Deal’lar", icon: Database },
+  { id: "finance", label: "Moliya", icon: Wallet },
   { id: "projects", label: "Projects", icon: ClipboardList },
   { id: "pages", label: "Pages", icon: LayoutDashboard },
   { id: "diagnostics", label: "Diagnostika", icon: Activity },
@@ -2548,6 +2555,7 @@ export default function DashboardClient() {
 
         {view === "deals" && <><div className="page-title"><div><p className="eyebrow">DETAIL REPORT</p><h1>Deal’lar</h1><p>Sotuv holati, sotuvchi attribution’i, stage yoshi va processing yagona jadvalda.</p></div></div><DealsTable records={detailFiltered} /></>}
         {view === "diagnostics" && <DiagnosticsView sync={sync} records={records} reconciliation={stageReconciliation} settings={settings} />}
+        {view === "finance" && <FinanceView />}
         {view === "settings" && <SettingsView settings={settings} syncing={refreshing || sync.status === "running"} lastSyncAt={sync.lastSyncAt} onSave={saveSettings} onFullSync={saveAndFullSync} onDirtyChange={setSettingsDirty} />}
         </ViewErrorBoundary>
         <Drawer open={Boolean(pageDraft)} title={pageDraft?.id ? "Sahifa sozlamasi" : "Yangi sahifa"}
