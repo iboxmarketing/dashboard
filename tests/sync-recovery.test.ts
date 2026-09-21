@@ -175,8 +175,13 @@ test("repeated minimum-size runtime failure stops instead of retrying recursivel
   const rows = runtimeRows(1, 0);
   const first = planAnalyticsBatch({ cursor: 2000, ...rows });
   assert.equal(first.batchSize, 1);
+  const second = planAnalyticsBatch({ cursor: 2000, ...rows, previous: first });
+  const third = planAnalyticsBatch({ cursor: 2000, ...rows, previous: second });
+  assert.equal(second.minimumAttemptCount, 2);
+  assert.equal(third.minimumAttemptCount, 3);
+  assert.equal(third.safeErrorClass, "ANALYTICS_RUNTIME_RETRY");
   assert.throws(
-    () => planAnalyticsBatch({ cursor: 2000, ...rows, previous: first }),
+    () => planAnalyticsBatch({ cursor: 2000, ...rows, previous: third }),
     AnalyticsSingleDealRuntimeError,
   );
 });

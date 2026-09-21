@@ -99,7 +99,8 @@ export type AnalyticsRuntimeDiagnostics = {
   batchSize: number;
   splitLevel: number;
   retryCount: number;
-  safeErrorClass: "NONE" | "ANALYTICS_COST_SPLIT" | "ANALYTICS_RUNTIME_SPLIT";
+  minimumAttemptCount: number;
+  safeErrorClass: "NONE" | "ANALYTICS_COST_SPLIT" | "ANALYTICS_RUNTIME_SPLIT" | "ANALYTICS_RUNTIME_RETRY";
   state: "attempting" | "completed";
   rawBytes: number;
   historyRows: number;

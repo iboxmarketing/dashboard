@@ -3,6 +3,7 @@ import type { AnalyticsRuntimeDiagnostics } from "./types";
 export const ANALYTICS_BATCH_SIZES = [80, 40, 20, 10, 5, 1] as const;
 export const ANALYTICS_HISTORY_ROW_BUDGET = 300;
 export const ANALYTICS_INPUT_BYTE_BUDGET = 80_000;
+export const ANALYTICS_MINIMUM_ATTEMPTS = 3;
 
 type PayloadRow = { deal_id: string; payload: string };
 
@@ -66,6 +67,8 @@ export function nextAnalyticsRetryBatchSize(input: {
     : null;
   if (!previous) return null;
   const nextSize = candidates(input.available).find((size) => size < previous.batchSize);
+  if (!nextSize && previous.batchSize === 1
+    && (previous.minimumAttemptCount || 1) < ANALYTICS_MINIMUM_ATTEMPTS) return 1;
   if (!nextSize) throw new AnalyticsSingleDealRuntimeError(previous.firstDealId);
   return nextSize;
 }
@@ -94,16 +97,21 @@ export function planAnalyticsBatch(input: {
     : null;
 
   if (previousAttempt) {
-    const nextSize = sizes.find((size) => size < previousAttempt.batchSize);
+    const priorMinimumAttempts = previousAttempt.minimumAttemptCount || (previousAttempt.batchSize === 1 ? 1 : 0);
+    const smaller = sizes.find((size) => size < previousAttempt.batchSize);
+    const retryMinimum = !smaller && previousAttempt.batchSize === 1
+      && priorMinimumAttempts < ANALYTICS_MINIMUM_ATTEMPTS;
+    const nextSize = smaller ?? (retryMinimum ? 1 : null);
     if (!nextSize) throw new AnalyticsSingleDealRuntimeError(input.rawDeals[0]?.deal_id ?? "UNKNOWN");
     const next = profile(nextSize);
     return {
       cursor: input.cursor,
       attemptedBatchSize: previousAttempt.batchSize,
       ...next,
-      splitLevel: previousAttempt.splitLevel + 1,
+      splitLevel: previousAttempt.splitLevel + (retryMinimum ? 0 : 1),
       retryCount: previousAttempt.retryCount + 1,
-      safeErrorClass: "ANALYTICS_RUNTIME_SPLIT",
+      minimumAttemptCount: nextSize === 1 ? priorMinimumAttempts + 1 : 0,
+      safeErrorClass: retryMinimum ? "ANALYTICS_RUNTIME_RETRY" : "ANALYTICS_RUNTIME_SPLIT",
       state: "attempting",
     };
   }
@@ -119,6 +127,7 @@ export function planAnalyticsBatch(input: {
       ...next,
       splitLevel: index,
       retryCount: 0,
+      minimumAttemptCount: next.batchSize === 1 ? 1 : 0,
       safeErrorClass: index === 0 ? "NONE" : "ANALYTICS_COST_SPLIT",
       state: "attempting",
     };
