@@ -160,8 +160,9 @@ Staging recovery order for version 11 is controlled:
 4. dry-run the conservative reviewed seller manifest and review requested,
    matched, missing and would-change counts;
 5. only after explicit approval, apply that exact manifest;
-6. run Analytics Backfill so invalidated rows can resolve from payment-stage
-   mover or the persisted post-sale observer;
+6. run Analytics Backfill so invalidated rows can resolve from an
+   `OWNER_CONFIRMED` registry entry, payment-stage mover or the persisted
+   post-sale observer (reviewed exclusions stay Unknown);
 7. reconcile seller attribution and repeat the unchanged core KPI check.
 
 Do not run the seller repair before the Full Sync: an old raw Deal without an
@@ -170,7 +171,10 @@ Do not run the seller repair before the Full Sync: an old raw Deal without an
 The normal rebuild ignores legacy snapshots sourced only from
 `CURRENT_RESPONSIBLE`; those records resolve from stronger evidence or move to
 the explicit Unknown seller bucket. Correct `CUSTOM_FIELD`, `STAGE_MOVER` and
-`POST_SALE_OBSERVER` snapshots remain frozen. An old `STAGE_MOVER` snapshot captured after the Deal
+`POST_SALE_OBSERVER` snapshots remain frozen. `OWNER_CONFIRMED` snapshots come
+only from `lib/seller-overrides.ts`, replace any stored seller for that one
+Deal, and are never overwritten afterwards; adding or changing an owner
+confirmation is a reviewed code change followed by a Backfill. An old `STAGE_MOVER` snapshot captured after the Deal
 had already entered post-sale cannot be distinguished from one captured in the
 payment stage with the current schema. Those exceptional rows require an
 evidence-led audit/correction; neither Backfill nor Full Sync can safely guess

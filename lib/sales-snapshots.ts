@@ -11,10 +11,18 @@
  *    existing sale date can never be replaced by a later recalculation;
  *  - the seller fields are updated only while the stored seller is unresolved,
  *    or when repairing the legacy CURRENT_RESPONSIBLE guess with stronger
- *    custom-field/current-payment-mover/post-sale-observer evidence.
+ *    custom-field/current-payment-mover/post-sale-observer evidence;
+ *  - OWNER_CONFIRMED is the strongest seller source. Only the reviewed owner
+ *    registry (lib/seller-overrides.ts) emits it, one explicit Deal at a time,
+ *    so it may replace any stored seller — including a known-bad legacy
+ *    CUSTOM_FIELD/FIRST_CALL — and nothing else may ever overwrite it. A
+ *    changed registry entry (a new OWNER_CONFIRMED value) is the only way to
+ *    move an owner-confirmed seller.
  *
  * The guard makes the statement idempotent: once a trustworthy manager source
  * is stored the conflict clause stops matching, so repeated syncs are a no-op.
+ * An owner confirmation already stored with the same seller is not rewritten,
+ * so repeated Backfills spend no D1 writes on it.
  */
 export const SALES_SNAPSHOT_UPSERT = `
 INSERT INTO deal_sales_snapshots(deal_id, won_at, manager_id, manager_name, attribution_source, created_at)
@@ -25,10 +33,23 @@ ON CONFLICT(deal_id) DO UPDATE SET
   attribution_source = excluded.attribution_source
 WHERE excluded.manager_id IS NOT NULL
   AND (
-    deal_sales_snapshots.manager_id IS NULL
+    (
+      excluded.attribution_source = 'OWNER_CONFIRMED'
+      AND NOT (
+        deal_sales_snapshots.attribution_source = 'OWNER_CONFIRMED'
+        AND deal_sales_snapshots.manager_id IS excluded.manager_id
+        AND deal_sales_snapshots.manager_name IS excluded.manager_name
+      )
+    )
     OR (
-      deal_sales_snapshots.attribution_source = 'CURRENT_RESPONSIBLE'
-      AND excluded.attribution_source IN ('CUSTOM_FIELD', 'STAGE_MOVER', 'POST_SALE_OBSERVER')
+      deal_sales_snapshots.attribution_source IS NOT 'OWNER_CONFIRMED'
+      AND (
+        deal_sales_snapshots.manager_id IS NULL
+        OR (
+          deal_sales_snapshots.attribution_source = 'CURRENT_RESPONSIBLE'
+          AND excluded.attribution_source IN ('CUSTOM_FIELD', 'STAGE_MOVER', 'POST_SALE_OBSERVER')
+        )
+      )
     )
   )
 `;
