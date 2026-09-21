@@ -342,7 +342,9 @@ test("a category-13 observer candidate with a stale title is still recovered", (
 
 test("a Deal with no raw evidence is never declared proven unsafe", () => {
   const r = cert({ dealId: "1", managerId: "88", attributionSource: "CUSTOM_FIELD", frozenAt: null }, null);
-  assert.equal(r.action, ACTION.UNKNOWN);
+  // An orphan snapshot (no raw Deal in staging) goes to a human: missing
+  // evidence is not proof, so it is never invalidated on evidence grounds.
+  assert.equal(r.action, ACTION.REVIEW);
   assert.equal(r.provenUnsafe, false);
-  assert.equal(r.basis, "NO_RAW_EVIDENCE_FOR_THIS_DEAL");
+  assert.equal(r.basis, "ORPHAN_SNAPSHOT_NO_RAW_DEAL_IN_STAGING");
 });

@@ -65,10 +65,26 @@ const SALES_CATS = new Set(["3", "5"]);
  * post-sale. A job-title contradiction is settled by the person's deal
  * footprint, never by the title alone.
  */
-export function certify({ snapshot, evidence, observerVerdict, footprintOf, users }) {
+export function certify(input) {
+  const verdict = certifyEvidence(input);
+  // Independent evidence that names the SAME person as the frozen seller
+  // corroborates it: invalidating only to recover the identical seller would
+  // change nothing but the provenance label, so the snapshot is kept.
+  const frozenId = s(input.snapshot.managerId);
+  if ([ACTION.MOVER, ACTION.OBSERVER].includes(verdict.action) && frozenId && verdict.sellerId === frozenId) {
+    const by = verdict.action === ACTION.MOVER ? "PAYMENT_STAGE_MOVER" : "CATEGORY_13_OBSERVER";
+    return { ...verdict, action: ACTION.KEEP, basis: `${input.snapshot.attributionSource}_CORROBORATED_BY_${by}`, provenUnsafe: false };
+  }
+  return verdict;
+}
+
+function certifyEvidence({ snapshot, evidence, observerVerdict, footprintOf, users }) {
   const flags = [];
   if (!evidence) {
-    return { action: ACTION.UNKNOWN, basis: "NO_RAW_EVIDENCE_FOR_THIS_DEAL", sellerId: null, flags, provenUnsafe: false };
+    // A snapshot whose Deal is absent from staging raw_deals is outside the
+    // analytics population and affects no KPI. Absent evidence is not proof the
+    // frozen seller is wrong, so it is never invalidated on that basis.
+    return { action: ACTION.REVIEW, basis: "ORPHAN_SNAPSHOT_NO_RAW_DEAL_IN_STAGING", sellerId: null, flags, provenUnsafe: false };
   }
   const cat = s(evidence.cat);
   const atPayment = PAYMENT_STAGES.includes(s(evidence.stage)) && SALES_CATS.has(cat);
@@ -90,6 +106,51 @@ export function certify({ snapshot, evidence, observerVerdict, footprintOf, user
     flags.push(`ROLE_CONFLICT_UNRESOLVED:${verdict.basis}`);
     return { ok: false };
   };
+
+  // 0a. A snapshot the final sync froze as UNKNOWN has no seller to invalidate.
+  // The deployed fallback chain re-runs for unresolved snapshots on every sync,
+  // so a post-sync UNKNOWN means the rules found nothing — repair cannot change
+  // it. It stays out of the manifest either way (wouldChange would be 0).
+  if (src === "UNKNOWN" || !s(snapshot.managerId)) {
+    if (inPostSale && observerVerdict?.state === OBSERVER_STATE.MULTIPLE) {
+      return { action: ACTION.REVIEW, basis: `ALREADY_UNKNOWN_AMBIGUOUS_${observerVerdict.candidates.length}_OBSERVER_CANDIDATES`, sellerId: null, flags, provenUnsafe: false };
+    }
+    if (inPostSale && observerVerdict?.state === OBSERVER_STATE.EXACT_ONE) {
+      flags.push(`UNEXPECTED_RECOVERABLE_UNKNOWN:observer ${observerVerdict.candidates[0]} — sync should have resolved it`);
+      return { action: ACTION.REVIEW, basis: "ALREADY_UNKNOWN_BUT_OBSERVER_RESOLVABLE", sellerId: null, flags, provenUnsafe: false };
+    }
+    return { action: ACTION.UNKNOWN, basis: `ALREADY_UNKNOWN_${inPostSale ? observerVerdict?.state ?? "NO_OBSERVER_DATA" : atPayment ? "PAYMENT_WITHOUT_MOVER" : `CATEGORY_${cat || "NONE"}`}`, sellerId: null, flags, provenUnsafe: false };
+  }
+
+  // 0b. A POST_SALE_OBSERVER snapshot is re-derived from the raw observers with
+  // the same rule the sync used (observers minus current assignee, exactly one,
+  // category 13 only). Agreement plus a Sales-staff seller is trustworthy; a
+  // different single candidate or a non-Sales seller proves the frozen value
+  // wrong; anything else is unproven and goes to a human.
+  if (src === "POST_SALE_OBSERVER") {
+    const frozenId = s(snapshot.managerId);
+    const salesStaff = (id) => roleOf(users.get(s(id))).role === "SELLER" || isSalesStaffByFootprint(footprintOf(id)).ok;
+    if (!inPostSale) {
+      flags.push(`OBSERVER_SNAPSHOT_DEAL_NOW_IN_CATEGORY_${cat || "NONE"}`);
+      return { action: ACTION.REVIEW, basis: "OBSERVER_SNAPSHOT_OUTSIDE_CATEGORY_13", sellerId: null, flags, provenUnsafe: false };
+    }
+    if (observerVerdict?.state === OBSERVER_STATE.EXACT_ONE) {
+      const candidate = observerVerdict.candidates[0];
+      if (candidate === frozenId && salesStaff(frozenId)) {
+        return { action: ACTION.KEEP, basis: "OBSERVER_SNAPSHOT_REDERIVED_FROM_RAW_OBSERVERS", sellerId: frozenId, flags, provenUnsafe: false };
+      }
+      if (candidate !== frozenId && salesStaff(candidate)) {
+        flags.push(`OBSERVER_SNAPSHOT_DISAGREES:frozen ${frozenId} vs raw ${candidate}`);
+        return { action: ACTION.OBSERVER, basis: "SINGLE_CATEGORY_13_OBSERVER_CANDIDATE", sellerId: candidate, flags, provenUnsafe: true };
+      }
+      flags.push(`OBSERVER_SELLER_NOT_SALES_STAFF:${candidate}`);
+      return { action: ACTION.UNKNOWN, basis: "OBSERVER_CANDIDATE_NOT_SALES_STAFF", sellerId: null, flags, provenUnsafe: !salesStaff(frozenId) };
+    }
+    if (observerVerdict?.state === OBSERVER_STATE.MULTIPLE) {
+      return { action: ACTION.REVIEW, basis: `OBSERVER_SNAPSHOT_NOW_AMBIGUOUS_${observerVerdict.candidates.length}`, sellerId: null, flags, provenUnsafe: false };
+    }
+    return { action: ACTION.REVIEW, basis: `OBSERVER_SNAPSHOT_UNSUPPORTED_${observerVerdict?.state ?? "NO_OBSERVER_DATA"}`, sellerId: null, flags, provenUnsafe: false };
+  }
 
   // 1. Truly trustworthy frozen seller.
   let trustworthy = null;
