@@ -31,7 +31,7 @@ import {
   STAGE_HISTORY_MAX_RETRIES,
 } from "./stage-history-retry";
 import { analyticsPageSql, safeD1WriteQuotaError } from "./sync-recovery";
-import { planAnalyticsBatch } from "./analytics-runtime";
+import { nextAnalyticsRetryBatchSize, planAnalyticsBatch } from "./analytics-runtime";
 
 const stageDealBatchSize = 25;
 const analyticsDealBatchSize = 80;
@@ -466,13 +466,22 @@ async function analyticsStep(job: StoredSyncJob) {
     await runPostSyncReconciliation(await getSettings());
     return finished;
   }
-  const candidateIds = rawDeals.map((row) => row.deal_id);
+  const retryBatchSize = nextAnalyticsRetryBatchSize({
+    cursor: job.cursor,
+    available: rawDeals.length,
+    previous: job.analyticsRuntime,
+  });
+  // A prior uncommitted attempt is already a trustworthy split signal. Do not
+  // deserialize the rest of the 80-record history window merely to rediscover
+  // that the retry must be smaller.
+  const profiledDeals = retryBatchSize ? rawDeals.slice(0, retryBatchSize) : rawDeals;
+  const candidateIds = profiledDeals.map((row) => row.deal_id);
   const candidatePlaceholders = candidateIds.map(() => "?").join(", ");
   const historyResult = await getD1().prepare(`SELECT deal_id, payload FROM raw_stage_history WHERE deal_id IN (${candidatePlaceholders})`).bind(...candidateIds).all<{ deal_id: string; payload: string }>();
   const candidateHistories = historyResult.results ?? [];
   const runtime = planAnalyticsBatch({
     cursor: job.cursor,
-    rawDeals,
+    rawDeals: profiledDeals,
     stageHistories: candidateHistories,
     previous: job.analyticsRuntime,
   });
@@ -480,7 +489,7 @@ async function analyticsStep(job: StoredSyncJob) {
   // 1102 cannot be caught inside this invocation; if it terminates us, the next
   // request sees this exact cursor/attempt and deterministically halves it.
   await saveSyncJob({ ...job, analyticsRuntime: runtime });
-  const batchDeals = rawDeals.slice(0, runtime.batchSize);
+  const batchDeals = profiledDeals.slice(0, runtime.batchSize);
   const ids = batchDeals.map((row) => row.deal_id);
   const selectedIds = new Set(ids);
   const selectedHistories = candidateHistories.filter((row) => selectedIds.has(row.deal_id));

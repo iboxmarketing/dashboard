@@ -6,7 +6,8 @@ export const ANALYTICS_INPUT_BYTE_BUDGET = 80_000;
 
 type PayloadRow = { deal_id: string; payload: string };
 
-const bytes = (value: string) => new TextEncoder().encode(value).byteLength;
+const encoder = new TextEncoder();
+const bytes = (value: string) => encoder.encode(value).byteLength;
 
 function candidates(available: number) {
   const capped = Math.min(ANALYTICS_BATCH_SIZES[0], Math.max(0, Math.floor(available)));
@@ -14,17 +15,33 @@ function candidates(available: number) {
   return [...new Set([capped, ...ANALYTICS_BATCH_SIZES.filter((size) => size < capped)])];
 }
 
-function profile(rawDeals: PayloadRow[], stageHistories: PayloadRow[], batchSize: number) {
-  const selected = rawDeals.slice(0, batchSize);
-  const ids = new Set(selected.map((row) => row.deal_id));
-  const selectedHistory = stageHistories.filter((row) => ids.has(row.deal_id));
-  return {
-    batchSize: selected.length,
-    rawBytes: selected.reduce((total, row) => total + bytes(row.payload), 0),
-    historyRows: selectedHistory.length,
-    historyBytes: selectedHistory.reduce((total, row) => total + bytes(row.payload), 0),
-    firstDealId: selected[0]?.deal_id ?? "",
-    lastDealId: selected.at(-1)?.deal_id ?? "",
+function profiler(rawDeals: PayloadRow[], stageHistories: PayloadRow[]) {
+  const historyByDeal = new Map<string, { rows: number; bytes: number }>();
+  for (const row of stageHistories) {
+    const current = historyByDeal.get(row.deal_id) ?? { rows: 0, bytes: 0 };
+    current.rows += 1;
+    current.bytes += bytes(row.payload);
+    historyByDeal.set(row.deal_id, current);
+  }
+  const prefixes: { rawBytes: number; historyRows: number; historyBytes: number }[] = [];
+  for (const row of rawDeals) {
+    const previous = prefixes.at(-1) ?? { rawBytes: 0, historyRows: 0, historyBytes: 0 };
+    const history = historyByDeal.get(row.deal_id) ?? { rows: 0, bytes: 0 };
+    prefixes.push({
+      rawBytes: previous.rawBytes + bytes(row.payload),
+      historyRows: previous.historyRows + history.rows,
+      historyBytes: previous.historyBytes + history.bytes,
+    });
+  }
+  return (batchSize: number) => {
+    const selected = rawDeals.slice(0, batchSize);
+    const totals = prefixes[selected.length - 1] ?? { rawBytes: 0, historyRows: 0, historyBytes: 0 };
+    return {
+      batchSize: selected.length,
+      ...totals,
+      firstDealId: selected[0]?.deal_id ?? "",
+      lastDealId: selected.at(-1)?.deal_id ?? "",
+    };
   };
 }
 
@@ -37,6 +54,20 @@ export class AnalyticsSingleDealRuntimeError extends Error {
     this.name = "AnalyticsSingleDealRuntimeError";
     this.dealId = dealId || "UNKNOWN";
   }
+}
+
+export function nextAnalyticsRetryBatchSize(input: {
+  cursor: number;
+  available: number;
+  previous?: AnalyticsRuntimeDiagnostics;
+}) {
+  const previous = input.previous?.state === "attempting" && input.previous.cursor === input.cursor
+    ? input.previous
+    : null;
+  if (!previous) return null;
+  const nextSize = candidates(input.available).find((size) => size < previous.batchSize);
+  if (!nextSize) throw new AnalyticsSingleDealRuntimeError(previous.firstDealId);
+  return nextSize;
 }
 
 /**
@@ -56,6 +87,7 @@ export function planAnalyticsBatch(input: {
 }): AnalyticsRuntimeDiagnostics {
   const sizes = candidates(input.rawDeals.length);
   if (!sizes.length) throw new AnalyticsSingleDealRuntimeError("UNKNOWN");
+  const profile = profiler(input.rawDeals, input.stageHistories);
 
   const previousAttempt = input.previous?.state === "attempting" && input.previous.cursor === input.cursor
     ? input.previous
@@ -64,7 +96,7 @@ export function planAnalyticsBatch(input: {
   if (previousAttempt) {
     const nextSize = sizes.find((size) => size < previousAttempt.batchSize);
     if (!nextSize) throw new AnalyticsSingleDealRuntimeError(input.rawDeals[0]?.deal_id ?? "UNKNOWN");
-    const next = profile(input.rawDeals, input.stageHistories, nextSize);
+    const next = profile(nextSize);
     return {
       cursor: input.cursor,
       attemptedBatchSize: previousAttempt.batchSize,
@@ -78,7 +110,7 @@ export function planAnalyticsBatch(input: {
 
   const attemptedBatchSize = sizes[0];
   for (let index = 0; index < sizes.length; index += 1) {
-    const next = profile(input.rawDeals, input.stageHistories, sizes[index]);
+    const next = profile(sizes[index]);
     const withinBudget = next.historyRows <= ANALYTICS_HISTORY_ROW_BUDGET
       && next.rawBytes + next.historyBytes <= ANALYTICS_INPUT_BYTE_BUDGET;
     if (withinBudget) return {

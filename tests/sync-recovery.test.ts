@@ -9,6 +9,7 @@ import {
 } from "../lib/sync-recovery";
 import {
   AnalyticsSingleDealRuntimeError,
+  nextAnalyticsRetryBatchSize,
   planAnalyticsBatch,
 } from "../lib/analytics-runtime";
 import { SALES_SNAPSHOT_UPSERT } from "../lib/sales-snapshots";
@@ -143,6 +144,21 @@ test("an uncommitted adaptive attempt halves on replay and remains duplicate-saf
   for (const row of rows.rawDeals.slice(0, first.batchSize)) stored.set(row.deal_id, "partial");
   for (const row of rows.rawDeals.slice(0, replay.batchSize)) stored.set(row.deal_id, "replay");
   assert.equal(stored.size, 80, "deal_id upserts cannot duplicate partially written rows");
+});
+
+test("a persisted runtime retry narrows the D1 history query before profiling", () => {
+  const rows = runtimeRows(80, 2);
+  const first = planAnalyticsBatch({ cursor: 2320, ...rows });
+  const retried = { ...first, batchSize: 10, attemptedBatchSize: 20, splitLevel: 3, retryCount: 3 };
+  assert.equal(nextAnalyticsRetryBatchSize({ cursor: 2320, available: 80, previous: retried }), 5);
+  assert.equal(nextAnalyticsRetryBatchSize({ cursor: 2321, available: 80, previous: retried }), null,
+    "a completed/advanced cursor never inherits the old retry cap");
+
+  const sync = readFileSync(new URL("../lib/sync.ts", import.meta.url), "utf8");
+  const analytics = sync.split("async function analyticsStep")[1].split("export async function runSyncStep")[0];
+  assert.ok(analytics.indexOf("const profiledDeals") < analytics.indexOf("SELECT deal_id, payload FROM raw_stage_history"),
+    "history is queried only after the persisted retry size has narrowed the Deal IDs");
+  assert.match(analytics, /const candidateIds = profiledDeals\.map/);
 });
 
 test("one pathological Deal is isolated with a safe exact Deal ID", () => {
