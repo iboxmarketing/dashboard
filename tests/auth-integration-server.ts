@@ -111,7 +111,7 @@ export async function createTestServer(seed: SeedUser[], sales?: SalesFixture) {
   const { store: throttle, rows: throttleRows } = sqliteThrottle();
   const authenticateCalls = { count: 0 };
   const failRevocation = { on: false };
-  /** Hashing is the real 600k-iteration PBKDF2, so seeds are hashed once. */
+  /** Hashing is the real 100k-iteration PBKDF2-SHA-512, so seeds are hashed once. */
   for (const person of seed) {
     users.set(person.id, {
       id: person.id, email: normalizeEmail(person.email), name: person.name, role: person.role,

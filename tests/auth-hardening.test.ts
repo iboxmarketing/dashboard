@@ -512,7 +512,7 @@ function wrangler(existingUsers = 0) {
   };
 }
 const deps = (run: ReturnType<typeof wrangler>, tempRoot: string) => ({
-  runWrangler: run.run, readSecret: async () => "Temporary1Password", hashPassword: async () => "pbkdf2-sha256$600000$SALT$SECRETHASH",
+  runWrangler: run.run, readSecret: async () => "Temporary1Password", hashPassword: async () => "pbkdf2-sha512$100000$SALT$SECRETHASH",
   randomId: () => "fixed-id", now: () => new Date("2026-09-21T00:00:00.000Z"), tempRoot,
 });
 

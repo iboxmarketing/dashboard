@@ -29,7 +29,7 @@ const SEED: SeedUser[] = [
   { id: "u-off", email: "off@ibox.uz", name: "Gone Person", role: "MEMBER", password: MEMBER_PASSWORD, permissions: ["dashboard"], active: false },
 ];
 
-/** One server per suite: the real PBKDF2 at 600k iterations is not cheap. */
+/** One server per suite: the real PBKDF2 is not cheap. */
 let server: Awaited<ReturnType<typeof createTestServer>>;
 const boot = (async () => { server = await createTestServer(SEED); })();
 const session = async () => { await boot; return createHttpAuthAdapter(server.client()); };
@@ -308,7 +308,7 @@ test("11. no password hash, session token or token hash ever reaches a payload",
   await callApi(fetchImpl, "/api/auth/login", { method: "POST", body: JSON.stringify({ email: "admin@ibox.uz", password: ADMIN_PASSWORD }) });
   const bodies = await Promise.all(["/api/auth/me", "/api/admin/users"].map(async (path) => (await callApi(fetchImpl, path)).text()));
   for (const body of bodies) {
-    for (const secret of ["passwordHash", "password_hash", "tokenHash", "token_hash", "pbkdf2-sha256", ADMIN_PASSWORD, MEMBER_PASSWORD]) {
+    for (const secret of ["passwordHash", "password_hash", "tokenHash", "token_hash", "pbkdf2-sha512", ADMIN_PASSWORD, MEMBER_PASSWORD]) {
       assert.equal(body.includes(secret), false, `${secret} leaked into a payload`);
     }
   }

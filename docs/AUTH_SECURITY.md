@@ -6,8 +6,12 @@ digest. The cookie is `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`, and lasts
 12 hours. Revoked, expired, or inactive-user sessions are rejected. `lastSeenAt`
 is written at most once every 15 minutes per active session.
 
-Passwords use PBKDF2-HMAC-SHA-256 with a random 128-bit salt, a 256-bit output,
-and 600,000 iterations. The encoded verifier stores the algorithm, work factor,
+Passwords use PBKDF2-HMAC-SHA-512 with a random 128-bit salt, a 512-bit output,
+and 100,000 iterations — the maximum the Cloudflare Workers edge accepts (it
+rejects higher counts; confirmed live on 2026-09-21, though Node and local
+workerd allow more, so tests alone cannot catch it). By OWASP's equivalence,
+210k SHA-512 ≈ 600k SHA-256; 100k SHA-512 is the strongest PBKDF2 available
+here. Stored verifiers above the edge cap are refused rather than crashing. The encoded verifier stores the algorithm, work factor,
 salt, and derived value—not the password. PBKDF2 is implemented by the Web
 Crypto API available in Cloudflare Workers. Passwords must be 12–256 characters
 and contain an uppercase letter, lowercase letter, and digit.

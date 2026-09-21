@@ -26,7 +26,7 @@ test("PBKDF2 password verifier is salted, one-way, and validates credentials", a
   const password = "StrongTemporary9";
   const first = await hashPassword(password);
   const second = await hashPassword(password);
-  assert.match(first, /^pbkdf2-sha256\$600000\$/u);
+  assert.match(first, /^pbkdf2-sha512\$100000\$/u);
   assert.notEqual(first, second);
   assert.equal(first.includes(password), false);
   assert.equal(await verifyPassword(password, first), true);
@@ -168,4 +168,16 @@ test("auth UI gates navigation and does not alter Sales or Finance calculation m
   assert.match(dashboard, /canSettings &&/u);
   const changedBusinessFiles = ["lib/sales-logic.ts", "lib/dashboard-metrics.ts", "lib/finance/summary.ts"];
   for (const path of changedBusinessFiles) assert.equal(readFileSync(`${root}/${path}`, "utf8").length > 0, true);
+});
+
+test("password hashing stays within the Cloudflare edge PBKDF2 cap", async () => {
+  // The live Workers edge rejects PBKDF2 above 100,000 iterations; Node and local
+  // workerd do not, so only this guard stops a login-breaking regression.
+  const { PASSWORD_ITERATIONS, MAX_EDGE_ITERATIONS, PASSWORD_SCHEME } = await import("../lib/auth/password");
+  assert.equal(MAX_EDGE_ITERATIONS, 100_000);
+  assert.ok(PASSWORD_ITERATIONS <= MAX_EDGE_ITERATIONS);
+  assert.equal(PASSWORD_SCHEME, "pbkdf2-sha512");
+  // A verifier above the cap is refused, not attempted.
+  assert.equal(await verifyPassword("StrongTemporary9", "pbkdf2-sha512$600000$AAAAAAAAAAAAAAAAAAAAAA$AAAA"), false);
+  assert.equal(await verifyPassword("StrongTemporary9", "pbkdf2-sha256$100000$AAAAAAAAAAAAAAAAAAAAAA$AAAA"), false);
 });

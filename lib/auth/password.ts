@@ -1,6 +1,19 @@
 const encoder = new TextEncoder();
-export const PASSWORD_ITERATIONS = 600_000;
-const HASH_BYTES = 32;
+/**
+ * PBKDF2-HMAC-SHA-512 at 100,000 iterations.
+ *
+ * Cloudflare Workers rejects PBKDF2 above 100,000 iterations on the live edge
+ * ("iteration counts above 100000 are not supported") — confirmed 2026-09-21,
+ * even though Node and local workerd accept more. 600,000 × SHA-256 therefore
+ * cannot run in production at all. SHA-512 at the platform maximum is the
+ * strongest PBKDF2 the runtime allows (OWASP rates 210k SHA-512 ≈ 600k SHA-256).
+ * The verifier string records scheme and count, so it can be upgraded later.
+ */
+export const PASSWORD_SCHEME = "pbkdf2-sha512";
+export const PASSWORD_ITERATIONS = 100_000;
+/** Workers' hard cap. A stored count above it could never be verified. */
+export const MAX_EDGE_ITERATIONS = 100_000;
+const HASH_BYTES = 64;
 
 function bytesToBase64Url(bytes: Uint8Array) {
   let binary = "";
@@ -14,7 +27,7 @@ function base64UrlToBytes(value: string) {
 async function derive(password: string, salt: Uint8Array, iterations: number) {
   const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
   const saltBuffer = salt.buffer.slice(salt.byteOffset, salt.byteOffset + salt.byteLength) as ArrayBuffer;
-  return new Uint8Array(await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: saltBuffer, iterations }, key, HASH_BYTES * 8));
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-512", salt: saltBuffer, iterations }, key, HASH_BYTES * 8));
 }
 export function validatePassword(password: unknown): { ok: true; value: string } | { ok: false; error: string } {
   if (typeof password !== "string") return { ok: false, error: "Parol kerak" };
@@ -28,12 +41,12 @@ export async function hashPassword(password: string) {
   if (!checked.ok) throw new Error(checked.error);
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const hash = await derive(checked.value, salt, PASSWORD_ITERATIONS);
-  return `pbkdf2-sha256$${PASSWORD_ITERATIONS}$${bytesToBase64Url(salt)}$${bytesToBase64Url(hash)}`;
+  return `${PASSWORD_SCHEME}$${PASSWORD_ITERATIONS}$${bytesToBase64Url(salt)}$${bytesToBase64Url(hash)}`;
 }
 export async function verifyPassword(password: string, stored: string) {
   const [scheme, rawIterations, rawSalt, rawHash, extra] = stored.split("$");
   const iterations = Number(rawIterations);
-  if (scheme !== "pbkdf2-sha256" || extra !== undefined || !Number.isSafeInteger(iterations) || iterations < 100_000 || iterations > 2_000_000 || !rawSalt || !rawHash) return false;
+  if (scheme !== PASSWORD_SCHEME || extra !== undefined || !Number.isSafeInteger(iterations) || iterations < 100_000 || iterations > MAX_EDGE_ITERATIONS || !rawSalt || !rawHash) return false;
   try {
     const expected = base64UrlToBytes(rawHash);
     const actual = await derive(password, base64UrlToBytes(rawSalt), iterations);
