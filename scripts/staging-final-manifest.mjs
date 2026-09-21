@@ -45,6 +45,21 @@ export function finalAction(row) {
  *   → UNKNOWN (CURRENT_RESPONSIBLE is never used for a WON Deal)
  * The deployed chain has NO role/footprint guard and NO owner-confirmed source.
  */
+/**
+ * Runtime after feat/seller-runtime-hardening: the reviewed owner registry
+ * comes first, and reviewed HUMAN_REVIEW exclusions block every automatic
+ * fallback. Mirrors lib/seller-overrides.ts on that branch.
+ */
+export const RUNTIME_OWNER_OVERRIDES = Object.freeze(new Map([["43407", { sellerId: "7893", sellerName: "Jamoliddin Kamarov" }]]));
+export const RUNTIME_REVIEW_EXCLUSIONS = Object.freeze(new Set(["41251", "41351", "41407", "41411"]));
+
+export function hardenedBackfill(dealId, evidence, settings = STAGING_SETTINGS) {
+  const owner = RUNTIME_OWNER_OVERRIDES.get(String(dealId));
+  if (owner) return { source: "OWNER_CONFIRMED", sellerId: owner.sellerId, basis: "OWNER_REGISTRY" };
+  if (RUNTIME_REVIEW_EXCLUSIONS.has(String(dealId))) return { source: "UNKNOWN", sellerId: null, basis: "REVIEW_EXCLUSION" };
+  return deployedBackfill(evidence, settings);
+}
+
 export function deployedBackfill(evidence, settings = STAGING_SETTINGS) {
   if (!evidence) return { source: "UNKNOWN", sellerId: null, basis: "NO_RAW_DEAL" };
   if (settings.salesManagerField) return { source: "CUSTOM_FIELD", sellerId: null, basis: "CONFIGURED_FIELD" };
@@ -133,6 +148,12 @@ async function main() {
     return { dealId: r.dealId, source: r.deployedBackfill.source, sellerId: r.deployedBackfill.sellerId, kept: false };
   });
   const afterById = new Map(after.map((a) => [a.dealId, a]));
+  const hardened = rows.map((r) => {
+    if (!r.inManifest) return { dealId: r.dealId, source: r.attributionSource || "UNKNOWN", sellerId: r.managerId, kept: true };
+    const p = hardenedBackfill(r.dealId, evidence.get(r.dealId));
+    return { dealId: r.dealId, source: p.source, sellerId: p.sellerId, kept: false };
+  });
+  const hardenedById = new Map(hardened.map((a) => [a.dealId, a]));
 
   /* ---- September certification ---- */
   const reviewIds = new Set(rows.filter((r) => r.action === ACTION.REVIEW).map((r) => r.dealId));
@@ -148,6 +169,7 @@ async function main() {
       id: x.id, auditSource, auditSeller: r?.auditSeller ?? null, auditSellerName: r?.auditSellerName ?? null,
       frozen: r ? `${r.attributionSource}:${r.managerId ?? "-"}` : "none",
       afterSource: a?.source ?? "UNKNOWN", afterSeller: a?.sellerId ?? null,
+      hardenedSource: hardenedById.get(x.id)?.source ?? "UNKNOWN", hardenedSeller: hardenedById.get(x.id)?.sellerId ?? null,
       review: reviewIds.has(x.id),
     };
   });
@@ -223,6 +245,15 @@ async function main() {
   L.push("     f165432 persists the recovered seller during Backfill, so for every Deal with a snapshot the");
   L.push("     analytics seller equals the persisted snapshot seller; the two coverages are the same number.");
   L.push(`     historical snapshots with a seller after Backfill: ${after.filter((a) => a.sellerId).length} / ${after.length}`);
+
+  L.push("", "F2. EXPECTED AFTER repair apply → Backfill on feat/seller-runtime-hardening");
+  L.push(`   snapshot sources after: ${JSON.stringify(tally(hardened, (a) => a.source))}`);
+  const hardenedDisagree = manifestRows.filter((r) => s(hardenedById.get(r.dealId)?.sellerId) !== s(r.auditSeller));
+  L.push(`   manifest rows where the hardened runtime disagrees with the audit: ${hardenedDisagree.length}${hardenedDisagree.length ? ` — ${hardenedDisagree.map((r) => r.dealId).join(", ")}` : ""}`);
+  L.push(`   September Cohort ${covered(cohort, "hardenedSeller")} / ${cohort.length} ${JSON.stringify(tally(cohort, (x) => x.hardenedSource))}`);
+  L.push(`   September Period ${covered(period, "hardenedSeller")} / ${period.length} ${JSON.stringify(tally(period, (x) => x.hardenedSource))}`);
+  L.push(`   43407 → ${hardenedById.get("43407")?.source}:${hardenedById.get("43407")?.sellerId}`);
+  L.push(`   hardened September sellers equal audit sellers: ${[...cohort, ...period].every((x) => s(x.hardenedSeller) === s(x.auditSeller))}`);
 
   L.push("", "G. CERTIFICATION");
   L.push(`   September Cohort manager coverage — audit evidence: ${covered(cohort, "auditSeller")} / ${cohort.length}; deployed code after repair+Backfill: ${covered(cohort, "afterSeller")} / ${cohort.length}`);
