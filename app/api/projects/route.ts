@@ -3,8 +3,11 @@ import {
   listProjects, setProjectArchived, updateProject, updateProjectUpdate,
 } from "@/lib/projects-storage";
 import { validateProjectInput, validateUpdateInput } from "@/lib/projects";
+import { authorizePermission } from "@/lib/auth/http";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const denied = await authorizePermission(request, "projects");
+  if (denied) return denied;
   try {
     const [projects, updates] = await Promise.all([listProjects(), listProjectUpdates()]);
     return Response.json({ projects, updates });
@@ -15,6 +18,8 @@ export async function GET() {
 
 /** Every payload is validated server-side; ids are never trusted as content. */
 export async function POST(request: Request) {
+  const denied = await authorizePermission(request, "projects");
+  if (denied) return denied;
   try {
     const payload = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const action = String(payload.action ?? "");

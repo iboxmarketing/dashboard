@@ -3,6 +3,7 @@ import { bitrixList, safeBitrixMessage as _safe } from "@/lib/bitrix";
 import type { RawCurrentStageDeal } from "@/lib/current-stages";
 import { getDealsByIds, LOOKUP_BATCH_LIMIT } from "@/lib/deal-lookup";
 import { currentScopeFor, resolveStaleDeal } from "@/lib/stale-resolution";
+import { authorizePermission } from "@/lib/auth/http";
 
 
 /**
@@ -16,6 +17,8 @@ import { currentScopeFor, resolveStaleDeal } from "@/lib/stale-resolution";
  * Cloudflare Access, which is what keeps this authenticated.
  */
 export async function GET(request: Request) {
+  const denied = await authorizePermission(request, "diagnostics");
+  if (denied) return denied;
   try {
     const url = new URL(request.url);
     const requested = (url.searchParams.get("ids") ?? "").split(",").map((id) => id.trim()).filter(Boolean);

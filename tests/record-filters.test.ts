@@ -338,10 +338,14 @@ test("the client wires both dimensions to the shared multi-select semantics", ()
   assert.equal((client.match(/<MultiSelect/g) ?? []).length, 4, "manager in both modes, plus historical Source in both bars");
 
   // Every view derives from the shared predicates, so none can drift.
-  assert.match(client, /filterHistoricalRecords\(records, filters\)/);
+  // Historical Sales sections filter on the server with the same predicate.
+  const sections = readFileSync(new URL("../lib/sales-sections.ts", import.meta.url), "utf8");
+  assert.match(sections, /filterHistoricalRecords\(records, query\)/);
+  assert.match(client, /for \(const manager of filters\.managers\) params\.append\("manager", manager\)/, "every selected seller is sent");
+  assert.match(client, /for \(const source of filters\.sources\) params\.append\("source", source\)/, "every selected source is sent");
   assert.match(client, /filterCurrentStageRecords\(effectiveCurrentStages, filters\)/);
   assert.match(client, /filterStageHistoryRecords\(stageFunnelRecords, filters\)/);
-  assert.match(client, /dedupeByDealId\(cohort, won\)/, "the Deals view cannot show a Deal twice");
+  assert.match(sections, /dedupeByDealId\(cohort, won\)/, "the Deals view cannot show a Deal twice");
   // Opening Stage Control preserves Source for its historical funnel and clears
   // only dimensions the projection cannot filter on.
   assert.match(client, /\{ \.\.\.current, period: "", sla: "", processing: "" \}/);

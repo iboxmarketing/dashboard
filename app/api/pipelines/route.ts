@@ -4,8 +4,11 @@ import { getDictionary } from "@/lib/storage";
 import { detectFailureReasonField, listCrmFields, listPipelines, listPipelineStages, resolvePipelineSelection } from "@/lib/sync";
 import { pairPostSalePipeline, resolvePostSalePipelines } from "@/lib/pipelines";
 import type { CrmFieldOption } from "@/lib/types";
+import { authorizePermission } from "@/lib/auth/http";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const denied = await authorizePermission(request, "settings");
+  if (denied) return denied;
   try {
     const [settings, pipelines] = await Promise.all([getSettings(), listPipelines()]);
     let selected = [] as typeof pipelines;

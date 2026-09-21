@@ -137,7 +137,9 @@ test("invalidation is wired to the analytics reload and nothing else", () => {
   const client = readFileSync(new URL("../app/dashboard-client.tsx", import.meta.url), "utf8");
   assert.equal((client.match(/invalidateStageFunnel\(\);/g) ?? []).length, 1, "exactly one invalidation site");
   const around = client.slice(client.indexOf("invalidateStageFunnel();") - 700, client.indexOf("invalidateStageFunnel();"));
-  assert.match(around, /setRecords\(markDuplicates/, "invalidated where the analytics dataset is replaced");
+  // The dataset now lives on the server; the reload bumps every open section
+  // and invalidates the funnel in the same place.
+  assert.match(around, /setSalesReload\(\(token\) => token \+ 1\)/, "invalidated where the analytics dataset is replaced");
   // Unrelated reloads must not invalidate the funnel.
   for (const unrelated of ["loadProjects", "loadPages", "loadShares", "loadCurrentStages"]) {
     const body = client.slice(client.indexOf(`const ${unrelated} = useCallback`), client.indexOf(`const ${unrelated} = useCallback`) + 700);

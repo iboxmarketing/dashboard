@@ -143,12 +143,15 @@ test("the funnel's minimal record carries exactly what that view reads", () => {
   assert.ok(STAGE_FUNNEL_FIELDS.length < Object.keys(COHORT[0]).length / 2, "the funnel stays a projection, not a record dump");
 });
 
-test("the dashboard route projects in SQL and never parses the records", () => {
-  const route = code("../app/api/dashboard/route.ts");
-  assert.doesNotMatch(route, /listAnalyticsRecords/, "must not use the full-table loader");
-  assert.match(route, /listDashboardRecordJson/);
-  assert.doesNotMatch(route, /JSON\.parse/, "records must not be parsed in the Worker");
-  assert.match(route, /rows\.join\(","\)/, "rows are concatenated, not re-serialised");
+test("the Sales dataset is projected in SQL and never leaves the Worker whole", () => {
+  // The all-records route is gone: records are read once per section request,
+  // on the server, and only that section's finished view model is returned.
+  assert.throws(() => code("../app/api/dashboard/route.ts"), "no route returns the record population");
+  const handler = code("../lib/sales-http.ts");
+  assert.doesNotMatch(handler, /listAnalyticsRecords/, "must not use the full-table loader");
+  assert.match(handler, /listDashboardRecordJson/, "still reads the SQL-projected rows");
+  assert.match(handler, /buildSalesSection\(section, records, parsed\.query/);
+  assert.doesNotMatch(handler, /rows\.join\(","\)/, "records are never concatenated into a response");
 
   const storage = code("../lib/storage.ts");
   assert.match(storage, /json_remove\(payload/, "fields are dropped in SQLite");
@@ -160,6 +163,7 @@ test("the dashboard route projects in SQL and never parses the records", () => {
   assert.equal(dashboardRemovedPaths().length, DASHBOARD_OMITTED_FIELDS.length + 1);
   assert.ok(dashboardRemovedPaths().includes("$.stageTimeline"));
 });
+
 
 test("the stage funnel is not fetched on the dashboard's initial load", () => {
   const client = code("../app/dashboard-client.tsx");

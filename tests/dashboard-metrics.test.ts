@@ -149,9 +149,12 @@ test("17.1: Settings faqat bitta proval sababi yo‘li va SOURCE_ID’ni ko‘rs
   assert.ok(CLIENT.includes("SOURCE_ID"));
 });
 
-test("17.1: davr sarlavhasi Leadlar bilan bir xil populyatsiyani ko‘rsatadi", () => {
+test("17.1: davr sarlavhasi Leadlar bilan bir xil populyatsiyani ko‘rsatadi", async () => {
   assert.equal(CLIENT.includes("unique lead"), false);
-  assert.ok(CLIENT.includes("cohortFiltered.filter(isEligibleCohortDeal).length"));
+  // The header count is computed with the KPI population, on the server.
+  const sections = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../lib/sales-sections.ts", import.meta.url), "utf8"));
+  assert.ok(sections.includes("leadCount: pop.cohort.filter(isEligibleCohortDeal).length"));
+  assert.ok(CLIENT.includes("{dashboardSection.data.leadCount} Leadlar"));
 });
 
 test("24: Sifatli % + Sifatsiz % = 100% aynan shu nisbatda (195/312, 117/312)", () => {

@@ -2,6 +2,7 @@ import { listPageWidgets, listPages } from "@/lib/custom-pages-storage";
 import { createShare, getShare, listShares, revokeShare, updateShare } from "@/lib/share-storage";
 import { defaultVisibleWidgetIds, shareUrl, validateShareInput } from "@/lib/share-tokens";
 import { pageWidgets } from "@/lib/custom-pages";
+import { authorizePermission } from "@/lib/auth/http";
 
 /**
  * Authenticated management API for share links.
@@ -11,7 +12,9 @@ import { pageWidgets } from "@/lib/custom-pages";
  * controls. Responses here carry share metadata only — the raw token appears
  * exactly once, in the createShare reply.
  */
-export async function GET() {
+export async function GET(request: Request) {
+  const denied = await authorizePermission(request, "pages");
+  if (denied) return denied;
   try {
     return Response.json({ shares: await listShares() });
   } catch {
@@ -20,6 +23,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const denied = await authorizePermission(request, "pages");
+  if (denied) return denied;
   try {
     const payload = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const action = String(payload.action ?? "");

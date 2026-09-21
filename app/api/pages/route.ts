@@ -3,21 +3,53 @@ import {
   listPages, setPageArchived, updatePage, updateWidget,
 } from "@/lib/custom-pages-storage";
 import {
-  moveWidget, templateById, validatePageInput, validateWidgetConfig, validateWidgetInput,
+  moveWidget, pageRangeBounds, resolveWidgetCustomRange, resolveWidgetRange, templateById, validatePageInput, validateWidgetConfig, validateWidgetInput,
   type PageWidget,
 } from "@/lib/custom-pages";
 import { deleteShareWidgetLinks, deleteSharesForPage } from "@/lib/share-storage";
+import { authError, authorizePermission, requirePermission } from "@/lib/auth/http";
+import { hasPermission } from "@/lib/auth/permissions";
+import { loadSalesRecords } from "@/lib/sales-http";
+import { salesKpiValue } from "@/lib/sales-sections";
 
-export async function GET() {
+/**
+ * A page's SALES_KPI widgets are computed here, and only for a caller who also
+ * holds `dashboard`: a page is a container, and it must not become a way round
+ * the Sales permissions. Without `dashboard` the widget is returned without a
+ * value and renders as locked. The records never reach the browser either way.
+ */
+export async function GET(request: Request) {
+  let canDashboard = false;
+  try {
+    const context = await requirePermission(request, "pages");
+    canDashboard = hasPermission(context.user.role, context.user.permissions, "dashboard");
+  } catch (error) {
+    return authError(error) ?? Response.json({ error: "Kirishni tekshirib bo‘lmadi" }, { status: 500 });
+  }
   try {
     const [pages, widgets] = await Promise.all([listPages(), listPageWidgets()]);
-    return Response.json({ pages, widgets });
+    const kpis = widgets.filter((widget) => widget.widgetType === "SALES_KPI");
+    const salesKpi: Record<string, { label: string; value: string }> = {};
+    if (canDashboard && kpis.length) {
+      const { records } = await loadSalesRecords();
+      const now = new Date();
+      for (const widget of kpis) {
+        const page = pages.find((candidate) => candidate.id === widget.pageId);
+        if (!page) continue;
+        const range = resolveWidgetRange(widget.config, page.defaultRange);
+        const bounds = pageRangeBounds(range, now, resolveWidgetCustomRange(widget.config, page));
+        salesKpi[widget.id] = salesKpiValue(records, bounds.from, bounds.to, String(widget.config.metricId));
+      }
+    }
+    return Response.json({ pages, widgets, salesKpi, salesKpiLocked: !canDashboard }, { headers: { "cache-control": "no-store" } });
   } catch {
     return Response.json({ error: "Sahifalarni yuklab bo‘lmadi" }, { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
+  const denied = await authorizePermission(request, "pages");
+  if (denied) return denied;
   try {
     const payload = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const action = String(payload.action ?? "");

@@ -9,7 +9,8 @@ import { summarizeSla } from "../lib/sla";
 import type { AnalyticsRecord } from "../lib/types";
 
 const code = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
-const client = code("../app/dashboard-client.tsx");
+// Sales view logic spans the client and lib/sales-sections.ts since sections are computed on the server.
+const client = code("../app/dashboard-client.tsx") + "\n" + code("../lib/sales-sections.ts");
 
 function deal(over: Partial<AnalyticsRecord> = {}): AnalyticsRecord {
   return {
@@ -210,8 +211,11 @@ test("the selector groups metrics and the chart draws all three layers", () => {
   assert.match(chart, /<optgroup key=\{group\} label=\{group\}>/);
   assert.match(chart, /trend-average/); assert.match(chart, /trend-previous/);
   assert.match(chart, /supportsMovingAverage\(metric\)/);
-  assert.match(chart, /buildTrendSeries\(records, previousRecords, metric, bounds \?\? undefined, previousBounds \?\? undefined\)/, "no per-chart formulas");
-  assert.match(client, /<TrendChart records=\{cohortFiltered\} previousRecords=\{previousCohortFiltered\} bounds=\{trendBounds\} previousBounds=\{previousTrendBounds\} \/>/);
+  // Every series is built on the server by the one canonical builder; the
+  // chart only picks the metric's precomputed series.
+  assert.match(chart, /const \{ points, hasPrevious \} = trend\[metric\]/, "no per-chart formulas");
+  assert.match(client, /buildTrendSeries\(pop\.cohort, pop\.previousCohort, entry\.id, pop\.trendBounds \?\? undefined, pop\.previousTrendBounds \?\? undefined\)/, "the canonical builder, once per metric");
+  assert.match(client, /<TrendChart trend=\{dashboardSection\.data\.trend\} \/>/);
 });
 
 // ------------------------------------------------- calendar spine (bounds) ---

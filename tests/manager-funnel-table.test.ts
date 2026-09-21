@@ -7,7 +7,8 @@ import { summarizeSla } from "../lib/sla";
 import type { AnalyticsRecord } from "../lib/types";
 
 const code = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
-const client = code("../app/dashboard-client.tsx");
+// Sales view logic spans the client and lib/sales-sections.ts since sections are computed on the server.
+const client = code("../app/dashboard-client.tsx") + "\n" + code("../lib/sales-sections.ts");
 const pct = (value: number, total: number) => (total ? Math.round((value / total) * 100) : 0);
 
 function deal(over: Partial<AnalyticsRecord> = {}): AnalyticsRecord {
@@ -179,16 +180,16 @@ test("S: every combined column sorts by its primary figure", () => {
 
 test("T/U: row click still opens the detail, and both tables share one row model", () => {
   assert.match(client, /<tr key=\{row\.id\} onClick=\{\(\) => onSelect\(row\)\}/);
-  assert.match(client, /onSelect=\{\(manager\) => \{ setSelectedManager\(manager\); setView\("managerDetail"\); \}\}/);
+  assert.match(client, /onSelect=\{\(manager\) => \{ setSelectedManager\(\{ id: manager\.id, name: manager\.name \}\); setView\("managerDetail"\); \}\}/);
   // Dashboard top-8 and the Managers page build rows from the same inputs.
   // definition + Dashboard + Managers page + the profile's team benchmark
   assert.equal((client.match(/buildManagers\(/g) ?? []).length, 4);
-  assert.match(client, /buildManagers\(records, salesRecords\)/);
-  assert.match(client, /buildManagers\(cohortFiltered, wonFiltered\)/);
+  assert.equal((client.match(/buildManagers\(pop\.cohort, pop\.won\)/g) ?? []).length, 3);
 });
 
 test("the manager row reuses canonical metrics rather than re-deriving them", () => {
-  const fn = client.slice(client.indexOf("function buildManagers("), client.indexOf("function ManagerTable("));
+  const start = client.indexOf("function buildManagers(");
+  const fn = client.slice(start, client.indexOf("export ", start + 1));
   assert.match(fn, /buildDashboardMetrics\(cohort, won\)/, "one canonical build per manager");
   for (const forbidden = [/countSalesLost\(/, /isClassifiedLead\(/, /summarizeSla\(/][Symbol.iterator](); ;) {
     const next = forbidden.next(); if (next.done) break;
@@ -201,7 +202,7 @@ test("ManagerDetailView still exists and reads from the canonical profile", () =
   assert.match(client, /INDIVIDUAL PERFORMANCE/);
   // Redesigned in its own sprint: it now builds from buildManagerProfile
   // rather than deriving its own populations.
-  assert.match(client, /buildManagerProfile\(cohortRecords, salesRecords, manager\.id\)/);
+  assert.match(client, /buildManagerProfile\(pop\.cohort, pop\.won, managerId\)/);
   assert.doesNotMatch(client, /Yangi lead/, "the old ambiguous card label is gone");
 });
 
@@ -283,8 +284,9 @@ test("G: the Managers page passes no limit and shows every manager", () => {
   assert.equal(visibleRows(MANY, "periodSales", "desc").length, MANY.length);
   assert.equal(visibleRows(MANY, "periodSales", "desc", undefined).length, 12);
   assert.match(client, /<ManagerTable rows=\{managers\} limit=\{8\} onSelect=\{onManager\} \/>/, "Dashboard limits to 8");
-  assert.match(client, /<ManagerTable rows=\{managerRows\} onSelect=/, "Managers page has no limit");
-  assert.match(client, /const managerRows = useMemo\(\(\) => buildManagers\(cohortFiltered, wonFiltered\)/, "shared rows remain canonical");
+  assert.match(client, /<ManagerTable rows=\{managersSection\.data\.managers\} onSelect=/, "Managers page has no limit");
+  // Rows are built once on the server by the canonical helper.
+  assert.match(client, /return \{ \.\.\.common\(records, query, context\), managers: buildManagers\(pop\.cohort, pop\.won\) \};/, "shared rows remain canonical");
   assert.doesNotMatch(client, /managers\.slice\(0, 8\)/, "the pre-sort slice is gone");
 });
 
