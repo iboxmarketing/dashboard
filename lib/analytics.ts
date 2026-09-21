@@ -1,5 +1,5 @@
 import { calculateBusinessMinutes, getSlaStart, isInsideWorkingTime } from "./business-time";
-import { OWNER_OVERRIDES, REVIEW_EXCLUSIONS, type OwnerSellerOverride } from "./seller-overrides";
+import { OWNER_OVERRIDES, type OwnerSellerOverride } from "./seller-overrides";
 import { resolveSlaState } from "./sla";
 import { classifyLossReasonGroup, MISSING_LOSS_REASON, classifySalesStatus, fieldDisplayValue, isLowQualityStage, isPaymentStage, isSqlOrDownstreamStage } from "./sales-logic";
 import { sqlThresholdsByCategory, type StageMeta, type StageSemantics } from "./stage-config";
@@ -130,10 +130,9 @@ export function buildAnalyticsRecords(input: {
   stageMeta?: Map<string, StageMeta>;
   snapshots?: Map<string, SalesSnapshot>; domain: string | null; activitiesAvailable?: boolean; stageHistoryAvailable: boolean;
   /** Reviewed per-Deal seller decisions. Default to the version-controlled registry, so every caller — Sync and Backfill — applies them. */
-  ownerOverrides?: Map<string, OwnerSellerOverride>; reviewExclusions?: Set<string>;
+  ownerOverrides?: Map<string, OwnerSellerOverride>;
 }) {
   const ownerOverrides = input.ownerOverrides ?? OWNER_OVERRIDES;
-  const reviewExclusions = input.reviewExclusions ?? REVIEW_EXCLUSIONS;
   const historiesByDeal = new Map<string, RawStageHistory[]>();
   for (const history of input.stageHistories) { const id = string(history.OWNER_ID); if (id) historiesByDeal.set(id, [...(historiesByDeal.get(id) ?? []), history]); }
   const mainIds = new Set(input.settings.selectedPipelineIds); const postSaleIds = new Set(input.settings.postSalePipelineIds);
@@ -290,16 +289,15 @@ export function buildAnalyticsRecords(input: {
     // Priority: 1 OWNER_CONFIRMED  2 trustworthy frozen snapshot  3 safe UF_CRM_*
     // field  4 current payment-stage mover  5 category-13 observer  6 Unknown.
     // An owner confirmation is an explicit per-Deal fact and outranks every
-    // CRM signal, including a frozen snapshot. A reviewed exclusion stops the
-    // automatic fallbacks (3–5) from re-deriving a seller the audit rejected;
-    // it never touches an existing snapshot or an owner confirmation.
+    // CRM signal, including a frozen snapshot. Environment-specific repair
+    // manifests are deliberately not runtime attribution rules: a row omitted
+    // from an invalidation manifest keeps its frozen snapshot normally.
     const ownerOverride = ownerOverrides.get(dealId);
-    const excludedFromRecovery = reviewExclusions.has(dealId);
     const snapshotManagerId = ownerOverride ? "" : snapshot?.attributionSource === "CURRENT_RESPONSIBLE" ? "" : snapshot?.managerId ?? "";
     let salesManagerId = snapshotManagerId;
     let salesManager = snapshotManagerId ? snapshot?.managerName ?? "" : "";
     let salesManagerAttribution: SalesManagerAttribution = snapshotManagerId ? (snapshot?.attributionSource as SalesManagerAttribution) : "UNKNOWN";
-    const mayRecover = !ownerOverride && !snapshotManagerId && !excludedFromRecovery;
+    const mayRecover = !ownerOverride && !snapshotManagerId;
     if (ownerOverride) { salesManagerId = ownerOverride.sellerId; salesManager = ownerOverride.sellerName; salesManagerAttribution = "OWNER_CONFIRMED"; }
     else if (mayRecover && customManagerId) { salesManagerId = customManagerId; salesManagerAttribution = "CUSTOM_FIELD"; }
     // Bitrix stage history has stage/category/time but no historical actor.

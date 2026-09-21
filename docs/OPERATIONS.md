@@ -162,7 +162,8 @@ Staging recovery order for version 11 is controlled:
 5. only after explicit approval, apply that exact manifest;
 6. run Analytics Backfill so invalidated rows can resolve from an
    `OWNER_CONFIRMED` registry entry, payment-stage mover or the persisted
-   post-sale observer (reviewed exclusions stay Unknown);
+   post-sale observer; human-review rows omitted from the manifest retain their
+   frozen snapshots because they were never invalidated;
 7. reconcile seller attribution and repeat the unchanged core KPI check.
 
 Do not run the seller repair before the Full Sync: an old raw Deal without an

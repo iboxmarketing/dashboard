@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 import { buildAnalyticsRecords } from "../lib/analytics";
 import { defaultSettings } from "../lib/business-time";
@@ -7,8 +8,8 @@ import { buildDashboardMetrics } from "../lib/dashboard-metrics";
 import { SALES_SNAPSHOT_UPSERT } from "../lib/sales-snapshots";
 import { sellerSnapshotInvalidationSql } from "../lib/seller-snapshot-repair";
 import {
-  OVERRIDE_SCOPE, OWNER_CONFIRMED_SELLERS, OWNER_OVERRIDES, REVIEW_EXCLUSIONS, SELLER_REVIEW_EXCLUSIONS,
-  indexOwnerOverrides, indexReviewExclusions, type OwnerSellerOverride,
+  OVERRIDE_SCOPE, OWNER_CONFIRMED_SELLERS, OWNER_OVERRIDES,
+  indexOwnerOverrides, type OwnerSellerOverride,
 } from "../lib/seller-overrides";
 import type { SalesSnapshot } from "../lib/storage";
 import type { AnalyticsRecord } from "../lib/types";
@@ -32,7 +33,7 @@ const HISTORY_43407 = [
   { OWNER_ID: "43407", CATEGORY_ID: POST_SALE, STAGE_ID: "C13:UC_WGHVTR", CREATED_TIME: LATER },
 ];
 
-type Options = { snapshots?: Map<string, SalesSnapshot>; ownerOverrides?: Map<string, OwnerSellerOverride>; reviewExclusions?: Set<string> };
+type Options = { snapshots?: Map<string, SalesSnapshot>; ownerOverrides?: Map<string, OwnerSellerOverride> };
 function build(deals: Record<string, unknown>[], histories: Record<string, unknown>[], options: Options = {}): AnalyticsRecord[] {
   return buildAnalyticsRecords({
     deals, stageHistories: histories, settings: SETTINGS, users: USERS,
@@ -118,7 +119,7 @@ test("1. OWNER_CONFIRMED beats a single observer candidate", () => {
 });
 
 test("2. OWNER_CONFIRMED beats the current payment-stage mover", () => {
-  const withoutOwner = build([paymentMover("501")], paymentHistory("501"), { ownerOverrides: new Map(), reviewExclusions: new Set() })[0];
+  const withoutOwner = build([paymentMover("501")], paymentHistory("501"), { ownerOverrides: new Map() })[0];
   assert.equal(withoutOwner.salesManagerId, "89", "fixture: the mover rule alone would pick 89");
   const withOwner = build([paymentMover("501")], paymentHistory("501"), { ownerOverrides: indexOwnerOverrides([override("501", "1911")]) })[0];
   assert.equal(withOwner.salesManagerId, "1911");
@@ -219,29 +220,64 @@ test("8. another ambiguous-observer Deal without an override stays Unknown", () 
   assert.equal(record.salesManagerAttribution, "UNKNOWN");
 });
 
-test("9. reviewed exclusions stop automatic recovery for the HUMAN_REVIEW Deals", { skip: !DatabaseSync }, () => {
-  assert.deepEqual([...REVIEW_EXCLUSIONS].sort(), ["41251", "41351", "41407", "41411"]);
-  for (const dealId of ["41251", "41351", "41407", "41411"]) {
-    // Without the exclusion, a cleared snapshot would recover to mover 89.
-    const unguarded = build([paymentMover(dealId)], paymentHistory(dealId), { snapshots: unknownSnapshot(dealId), reviewExclusions: new Set() })[0];
-    assert.equal(unguarded.salesManagerId, "89", `${dealId}: fixture reproduces the unsafe recovery`);
-    const guarded = build([paymentMover(dealId)], paymentHistory(dealId), { snapshots: unknownSnapshot(dealId) })[0];
-    assert.equal(guarded.salesManagerId, null, `${dealId}: stays Unknown`);
-    assert.equal(guarded.salesManagerAttribution, "UNKNOWN");
-    const db = snapshotDb();
-    seed(db, dealId, null, "UNKNOWN");
-    assert.equal(persist(db, guarded), 0, `${dealId}: nothing is persisted`);
+const STAGING_HUMAN_REVIEW_IDS = ["41251", "41351", "41407", "41411"] as const;
+
+function sourceFiles(root: URL): URL[] {
+  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const path = new URL(entry.isDirectory() ? `${entry.name}/` : entry.name, root);
+    return entry.isDirectory() ? sourceFiles(path) : /\.(?:ts|tsx|mjs)$/u.test(entry.name) ? [path] : [];
+  });
+}
+
+test("9. default production analytics has no staging HUMAN_REVIEW exclusion list or audit dependency", () => {
+  const runtimeFiles = [
+    ...sourceFiles(new URL("../lib/", import.meta.url)),
+    ...sourceFiles(new URL("../app/", import.meta.url)),
+  ];
+  for (const path of runtimeFiles) {
+    const source = readFileSync(path, "utf8");
+    assert.doesNotMatch(source, /\.audit\/seller-repair-staging/u, path.pathname);
+    for (const dealId of STAGING_HUMAN_REVIEW_IDS) assert.equal(source.includes(dealId), false, `${path.pathname} embeds staging Deal ${dealId}`);
   }
-  // The exclusion never clears an existing frozen seller…
-  const frozen = new Map<string, SalesSnapshot>([["41411", { dealId: "41411", wonAt: PAID, managerId: "1911", managerName: "Rahmatullo Orifjonov", attributionSource: "FIRST_CALL" }]]);
-  assert.equal(build([paymentMover("41411")], paymentHistory("41411"), { snapshots: frozen })[0].salesManagerId, "1911");
-  // …and an explicit owner confirmation outranks it.
-  const confirmed = build([paymentMover("41411")], paymentHistory("41411"), { snapshots: unknownSnapshot("41411"), ownerOverrides: indexOwnerOverrides([override("41411", "1911")]) })[0];
-  assert.equal(confirmed.salesManagerAttribution, "OWNER_CONFIRMED");
-  // Exclusions are validated like overrides: explicit, seller-only.
-  assert.throws(() => indexReviewExclusions([{ ...SELLER_REVIEW_EXCLUSIONS[0], wonAt: "x" } as never]), /out-of-scope/);
-  // A Deal not on the list still recovers normally.
-  assert.equal(build([paymentMover("600", "1911")], paymentHistory("600"), { snapshots: unknownSnapshot("600") })[0].salesManagerId, "1911");
+  const analytics = readFileSync(new URL("../lib/analytics.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(analytics, /REVIEW_EXCLUSIONS|SELLER_REVIEW_EXCLUSIONS|reviewExclusions/u);
+  for (const dealId of STAGING_HUMAN_REVIEW_IDS) {
+    const recovered = build([paymentMover(dealId)], paymentHistory(dealId), { snapshots: unknownSnapshot(dealId) })[0];
+    assert.equal(recovered.salesManagerId, "89", `${dealId}: default runtime uses normal payment-stage evidence`);
+    assert.equal(recovered.salesManagerAttribution, "STAGE_MOVER");
+  }
+});
+
+test("an existing frozen snapshot is preserved when an explicit manifest did not invalidate it", { skip: !DatabaseSync }, () => {
+  const frozen = [
+    { dealId: "41251", managerId: "4151", source: "FIRST_CALL" },
+    { dealId: "41351", managerId: "89", source: "STAGE_MOVER" },
+    { dealId: "41407", managerId: "25", source: "FIRST_CALL" },
+    { dealId: "41411", managerId: "1911", source: "FIRST_CALL" },
+  ];
+  for (const fixture of frozen) {
+    const db = snapshotDb();
+    seed(db, fixture.dealId, fixture.managerId, fixture.source);
+    const before = row(db, fixture.dealId);
+    const record = build([paymentMover(fixture.dealId)], paymentHistory(fixture.dealId), { snapshots: readSnapshots(db, [fixture.dealId]) })[0];
+    assert.equal(record.salesManagerId, fixture.managerId, `${fixture.dealId}: frozen seller wins`);
+    assert.equal(record.salesManagerAttribution, fixture.source);
+    assert.equal(persist(db, record), 0, `${fixture.dealId}: Backfill performs no snapshot update`);
+    assert.deepEqual(row(db, fixture.dealId), before, `${fixture.dealId}: every snapshot column remains unchanged`);
+  }
+});
+
+const stagingAuditRoot = process.env.STAGING_SELLER_AUDIT_ROOT;
+test("the external staging 105-ID manifest excludes every human-review case", { skip: stagingAuditRoot ? false : "set STAGING_SELLER_AUDIT_ROOT for release certification" }, () => {
+  assert.ok(stagingAuditRoot);
+  const manifest = JSON.parse(readFileSync(join(stagingAuditRoot, "reviewed-invalidate.json"), "utf8")) as { reviewed?: boolean; dealIds?: string[] };
+  const humanReview = JSON.parse(readFileSync(join(stagingAuditRoot, "human-review.json"), "utf8")) as { dealId?: string; inManifest?: boolean }[];
+  assert.equal(manifest.reviewed, true);
+  assert.equal(manifest.dealIds?.length, 105);
+  for (const dealId of STAGING_HUMAN_REVIEW_IDS) {
+    assert.equal(manifest.dealIds?.includes(dealId), false, `${dealId}: must not be invalidated`);
+    assert.equal(humanReview.some((row) => row.dealId === dealId && row.inManifest === false), true, `${dealId}: external audit classification missing`);
+  }
 });
 
 test("10. no job-title or department heuristic decides a seller", () => {
@@ -270,7 +306,7 @@ test("11. core KPIs, wonAt, OPPORTUNITY, revenue, source and stage history are e
   ];
   const snapshots = new Map([...["43407", "42379", "500", "41411", "41351", "601"].flatMap((id) => [...unknownSnapshot(id, id === "41411" || id === "41351" || id === "601" ? "2026-08-21T05:00:00.000Z" : PAID)])]);
   const withRules = build(deals, histories, { snapshots });
-  const without = build(deals, histories, { snapshots, ownerOverrides: new Map(), reviewExclusions: new Set() });
+  const without = build(deals, histories, { snapshots, ownerOverrides: new Map() });
   assert.equal(withRules.length, without.length);
 
   const sellerFields = new Set(["salesManagerId", "salesManager", "salesManagerAttribution"]);

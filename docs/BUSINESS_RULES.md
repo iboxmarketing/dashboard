@@ -202,17 +202,17 @@ Priority order:
    then current `ASSIGNED_BY_ID` may attribute the commercial workload;
 7. unknown.
 
-Owner confirmations and reviewed exclusions are per-Deal facts, never rules.
-Nothing infers a seller from a job title or department: audits showed titles go
+Owner confirmations are per-Deal facts, never inferred rules. Nothing infers a
+seller from a job title or department: audits showed titles go
 stale in both directions. An owner confirmation may carry only the seller; it
 can never set `wonAt`, `OPPORTUNITY`, revenue, a sales/lead status, source or
 stage history. Once stored, no Sync, observer, mover, assignee, custom field or
 legacy `FIRST_CALL` value can overwrite it; only a changed registry entry can.
 
-A Deal in the reviewed exclusion list (`SELLER_REVIEW_EXCLUSIONS`) is one an
-audit sent to human review because its automatic evidence is contradictory.
-Steps 3–6 never run for it: an existing snapshot is kept, and if its seller is
-cleared it stays Unknown until an owner confirmation is added.
+Environment-specific seller review classifications and repair manifests are
+external release evidence, not production analytics rules. A Deal omitted from
+an explicit invalidation manifest keeps its existing frozen snapshot. Production
+repair requires its own production-reviewed evidence and manifest.
 
 Bitrix stage history exposes stage, funnel and transition time, but not the
 historical transition actor. After a Deal moves to post-sale, current

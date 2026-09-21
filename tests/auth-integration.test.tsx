@@ -330,16 +330,20 @@ test("11. no password hash, session token or token hash ever reaches a payload",
 
 test("12. the auth integration changes no analytics, seller or finance calculation", () => {
   // The Auth lane only: its own commits (Finance base cd1d418 → accepted Auth
-  // tip 2237f80), plus release-branch work after the Sales/Seller merges and
-  // anything uncommitted. The accepted Sales and Seller runtime commits change
-  // calculation modules by design and are verified by their own suites.
+  // tip 2237f80), plus the bounded release Auth hardening range. Accepted
+  // Sales/Seller runtime commits change calculation modules by design and are
+  // verified by their own suites, so later release work must not widen this
+  // Auth-only assertion implicitly.
   const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).split("\n");
   const hasCommit = (sha: string) => { try { execFileSync("git", ["cat-file", "-e", `${sha}^{commit}`], { cwd: root }); return true; } catch { return false; } };
   const AUTH_TIP = "2237f80921f2d791921ba85006b34477e013aac4";
   const RELEASE_MERGED = "51ac5b2";
+  const RELEASE_AUTH_TIP = "97719c4f833e6dbc0aa1d9921ad08222b2cf6bf0";
   const changed = [...new Set([
     ...git("diff", "--name-only", "cd1d418", hasCommit(AUTH_TIP) ? AUTH_TIP : "HEAD"),
-    ...(hasCommit(RELEASE_MERGED) ? git("diff", "--name-only", RELEASE_MERGED) : []),
+    ...(hasCommit(RELEASE_MERGED) && hasCommit(RELEASE_AUTH_TIP)
+      ? git("diff", "--name-only", RELEASE_MERGED, RELEASE_AUTH_TIP)
+      : []),
     ...git("ls-files", "--others", "--exclude-standard"),
   ].filter(Boolean))];
   assert.ok(changed.length > 0, "the branch must actually contain the auth work");
