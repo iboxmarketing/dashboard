@@ -93,6 +93,21 @@ export type CrmFieldOption = {
 
 export type SyncPhase = "deals" | "stageHistory" | "lookups" | "analytics" | "done";
 
+export type AnalyticsRuntimeDiagnostics = {
+  cursor: number;
+  attemptedBatchSize: number;
+  batchSize: number;
+  splitLevel: number;
+  retryCount: number;
+  safeErrorClass: "NONE" | "ANALYTICS_COST_SPLIT" | "ANALYTICS_RUNTIME_SPLIT";
+  state: "attempting" | "completed";
+  rawBytes: number;
+  historyRows: number;
+  historyBytes: number;
+  firstDealId: string;
+  lastDealId: string;
+};
+
 export type SyncProgressState = {
   status: "idle" | "running" | "paused" | "success" | "error";
   phase: SyncPhase | null;
@@ -109,6 +124,7 @@ export type SyncProgressState = {
   permissions: Record<string, string>;
   safeError: string | null;
   runId?: string | null;
+  analyticsRuntimeDiagnostics?: AnalyticsRuntimeDiagnostics | null;
   stageHistoryDiagnostics?: {
     method: "crm.stagehistory.list";
     lastCode: string;

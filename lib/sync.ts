@@ -31,6 +31,7 @@ import {
   STAGE_HISTORY_MAX_RETRIES,
 } from "./stage-history-retry";
 import { analyticsPageSql, safeD1WriteQuotaError } from "./sync-recovery";
+import { planAnalyticsBatch } from "./analytics-runtime";
 
 const stageDealBatchSize = 25;
 const analyticsDealBatchSize = 80;
@@ -465,9 +466,24 @@ async function analyticsStep(job: StoredSyncJob) {
     await runPostSyncReconciliation(await getSettings());
     return finished;
   }
-  const ids = rawDeals.map((row) => row.deal_id);
-  const placeholders = ids.map(() => "?").join(", ");
-  const historyResult = await getD1().prepare(`SELECT payload FROM raw_stage_history WHERE deal_id IN (${placeholders})`).bind(...ids).all<{ payload: string }>();
+  const candidateIds = rawDeals.map((row) => row.deal_id);
+  const candidatePlaceholders = candidateIds.map(() => "?").join(", ");
+  const historyResult = await getD1().prepare(`SELECT deal_id, payload FROM raw_stage_history WHERE deal_id IN (${candidatePlaceholders})`).bind(...candidateIds).all<{ deal_id: string; payload: string }>();
+  const candidateHistories = historyResult.results ?? [];
+  const runtime = planAnalyticsBatch({
+    cursor: job.cursor,
+    rawDeals,
+    stageHistories: candidateHistories,
+    previous: job.analyticsRuntime,
+  });
+  // Persist the attempt before CPU-heavy parsing/calculation/writes. Cloudflare
+  // 1102 cannot be caught inside this invocation; if it terminates us, the next
+  // request sees this exact cursor/attempt and deterministically halves it.
+  await saveSyncJob({ ...job, analyticsRuntime: runtime });
+  const batchDeals = rawDeals.slice(0, runtime.batchSize);
+  const ids = batchDeals.map((row) => row.deal_id);
+  const selectedIds = new Set(ids);
+  const selectedHistories = candidateHistories.filter((row) => selectedIds.has(row.deal_id));
   const userRows = await getDictionary<Record<string, unknown>[]>("users", []);
   const statusRows = await getDictionary<Record<string, unknown>[]>("statuses", []);
   const users = buildUserMap(userRows);
@@ -478,18 +494,27 @@ async function analyticsStep(job: StoredSyncJob) {
   const fieldOptions = buildFieldOptionMap(crmFields);
   const snapshots = await getSalesSnapshots(ids);
   const records = buildAnalyticsRecords({
-    deals: parseRows<RawDeal>(rawDeals), stageHistories: parseRows<RawStageHistory>(historyResult.results ?? []),
+    deals: parseRows<RawDeal>(batchDeals), stageHistories: parseRows<RawStageHistory>(selectedHistories),
     settings, users, pipelines, stages, sources, stageMeta, fieldOptions, snapshots, domain: getBitrixDomain(),
     stageHistoryAvailable: job.permissions.stageHistory === "ok",
   });
   await upsertAnalyticsRecords(records);
   await saveSalesSnapshots(records);
-  const cursor = job.cursor + rawDeals.length;
+  const cursor = job.cursor + batchDeals.length;
   const counts = {
     ...job.counts,
     noProcessing: (job.counts.noProcessing ?? 0) + records.filter((row) => row.processingSource === "NO_PROCESSING").length,
   };
-  return { ...job, cursor, processed: cursor, total: job.counts.deals, counts, progress: phaseProgress("analytics", cursor, job.counts.deals), message: `${Math.min(cursor, job.counts.deals)} / ${job.counts.deals} ta Deal ko‘rsatkichi hisoblandi` };
+  return {
+    ...job,
+    cursor,
+    processed: cursor,
+    total: job.counts.deals,
+    counts,
+    analyticsRuntime: { ...runtime, state: "completed" as const },
+    progress: phaseProgress("analytics", cursor, job.counts.deals),
+    message: `${Math.min(cursor, job.counts.deals)} / ${job.counts.deals} ta Deal ko‘rsatkichi hisoblandi`,
+  };
 }
 
 export async function runSyncStep() {
