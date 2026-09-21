@@ -23,7 +23,7 @@ export type ShareDb = {
 
 export async function ensureShareSchema(db: ShareDb) {
   await db.batch([
-    db.prepare("CREATE TABLE IF NOT EXISTS page_share_tokens (id TEXT PRIMARY KEY, page_id TEXT NOT NULL REFERENCES custom_pages(id) ON DELETE CASCADE, token_hash TEXT NOT NULL, label TEXT, created_at TEXT NOT NULL, expires_at TEXT, revoked_at TEXT, last_accessed_at TEXT)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS page_share_tokens (id TEXT PRIMARY KEY, page_id TEXT NOT NULL REFERENCES custom_pages(id) ON DELETE CASCADE, token_hash TEXT NOT NULL, label TEXT, created_at TEXT NOT NULL, expires_at TEXT, revoked_at TEXT, last_accessed_at TEXT, owner_user_id TEXT)"),
     db.prepare("CREATE TABLE IF NOT EXISTS page_share_widgets (share_id TEXT NOT NULL REFERENCES page_share_tokens(id) ON DELETE CASCADE, widget_id TEXT NOT NULL REFERENCES custom_page_widgets(id) ON DELETE CASCADE, PRIMARY KEY (share_id, widget_id))"),
     db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS page_share_tokens_hash_idx ON page_share_tokens(token_hash)"),
     db.prepare("CREATE INDEX IF NOT EXISTS page_share_tokens_page_idx ON page_share_tokens(page_id)"),
@@ -32,7 +32,7 @@ export async function ensureShareSchema(db: ShareDb) {
 }
 
 /** Explicit column list: `token_hash` is never selected onto a caller path. */
-const SHARE_COLUMNS = "id, page_id, label, created_at, expires_at, revoked_at, last_accessed_at";
+const SHARE_COLUMNS = "id, page_id, label, created_at, expires_at, revoked_at, last_accessed_at, owner_user_id";
 
 const shareRow = (row: Record<string, unknown>, widgetIds: string[]): PageShare => ({
   id: String(row.id), pageId: String(row.page_id), label: String(row.label ?? ""),
@@ -40,6 +40,7 @@ const shareRow = (row: Record<string, unknown>, widgetIds: string[]): PageShare 
   expiresAt: row.expires_at ? String(row.expires_at) : null,
   revokedAt: row.revoked_at ? String(row.revoked_at) : null,
   lastAccessedAt: row.last_accessed_at ? String(row.last_accessed_at) : null,
+  ownerUserId: row.owner_user_id ? String(row.owner_user_id) : null,
   widgetIds,
 });
 
@@ -79,23 +80,26 @@ async function setShareWidgets(db: ShareDb, shareId: string, widgetIds: string[]
  */
 export async function createShare(
   db: ShareDb,
-  input: { pageId: string; label: string; expiresAt: string | null; widgetIds: string[] },
+  input: { pageId: string; label: string; expiresAt: string | null; widgetIds: string[]; ownerUserId: string },
   ids: { id?: string; token?: string; now?: string } = {},
 ) {
   await ensureShareSchema(db);
   const token = ids.token ?? generateShareToken();
   const id = ids.id ?? crypto.randomUUID();
-  await db.prepare("INSERT INTO page_share_tokens(id, page_id, token_hash, label, created_at, expires_at, revoked_at, last_accessed_at) VALUES(?, ?, ?, ?, ?, ?, NULL, NULL)")
-    .bind(id, input.pageId, await hashShareToken(token), input.label, ids.now ?? new Date().toISOString(), input.expiresAt).run();
+  // The owner is whoever vouched for this widget selection. Public reads are
+  // re-checked against that person's CURRENT access.
+  await db.prepare("INSERT INTO page_share_tokens(id, page_id, token_hash, label, created_at, expires_at, revoked_at, last_accessed_at, owner_user_id) VALUES(?, ?, ?, ?, ?, ?, NULL, NULL, ?)")
+    .bind(id, input.pageId, await hashShareToken(token), input.label, ids.now ?? new Date().toISOString(), input.expiresAt, input.ownerUserId).run();
   await setShareWidgets(db, id, input.widgetIds);
   return { id, token };
 }
 
 /** Label, expiry and widget visibility are editable; the token is not. */
-export async function updateShare(db: ShareDb, id: string, input: { label: string; expiresAt: string | null; widgetIds: string[] }) {
+export async function updateShare(db: ShareDb, id: string, input: { label: string; expiresAt: string | null; widgetIds: string[]; ownerUserId: string }) {
   await ensureShareSchema(db);
-  await db.prepare("UPDATE page_share_tokens SET label = ?, expires_at = ? WHERE id = ?")
-    .bind(input.label, input.expiresAt, id).run();
+  // Editing the selection makes the editor its owner: they now vouch for it.
+  await db.prepare("UPDATE page_share_tokens SET label = ?, expires_at = ?, owner_user_id = ? WHERE id = ?")
+    .bind(input.label, input.expiresAt, input.ownerUserId, id).run();
   await setShareWidgets(db, id, input.widgetIds);
 }
 

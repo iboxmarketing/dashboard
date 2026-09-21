@@ -8,16 +8,10 @@ type BitrixResponse<T> = {
   error_description?: string;
 };
 
-export class SafeBitrixError extends Error {
-  code: string;
-  statusClass: string | null;
-
-  constructor(code: string, message: string, statusClass: string | null = null) {
-    super(message);
-    this.code = code;
-    this.statusClass = statusClass;
-  }
-}
+// Lives in a dependency-free module so safe-error mapping can be tested
+// without the Worker runtime; re-exported so every existing import still works.
+import { SafeBitrixError } from "./safe-bitrix-error";
+export { SafeBitrixError };
 
 export function getWebhookUrl() {
   const value = (env as unknown as Record<string, string | undefined>).BITRIX24_WEBHOOK_URL?.trim();

@@ -329,11 +329,18 @@ test("11. no password hash, session token or token hash ever reaches a payload",
 /* ============ 12. the business formulas are untouched ============ */
 
 test("12. the auth integration changes no analytics, seller or finance calculation", () => {
-  // Committed and uncommitted changes since the Finance base, so this guard
-  // holds before a commit as well as after it.
+  // The Auth lane only: its own commits (Finance base cd1d418 → accepted Auth
+  // tip 2237f80), plus release-branch work after the Sales/Seller merges and
+  // anything uncommitted. The accepted Sales and Seller runtime commits change
+  // calculation modules by design and are verified by their own suites.
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).split("\n");
+  const hasCommit = (sha: string) => { try { execFileSync("git", ["cat-file", "-e", `${sha}^{commit}`], { cwd: root }); return true; } catch { return false; } };
+  const AUTH_TIP = "2237f80921f2d791921ba85006b34477e013aac4";
+  const RELEASE_MERGED = "51ac5b2";
   const changed = [...new Set([
-    ...execFileSync("git", ["diff", "--name-only", "cd1d418"], { cwd: root, encoding: "utf8" }).split("\n"),
-    ...execFileSync("git", ["ls-files", "--others", "--exclude-standard"], { cwd: root, encoding: "utf8" }).split("\n"),
+    ...git("diff", "--name-only", "cd1d418", hasCommit(AUTH_TIP) ? AUTH_TIP : "HEAD"),
+    ...(hasCommit(RELEASE_MERGED) ? git("diff", "--name-only", RELEASE_MERGED) : []),
+    ...git("ls-files", "--others", "--exclude-standard"),
   ].filter(Boolean))];
   assert.ok(changed.length > 0, "the branch must actually contain the auth work");
 
@@ -353,7 +360,14 @@ test("12. the auth integration changes no analytics, seller or finance calculati
   // sections (which call the protected modules above, moved verbatim from the
   // client), the one authenticated fetch path, and Finance's transport default.
   const libChanges = changed.filter((path) => path.startsWith("lib/") && !/^lib\/auth[/-]/.test(path));
-  assert.deepEqual(libChanges.sort(), ["lib/auth-fetch.ts", "lib/finance-adapter.ts", "lib/sales-http.ts", "lib/sales-sections.ts"].filter((path) => !/^lib\/auth[/-]/.test(path)).sort());
+  // Second-audit additions: widget/source permissions and share ownership,
+  // fixed safe errors, and SafeBitrixError moved out of lib/bitrix.ts (class
+  // unchanged, re-exported) so it can be tested without the Worker runtime.
+  assert.deepEqual(libChanges.sort(), [
+    "lib/bitrix.ts", "lib/finance-adapter.ts", "lib/safe-bitrix-error.ts", "lib/safe-errors.ts",
+    "lib/sales-http.ts", "lib/sales-sections.ts", "lib/share-storage.ts", "lib/share-store.ts", "lib/share-tokens.ts",
+    "lib/widget-permissions.ts",
+  ].sort());
   // Finance's change is transport only: every changed line is about the fetch path.
   const financeDiff = execFileSync("git", ["diff", "-U0", "cd1d418", "--", "lib/finance-adapter.ts"], { cwd: root, encoding: "utf8" })
     .split("\n").filter((line) => /^[+-](?![+-])/.test(line) && line.slice(1).trim());
@@ -361,7 +375,8 @@ test("12. the auth integration changes no analytics, seller or finance calculati
     assert.match(line, /authFetch|SessionLostError|createHttpTransport\(fetchImpl: typeof fetch = fetch\)|catch \(error\)|throw error|FinanceError\("Finance API bilan aloqa|^[+-]\s*(\/\/|\}|\} catch)/, `unexpected Finance change: ${line}`);
   }
   // Migrations: only the two auth ones, both additive.
-  assert.deepEqual(changed.filter((path) => path.startsWith("drizzle/") && path.endsWith(".sql")).sort(), ["drizzle/0008_auth_core.sql", "drizzle/0009_auth_admin_invariant.sql"]);
+  assert.deepEqual(changed.filter((path) => path.startsWith("drizzle/") && path.endsWith(".sql")).sort(), ["drizzle/0008_auth_core.sql", "drizzle/0009_auth_admin_invariant.sql", "drizzle/0010_share_owner.sql"]);
+  assert.doesNotMatch(read("drizzle/0010_share_owner.sql").replace(/--.*$/gm, ""), /DROP|DELETE|UPDATE|INSERT/i);
   // Triggers only: no statement that drops, alters or rewrites data.
   assert.doesNotMatch(read("drizzle/0009_auth_admin_invariant.sql"), /^\s*(DROP|ALTER|DELETE|UPDATE|INSERT)\b/im);
 });

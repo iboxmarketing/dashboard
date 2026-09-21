@@ -2,7 +2,8 @@ import { listPageWidgets, listPages } from "@/lib/custom-pages-storage";
 import { createShare, getShare, listShares, revokeShare, updateShare } from "@/lib/share-storage";
 import { defaultVisibleWidgetIds, shareUrl, validateShareInput } from "@/lib/share-tokens";
 import { pageWidgets } from "@/lib/custom-pages";
-import { authorizePermission } from "@/lib/auth/http";
+import { authError, authorizePermission, requirePermission } from "@/lib/auth/http";
+import { allowedWidgets, WIDGET_FORBIDDEN } from "@/lib/widget-permissions";
 
 /**
  * Authenticated management API for share links.
@@ -23,8 +24,10 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const denied = await authorizePermission(request, "pages");
-  if (denied) return denied;
+  let caller;
+  try { caller = await requirePermission(request, "pages"); }
+  catch (error) { return authError(error) ?? Response.json({ error: "Kirishni tekshirib bo‘lmadi" }, { status: 500 }); }
+  const access = { role: caller.user.role, permissions: caller.user.permissions, active: caller.user.active };
   try {
     const payload = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const action = String(payload.action ?? "");
@@ -43,8 +46,12 @@ export async function POST(request: Request) {
       const requested = Array.isArray(payload.widgetIds) ? payload.widgetIds : defaultVisibleWidgetIds(available);
       const parsed = validateShareInput({ ...payload, widgetIds: requested }, available.map((widget) => widget.id));
       if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 });
+      // `pages` alone cannot publish Sales or Projects data: every selected
+      // widget needs the caller's own data permission.
+      const permitted = new Set(allowedWidgets(access, available).map((widget) => widget.id));
+      if (parsed.value.widgetIds.some((widgetId) => !permitted.has(widgetId))) return Response.json({ error: WIDGET_FORBIDDEN, code: "FORBIDDEN" }, { status: 403 });
 
-      const { id: shareId, token } = await createShare({ pageId, ...parsed.value });
+      const { id: shareId, token } = await createShare({ pageId, ...parsed.value, ownerUserId: caller.user.id });
       const share = await getShare(shareId);
       // The only response in the system that carries a raw token.
       return Response.json({ share, token, url: shareUrl(new URL(request.url).origin, token) });
@@ -57,7 +64,9 @@ export async function POST(request: Request) {
       const available = pageWidgets(await listPageWidgets(), existing.pageId);
       const parsed = validateShareInput(payload, available.map((widget) => widget.id));
       if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 });
-      await updateShare(id, parsed.value);
+      const permitted = new Set(allowedWidgets(access, available).map((widget) => widget.id));
+      if (parsed.value.widgetIds.some((widgetId) => !permitted.has(widgetId))) return Response.json({ error: WIDGET_FORBIDDEN, code: "FORBIDDEN" }, { status: 403 });
+      await updateShare(id, { ...parsed.value, ownerUserId: caller.user.id });
       return Response.json({ ok: true });
     }
 

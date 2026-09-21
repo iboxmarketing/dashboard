@@ -49,12 +49,43 @@ in a count read by JavaScript, so two concurrent demotions cannot both succeed.
 
 ## Login throttling
 
-Two bounded buckets (`lib/auth/throttle.ts`): `ip:<n>` where n is a hash of the
-client network (IPv4, or the IPv6 /64) modulo 4096, and `user:<id>` only for an
-account that exists. An unknown email never creates a row, so the table holds
-at most 4096 + user-count rows. No raw address or email is stored. A blocked IP
-bucket gets 429 before any PBKDF2 work; a blocked account is answered exactly
-like a wrong password. Expired rows are swept at most 50 per write.
+Every attempt reserves a slot in two buckets BEFORE any password work, each
+with one atomic `INSERT … ON CONFLICT DO UPDATE … RETURNING`
+(`lib/auth/throttle.ts`). Concurrent requests get distinct, increasing counts,
+and a reservation past the limit is refused without running PBKDF2 — 100
+parallel failures run at most 20 password checks and leave the counter at its
+cap.
+
+- `ip:<n>` — n = hash of the client network mod 4096. The network is the
+  numerically canonical IPv4 address, or the IPv6 /64 as four fixed-width
+  groups, of the trusted `CF-Connecting-IP` header; `X-Forwarded-For` is never
+  used. Equivalent IPv6 spellings share a bucket. 20 attempts / 15 min.
+- `acct:<n>` — n = hash of the normalized email mod 4096, for EVERY email,
+  known or not. 10 attempts / 15 min.
+
+Known and unknown emails run exactly the same storage operations and one
+PBKDF2 each. No raw address and no email is stored; the table holds at most
+8192 rows. A success refunds its IP slot and clears its account bucket.
+Expired rows are swept at most 50 per reservation.
+
+## Custom Pages and public shares
+
+`pages` arranges pages; it is not a data permission. Each widget needs the
+permission of its source (`lib/widget-permissions.ts`): Sales KPI →
+`dashboard`, Projects widgets → `projects`, Finance-backed → `finance`;
+headers, notes and manual KPIs need nothing more. This is enforced on widget
+create and update (by the STORED type), on template pages, and on share create
+and update. A share records its owner (migration `0010_share_owner`), and the
+public share route re-reads that owner's CURRENT access on every request:
+a revoked permission, a deactivated owner or a later widget-type change stops
+the link serving that data at once. Legacy shares with no owner serve only
+permission-free widgets until an authorised user re-saves them.
+
+## Operational errors
+
+Sync and Backfill return and store only fixed, pre-written messages
+(`lib/safe-errors.ts`): a `SafeBitrixError`, the D1 write-quota notice, or a
+fixed fallback. No raw `Error.message`, SQL or driver text is ever returned.
 
 ## Request security
 

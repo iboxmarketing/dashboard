@@ -58,6 +58,8 @@ export type PageShare = {
   expiresAt: string | null;
   revokedAt: string | null;
   lastAccessedAt: string | null;
+  /** Whose CURRENT access a public read is checked against. Null for legacy shares. */
+  ownerUserId?: string | null;
   widgetIds: string[];
 };
 

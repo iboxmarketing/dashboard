@@ -4,6 +4,8 @@ import { buildSharePayload, shareDataNeeds } from "@/lib/share-model";
 import { renderSharePage } from "@/lib/share-render";
 import { sharePageResponse, shareUnavailableResponse } from "@/lib/share-http";
 import { resolveShareByToken, touchShareAccess } from "@/lib/share-storage";
+import { loadUserAccess } from "@/lib/auth/storage";
+import { publicShareWidgetIds } from "@/lib/widget-permissions";
 
 /**
  * Public, read-only, server-rendered share route.
@@ -23,8 +25,14 @@ export async function GET(_request: Request, context: { params: Promise<{ token:
     const resolved = await resolveShareByToken(token);
     if (!resolved) return shareUnavailableResponse();
 
+    // Re-check the share owner's CURRENT access on every read: a permission
+    // revoked, an account deactivated, or a widget changed since the share was
+    // made all take effect immediately. Nothing loads for a withheld widget.
+    const owner = resolved.share.ownerUserId ? await loadUserAccess(resolved.share.ownerUserId) : null;
+    const allowedWidgetIds = publicShareWidgetIds(resolved.share.widgetIds, resolved.widgets, owner);
+
     // Only the datasets the allowed widgets actually need are ever loaded.
-    const needs = shareDataNeeds(resolved.widgets, resolved.share.widgetIds);
+    const needs = shareDataNeeds(resolved.widgets, allowedWidgetIds);
     const [records, projects, updates] = await Promise.all([
       needs.analytics ? listAnalyticsRecords() : Promise.resolve([]),
       needs.projects ? listProjects() : Promise.resolve([]),
@@ -34,7 +42,7 @@ export async function GET(_request: Request, context: { params: Promise<{ token:
     const payload = buildSharePayload({
       page: resolved.page,
       widgets: resolved.widgets,
-      allowedWidgetIds: resolved.share.widgetIds,
+      allowedWidgetIds,
       records, projects, updates,
     });
 

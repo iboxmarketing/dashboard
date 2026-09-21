@@ -1,6 +1,6 @@
-import { assertSafeMutation, clientAddress, sessionCookie } from "./security";
+import { assertSafeMutation, sessionCookie } from "./security";
 import {
-  IP_BLOCK_MS, IP_LIMIT, USER_BLOCK_MS, USER_LIMIT, ipBucketKey, isBlocked, recordFailure, userBucketKey,
+  ACCOUNT_BLOCK_MS, ACCOUNT_LIMIT, IP_BLOCK_MS, IP_LIMIT, accountBucketKey, ipBucketKey, reserveAttempt, throttleAddress,
   type ThrottleStore,
 } from "./throttle";
 import { normalizeEmail, type AuthContext, type AuthUser } from "./types";
@@ -25,13 +25,13 @@ const json = (body: unknown, status = 200, headers: Record<string, string> = {})
 /**
  * POST /api/auth/login, with its storage injected so it can be tested.
  *
- * Order matters:
- *   1. a blocked IP bucket is refused with 429 before any lookup or PBKDF2;
- *   2. a blocked USER bucket is answered exactly like a wrong password — same
- *      status, same sentence, and the dummy PBKDF2 still runs — so the block
- *      itself cannot reveal that the account exists;
- *   3. a failure counts against the IP bucket always, and against the user
- *      bucket only when the account exists. Unknown emails write nothing new.
+ * Every attempt — known email, unknown email, malformed body — takes the same
+ * path through storage: reserve an IP slot, reserve an account slot, then (if
+ * both were granted) look the user up and run PBKDF2 once. The reservations are
+ * atomic and happen BEFORE the password check, so a burst of parallel requests
+ * cannot outrun the counter, and a refused reservation costs no PBKDF2 at all.
+ * The account bucket is keyed by the hashed email whether or not that account
+ * exists, so a refusal says nothing about existence.
  */
 export async function handleLogin(request: Request, deps: LoginDeps): Promise<Response> {
   try { assertSafeMutation(request); }
@@ -41,26 +41,20 @@ export async function handleLogin(request: Request, deps: LoginDeps): Promise<Re
   const email = normalizeEmail(payload.email);
   const password = typeof payload.password === "string" ? payload.password : "";
 
-  const ipKey = await ipBucketKey(clientAddress(request));
-  if (isBlocked(await deps.throttle.get(ipKey), now)) return json({ error: THROTTLED_ERROR }, 429, { "retry-after": String(IP_BLOCK_MS / 1000) });
-  if (!email || password.length > 256) {
-    await recordFailure(deps.throttle, ipKey, IP_LIMIT, IP_BLOCK_MS, now);
-    return json({ error: GENERIC_LOGIN_ERROR }, 401);
-  }
+  const ipKey = await ipBucketKey(throttleAddress(request));
+  const ip = await reserveAttempt(deps.throttle, ipKey, IP_LIMIT, IP_BLOCK_MS, now);
+  if (!ip.allowed) return json({ error: THROTTLED_ERROR }, 429, { "retry-after": String(IP_BLOCK_MS / 1000) });
+  const accountKey = await accountBucketKey(email);
+  const account = await reserveAttempt(deps.throttle, accountKey, ACCOUNT_LIMIT, ACCOUNT_BLOCK_MS, now);
+  if (!account.allowed) return json({ error: THROTTLED_ERROR }, 429, { "retry-after": String(ACCOUNT_BLOCK_MS / 1000) });
 
-  const account = await deps.findUserByEmail(email);
-  const userKey = account ? userBucketKey(account.id) : null;
-  const userBlocked = userKey ? isBlocked(await deps.throttle.get(userKey), now) : false;
-  // A blocked account still pays the same PBKDF2 cost as an unknown one, so
-  // neither timing nor wording separates "blocked" from "does not exist".
-  const user = await deps.authenticate(userBlocked ? null : account, password);
-  if (!user) {
-    await recordFailure(deps.throttle, ipKey, IP_LIMIT, IP_BLOCK_MS, now);
-    if (userKey) await recordFailure(deps.throttle, userKey, USER_LIMIT, USER_BLOCK_MS, now);
-    return json({ error: GENERIC_LOGIN_ERROR }, 401);
-  }
+  const found = email && password.length <= 256 ? await deps.findUserByEmail(email) : null;
+  const user = await deps.authenticate(found, password);
+  if (!user) return json({ error: GENERIC_LOGIN_ERROR }, 401);
 
-  if (userKey) await deps.throttle.delete(userKey);
+  // Success returns the IP slot and clears the account bucket.
+  await deps.throttle.refund(ipKey);
+  await deps.throttle.clear(accountKey);
   const { token } = await deps.createSession(user.id);
   await deps.completeLogin(user.id);
   const context = await deps.resolveSession(token);

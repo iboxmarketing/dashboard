@@ -4,7 +4,9 @@ import { PERMISSION_KEYS, hasPermission, normalizeMemberPermissions, type Permis
 import { assertSafeMutation, clearSessionCookie, cookieValue, hashOpaqueToken, createSessionToken, sessionIsUsable } from "../lib/auth/security";
 import { handleLogin } from "../lib/auth/login";
 import { handleLogout } from "../lib/auth/logout";
-import type { ThrottleRow, ThrottleStore } from "../lib/auth/throttle";
+import { sqlThrottleStore } from "../lib/auth/throttle";
+import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import type { DashboardRecord } from "../lib/dashboard-record";
 import { bootstrapPayload, buildSalesSection, filterPermissionError, parseSalesQuery, type SalesSection } from "../lib/sales-sections";
 import type { DashboardSettings } from "../lib/types";
@@ -70,22 +72,30 @@ const json = (body: unknown, init: ResponseInit = {}) => new Response(JSON.strin
   ...init, headers: { "content-type": "application/json", ...(init.headers ?? {}) },
 });
 
-/** In-memory ThrottleStore with the same bounded-key semantics as D1. */
-export function memoryThrottleStore() {
-  const rows = new Map<string, ThrottleRow>();
-  const store: ThrottleStore = {
-    get: async (key) => rows.get(key) ?? null,
-    put: async (key, row) => { rows.set(key, { ...row }); },
-    delete: async (key) => { rows.delete(key); },
-    sweep: async (before, now, limit) => {
-      let removed = 0;
-      for (const [key, row] of rows) {
-        if (removed >= limit) break;
-        if (row.updatedAt < before && (!row.blockedUntil || row.blockedUntil < now)) { rows.delete(key); removed += 1; }
-      }
+/**
+ * A real SQLite `app_login_attempts` table (from migration 0008) behind the
+ * production ThrottleStore, so the tests exercise the exact atomic SQL.
+ */
+export function sqliteThrottle() {
+  const db = new DatabaseSync(":memory:");
+  const migration = readFileSync(new URL("../drizzle/0008_auth_core.sql", import.meta.url), "utf8");
+  for (const statement of migration.split("--> statement-breakpoint")) if (statement.trim()) db.exec(statement);
+  let statements = 0;
+  const handle = {
+    prepare(sql: string) {
+      return {
+        bind(...values: unknown[]) {
+          const params = values as (string | number | null)[];
+          return {
+            async first<T>() { statements += 1; return (db.prepare(sql).get(...params) ?? null) as T | null; },
+            async run() { statements += 1; return db.prepare(sql).run(...params); },
+          };
+        },
+      };
     },
   };
-  return { store, rows };
+  const rows = () => db.prepare("SELECT key_hash, failure_count, blocked_until FROM app_login_attempts ORDER BY key_hash").all() as { key_hash: string; failure_count: number; blocked_until: string | null }[];
+  return { db, store: sqlThrottleStore(handle), rows, statementCount: () => statements };
 }
 
 export type SalesFixture = { records: DashboardRecord[]; settings: DashboardSettings };
@@ -98,7 +108,7 @@ const SALES_PATHS: Record<string, SalesSection> = {
 export async function createTestServer(seed: SeedUser[], sales?: SalesFixture) {
   const users = new Map<string, Row>();
   const sessions = new Map<string, Session>();
-  const { store: throttle, rows: throttleRows } = memoryThrottleStore();
+  const { store: throttle, rows: throttleRows } = sqliteThrottle();
   const authenticateCalls = { count: 0 };
   const failRevocation = { on: false };
   /** Hashing is the real 600k-iteration PBKDF2, so seeds are hashed once. */

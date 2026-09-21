@@ -5,10 +5,13 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
-import { createTestServer, memoryThrottleStore, type SeedUser } from "./auth-integration-server";
-import { handleLogin, GENERIC_LOGIN_ERROR, THROTTLED_ERROR } from "../lib/auth/login";
+import { createTestServer, sqliteThrottle, type SeedUser } from "./auth-integration-server";
+import { handleLogin } from "../lib/auth/login";
+import { BACKFILL_FAILED_MESSAGE, SYNC_FAILED_MESSAGE, safeOperationMessage } from "../lib/safe-errors";
+import { SafeBitrixError } from "../lib/safe-bitrix-error";
+import { SAFE_D1_WRITE_QUOTA_MESSAGE } from "../lib/sync-recovery";
 import { handleLogout } from "../lib/auth/logout";
-import { IP_BUCKETS, IP_LIMIT, CLEANUP_BATCH, USER_LIMIT, clientNetwork, ipBucketKey } from "../lib/auth/throttle";
+import { ACCOUNT_BUCKETS, ACCOUNT_LIMIT, CLEANUP_BATCH, IP_BUCKETS, IP_LIMIT, RESERVE_SQL, clientNetwork, ipBucketKey, parseIPv6, throttleAddress } from "../lib/auth/throttle";
 import type { AuthUser } from "../lib/auth/types";
 import { SessionLostError, authFetch, onSessionLost, resetSessionLost } from "../lib/auth-fetch";
 import { createHttpAuthAdapter } from "../lib/auth-adapter";
@@ -258,16 +261,30 @@ test("HIGH 2: end to end, a failed revocation still leaves the browser signed ou
 
 /* ======================================= HIGH 3 — login throttle / DoS == */
 
-function loginDeps(store = memoryThrottleStore().store, users: AuthUser[] = []) {
-  const calls = { authenticate: 0, nullAuthenticate: 0 };
+type Op = { method: string; key: string };
+/** The real atomic SQL on SQLite, with every storage call recorded. */
+function spiedThrottle() {
+  const sqlite = sqliteThrottle();
+  const ops: Op[] = [];
+  const shape = (key: string) => key.replace(/\d+$/u, "N");
+  const store: typeof sqlite.store = {
+    reserve: (key, input) => { ops.push({ method: "reserve", key: shape(key) }); return sqlite.store.reserve(key, input); },
+    refund: (key) => { ops.push({ method: "refund", key: shape(key) }); return sqlite.store.refund(key); },
+    clear: (key) => { ops.push({ method: "clear", key: shape(key) }); return sqlite.store.clear(key); },
+    sweep: (before, now, limit) => { ops.push({ method: "sweep", key: "-" }); return sqlite.store.sweep(before, now, limit); },
+  };
+  return { ...sqlite, store, ops };
+}
+function loginDeps(store: ReturnType<typeof spiedThrottle>["store"], users: AuthUser[] = []) {
+  const calls = { authenticate: 0, lookups: 0 };
   return {
     calls,
     deps: {
       throttle: store,
-      findUserByEmail: async (email: string) => users.find((user) => user.email === email) ?? null,
+      findUserByEmail: async (email: string) => { calls.lookups += 1; return users.find((user) => user.email === email) ?? null; },
       authenticate: async (user: AuthUser | null, password: string) => {
-        calls.authenticate += 1;
-        if (!user) calls.nullAuthenticate += 1;
+        calls.authenticate += 1; // one PBKDF2 per call, real or dummy
+        await new Promise((resolve) => setTimeout(resolve, 1)); // yield, as real PBKDF2 does
         return user && password === "RightPassword1" ? user : null;
       },
       createSession: async () => ({ token: "t" }),
@@ -282,63 +299,102 @@ const loginFrom = (ip: string, email: string, password = "WrongPassword1") => ne
 });
 const KNOWN: AuthUser = { id: "u1", email: "known@ibox.uz", name: "K", role: "MEMBER", passwordHash: "", mustChangePassword: false, active: true, createdAt: "", updatedAt: "", lastLoginAt: null };
 
-test("HIGH 3: 1000 unique fake emails from one IP create one row, not 1000", async () => {
-  const { store, rows } = memoryThrottleStore();
-  const { deps, calls } = loginDeps(store);
-  const statuses = new Map<number, number>();
-  for (let index = 0; index < 1000; index += 1) {
-    const response = await handleLogin(loginFrom("203.0.113.7", `fake${index}@nowhere.test`), deps);
-    statuses.set(response.status, (statuses.get(response.status) ?? 0) + 1);
-  }
-  assert.equal(rows.size, 1, "one IP bucket, no per-email rows");
-  assert.match([...rows.keys()][0], /^ip:\d+$/);
-  // Once the bucket is blocked, no password work is done at all.
-  assert.equal(calls.authenticate, IP_LIMIT, "PBKDF2 ran only until the IP was throttled");
-  assert.equal(statuses.get(401), IP_LIMIT);
-  assert.equal(statuses.get(429), 1000 - IP_LIMIT);
+test("HIGH 3: 100 parallel failures are counted atomically and run at most IP_LIMIT password checks", async () => {
+  const throttle = spiedThrottle();
+  const { deps, calls } = loginDeps(throttle.store, [KNOWN]);
+  const responses = await Promise.all(Array.from({ length: 100 }, (_, index) => handleLogin(loginFrom("203.0.113.7", `burst${index}@nowhere.test`), deps)));
+  const statuses = responses.map((response) => response.status);
+  assert.equal(calls.authenticate, IP_LIMIT, "PBKDF2 ran exactly IP_LIMIT times, not 100");
+  assert.equal(statuses.filter((status) => status === 401).length, IP_LIMIT);
+  assert.equal(statuses.filter((status) => status === 429).length, 100 - IP_LIMIT);
+  const ipRow = throttle.rows().find((row) => row.key_hash.startsWith("ip:"))!;
+  assert.equal(ipRow.failure_count, 100, "the counter saw every attempt — it did not end at 1");
+  assert.ok(ipRow.blocked_until, "and the bucket is blocked");
+  // The old race: a read, then PBKDF2, then a write. The reservation is now
+  // one statement, and it happens before the password check.
+  assert.match(RESERVE_SQL, /ON CONFLICT\(key_hash\) DO UPDATE SET[\s\S]*RETURNING failure_count/u);
+  const login = read("lib/auth/login.ts");
+  assert.ok(login.indexOf("reserveAttempt(deps.throttle, ipKey") < login.indexOf("deps.authenticate("), "reserve precedes PBKDF2");
+});
+
+test("HIGH 3: one account is bounded too, however many addresses are used", async () => {
+  const throttle = spiedThrottle();
+  const { deps, calls } = loginDeps(throttle.store, [KNOWN]);
+  await Promise.all(Array.from({ length: 60 }, (_, index) => handleLogin(loginFrom(`198.51.100.${index + 1}`, KNOWN.email), deps)));
+  assert.equal(calls.authenticate, ACCOUNT_LIMIT, "the account bucket bounds PBKDF2 across rotating IPs");
+  // A correct password is also refused while the bucket is spent.
+  const blocked = await handleLogin(loginFrom("192.0.2.200", KNOWN.email, "RightPassword1"), deps);
+  assert.equal(blocked.status, 429);
+});
+
+test("MEDIUM 3: known and unknown emails take structurally identical storage paths", async () => {
+  const run = async (email: string) => {
+    const throttle = spiedThrottle();
+    const { deps, calls } = loginDeps(throttle.store, [KNOWN]);
+    const response = await handleLogin(loginFrom("192.0.2.10", email), deps);
+    return { status: response.status, ops: throttle.ops, statements: throttle.statementCount(), keys: throttle.rows().map((row) => row.key_hash.replace(/\d+$/u, "N")), calls };
+  };
+  const known = await run(KNOWN.email);
+  const unknown = await run("nobody-at-all@nowhere.test");
+  assert.equal(known.status, 401); assert.equal(unknown.status, 401);
+  assert.deepEqual(known.ops, unknown.ops, "same calls, same order, same key shapes");
+  assert.equal(known.statements, unknown.statements, "same number of SQL statements");
+  assert.deepEqual(known.keys, unknown.keys, "same stored row shapes");
+  assert.deepEqual(known.keys, ["acct:N", "ip:N"]);
+  assert.deepEqual([known.calls.lookups, known.calls.authenticate], [unknown.calls.lookups, unknown.calls.authenticate], "one lookup and one PBKDF2 each");
 });
 
 test("HIGH 3: the key space is bounded and never stores a raw address or email", async () => {
-  const { store, rows } = memoryThrottleStore();
-  const { deps } = loginDeps(store, [KNOWN]);
-  for (let index = 0; index < 300; index += 1) await handleLogin(loginFrom(`198.51.${index % 250}.${index}`, `x${index}@nowhere.test`), deps);
-  await handleLogin(loginFrom("192.0.2.1", KNOWN.email), deps);
-  for (const key of rows.keys()) {
-    assert.match(key, /^(ip:\d+|user:u1)$/, key);
-    if (key.startsWith("ip:")) assert.ok(Number(key.slice(3)) < IP_BUCKETS);
-    assert.equal(key.includes("198.51") || key.includes("@"), false, "no address or email in any key");
+  const throttle = spiedThrottle();
+  const { deps } = loginDeps(throttle.store, [KNOWN]);
+  for (let index = 0; index < 300; index += 1) await handleLogin(loginFrom(`198.51.${index % 250}.${index % 200}`, `x${index}@nowhere.test`), deps);
+  for (const row of throttle.rows()) {
+    assert.match(row.key_hash, /^(ip:\d+|acct:\d+)$/u, row.key_hash);
+    const n = Number(row.key_hash.split(":")[1]);
+    assert.ok(n < (row.key_hash.startsWith("ip") ? IP_BUCKETS : ACCOUNT_BUCKETS));
   }
-  assert.ok(rows.has("user:u1"), "a known account gets its own bucket");
-  assert.equal([...rows.keys()].filter((key) => key.startsWith("user:")).length, 1, "unknown emails never get a user bucket");
-  // IPv6 rotation inside one /64 lands in one bucket.
-  assert.equal(clientNetwork("2001:db8:1:2:aaaa::1"), clientNetwork("2001:db8:1:2:bbbb:cccc:dddd:eeee"));
-  assert.equal(await ipBucketKey("2001:db8:1:2::5"), await ipBucketKey("2001:db8:1:2:ffff::9"));
+  // X-Forwarded-For is caller-controlled and never picks the bucket.
+  const spoofed = new Request("https://dash.test/api/auth/login", { method: "POST", headers: { origin: "https://dash.test", "x-forwarded-for": "10.9.9.9" }, body: "{}" });
+  assert.equal(throttleAddress(spoofed), "unknown");
 });
 
-test("HIGH 3: a throttled account answers exactly like a wrong password", async () => {
-  const { store } = memoryThrottleStore();
-  const { deps, calls } = loginDeps(store, [KNOWN]);
-  // Spread across addresses so only the account bucket fills.
-  for (let index = 0; index < USER_LIMIT; index += 1) await handleLogin(loginFrom(`10.0.${index}.1`, KNOWN.email), deps);
-  const before = calls.nullAuthenticate;
-  const blocked = await handleLogin(loginFrom("10.9.9.9", KNOWN.email, "RightPassword1"), deps);
-  assert.equal(blocked.status, 401);
-  assert.equal((await blocked.json() as { error: string }).error, GENERIC_LOGIN_ERROR);
-  assert.equal(calls.nullAuthenticate, before + 1, "the equal-cost dummy check still ran — no timing tell");
-  const unknown = await handleLogin(loginFrom("10.9.9.8", "ghost@nowhere.test"), deps);
-  assert.equal((await unknown.json() as { error: string }).error, GENERIC_LOGIN_ERROR, "same sentence as an unknown email");
-  assert.notEqual(GENERIC_LOGIN_ERROR, THROTTLED_ERROR);
+test("LOW: equivalent IPv6 spellings of one /64 land in one bucket", async () => {
+  const same = [
+    "2001:db8:1:2::5", "2001:0db8:0001:0002:0000:0000:0000:0005", "2001:DB8:1:2:0:0:0:9",
+    "[2001:db8:1:2::abcd]", "2001:db8:1:2:ffff:eeee:dddd:cccc", "2001:db8:1:2::1.2.3.4", "2001:db8:1:2::5%eth0",
+  ];
+  const networks = new Set(same.map(clientNetwork));
+  assert.deepEqual([...networks], ["2001:0db8:0001:0002::/64"]);
+  const buckets = new Set(await Promise.all(same.map(ipBucketKey)));
+  assert.equal(buckets.size, 1);
+  assert.notEqual(clientNetwork("2001:db8:1:3::5"), clientNetwork("2001:db8:1:2::5"), "a different /64 is a different network");
+  assert.equal(clientNetwork("::ffff:203.0.113.7"), "203.0.113.7", "IPv4-mapped is the IPv4 address");
+  assert.equal(clientNetwork("::ffff:cb00:7107"), "203.0.113.7");
+  assert.equal(clientNetwork("203.000.113.007"), "203.0.113.7");
+  for (const bad of ["2001:db8::1::2", "12345::1", "1.2.3.256", "", "not-an-ip"]) assert.equal(clientNetwork(bad), "invalid", bad);
+  assert.deepEqual(parseIPv6("::"), [0, 0, 0, 0, 0, 0, 0, 0]);
+  assert.deepEqual(parseIPv6("::1.2.3.4"), [0, 0, 0, 0, 0, 0, 0x0102, 0x0304]);
 });
 
 test("HIGH 3: expired rows are swept in bounded batches", async () => {
-  const { store, rows } = memoryThrottleStore();
-  for (let index = 0; index < 200; index += 1) {
-    rows.set(`ip:${index}`, { failureCount: 1, windowStartedAt: "2026-01-01T00:00:00.000Z", blockedUntil: null, updatedAt: "2026-01-01T00:00:00.000Z" });
-  }
-  const { deps } = loginDeps(store);
+  const throttle = spiedThrottle();
+  const insert = throttle.db.prepare("INSERT INTO app_login_attempts (key_hash, failure_count, window_started_at, blocked_until, updated_at) VALUES (?, 1, ?, NULL, ?)");
+  for (let index = 0; index < 200; index += 1) insert.run(`ip:${index}`, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
+  const { deps } = loginDeps(throttle.store);
   await handleLogin(loginFrom("203.0.113.99", "a@b.test"), { ...deps, now: () => new Date("2026-09-20T00:00:00.000Z") });
-  assert.equal(rows.size, 200 - CLEANUP_BATCH + 1, "one write sweeps at most one batch");
-  assert.match(read("lib/auth/storage.ts"), /WHERE updated_at < \? AND \(blocked_until IS NULL OR blocked_until < \?\) LIMIT \?/);
+  // Two reservations, each sweeping at most CLEANUP_BATCH, plus the two new rows.
+  assert.equal(throttle.rows().length, 200 - 2 * CLEANUP_BATCH + 2);
+});
+
+test("HIGH 3: a successful login refunds its IP slot and clears its account bucket", async () => {
+  const throttle = spiedThrottle();
+  const { deps } = loginDeps(throttle.store, [KNOWN]);
+  await handleLogin(loginFrom("192.0.2.50", KNOWN.email), deps);
+  const ok = await handleLogin(loginFrom("192.0.2.50", KNOWN.email, "RightPassword1"), deps);
+  assert.equal(ok.status, 200);
+  const rows = throttle.rows();
+  assert.equal(rows.filter((row) => row.key_hash.startsWith("acct:")).length, 0);
+  assert.equal(rows.find((row) => row.key_hash.startsWith("ip:"))?.failure_count, 1, "the failure still counts; the success does not");
 });
 
 /* ================================= MEDIUM 2 — last active admin (SQLite) = */
@@ -417,7 +473,8 @@ test("MEDIUM 2: two concurrent demotions cannot leave zero active admins", () =>
   assert.doesNotMatch(route, /countActiveAdmins/);
   assert.match(route, /LAST_ACTIVE_ADMIN/);
   const journal = JSON.parse(read("drizzle/meta/_journal.json")) as { entries: { tag: string }[] };
-  assert.deepEqual(journal.entries.slice(-3).map((entry) => entry.tag), ["0007_finance_core", "0008_auth_core", "0009_auth_admin_invariant"]);
+  const tags = journal.entries.map((entry) => entry.tag);
+  assert.deepEqual(tags.slice(tags.indexOf("0007_finance_core")), ["0007_finance_core", "0008_auth_core", "0009_auth_admin_invariant", "0010_share_owner"]);
 });
 
 /* ================================== MEDIUM 3 — first-admin bootstrap ==== */
@@ -576,4 +633,22 @@ test("LOW: a 403 re-reads the session once to re-resolve views — never a sign-
   // The key includes the permissions, so after the refresh brings new ones the
   // guard re-arms — but with unchanged permissions it cannot fire again.
   assert.match(block, /`\$\{view\}\|\$\{authUser\.role\}\|\$\{authUser\.permissions\.join\(","\)\}`/);
+});
+
+/* =========================================== LOW — safe Sync/Backfill errors */
+
+test("LOW: Sync and Backfill return and store only fixed, pre-written error text", () => {
+  const raw = new Error("D1_ERROR: no such column: payload_x at offset 42: SQLITE_ERROR SELECT * FROM raw_deals WHERE token_hash = 'abc'");
+  assert.equal(safeOperationMessage(raw, SYNC_FAILED_MESSAGE), SYNC_FAILED_MESSAGE);
+  assert.equal(safeOperationMessage(raw, BACKFILL_FAILED_MESSAGE), BACKFILL_FAILED_MESSAGE);
+  assert.equal(safeOperationMessage("a string", SYNC_FAILED_MESSAGE), SYNC_FAILED_MESSAGE);
+  assert.equal(safeOperationMessage(new SafeBitrixError("BITRIX_DOWN", "Bitrix24 javob bermadi"), SYNC_FAILED_MESSAGE), "Bitrix24 javob bermadi");
+  assert.equal(safeOperationMessage(new Error(SAFE_D1_WRITE_QUOTA_MESSAGE), SYNC_FAILED_MESSAGE), SAFE_D1_WRITE_QUOTA_MESSAGE);
+  assert.equal(safeOperationMessage(new Error("D1_ERROR: Exceeded free tier daily row write limit"), SYNC_FAILED_MESSAGE), SAFE_D1_WRITE_QUOTA_MESSAGE);
+  for (const path of ["app/api/sync/route.ts", "app/api/backfill/route.ts"]) {
+    const source = read(path);
+    assert.doesNotMatch(source, /error\.message|\.message\.slice|String\(error\)/u, `${path} must not echo a raw error`);
+    assert.match(source, /safeOperationMessage\(error, /u);
+  }
+  assert.match(read("app/api/backfill/route.ts"), /lastError: message/u, "the stored lastError is the same fixed text");
 });

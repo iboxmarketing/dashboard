@@ -22,10 +22,10 @@ export const touchShareAccess = async (shareId: string) => store.touchShareAcces
 export const deleteSharesForPage = async (pageId: string) => store.deleteSharesForPage(await db(), pageId);
 export const deleteShareWidgetLinks = async (widgetId: string) => store.deleteShareWidgetLinks(await db(), widgetId);
 
-export const createShare = async (input: { pageId: string; label: string; expiresAt: string | null; widgetIds: string[] }) =>
+export const createShare = async (input: { pageId: string; label: string; expiresAt: string | null; widgetIds: string[]; ownerUserId: string }) =>
   store.createShare(await db(), input);
 
-export const updateShare = async (id: string, input: { label: string; expiresAt: string | null; widgetIds: string[] }) =>
+export const updateShare = async (id: string, input: { label: string; expiresAt: string | null; widgetIds: string[]; ownerUserId: string }) =>
   store.updateShare(await db(), id, input);
 
 export const resolveShareByToken = async (rawToken: string, now?: Date) =>

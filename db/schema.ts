@@ -177,6 +177,8 @@ export const pageShareTokens = sqliteTable("page_share_tokens", {
   expiresAt: text("expires_at"),
   revokedAt: text("revoked_at"),
   lastAccessedAt: text("last_accessed_at"),
+  /** Whose current access a public read is re-checked against (0010). */
+  ownerUserId: text("owner_user_id"),
 });
 
 export const pageShareWidgets = sqliteTable("page_share_widgets", {

@@ -1,3 +1,4 @@
+import { BACKFILL_FAILED_MESSAGE, safeOperationMessage } from "@/lib/safe-errors";
 import { BACKFILL_BATCH_SIZE, runAnalyticsBackfillBatch, startAnalyticsBackfill } from "@/lib/analytics-backfill";
 import { backfillBatchCount, type BackfillState } from "@/lib/backfill-plan";
 import { getDictionary, saveDictionary } from "@/lib/storage";
@@ -46,7 +47,9 @@ export async function POST(request: Request) {
       remainingRequests: backfillBatchCount(Math.max(0, state.total - state.cursor), BACKFILL_BATCH_SIZE),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message.slice(0, 200) : "Backfill xatolik";
+    // Fixed, pre-written text only: neither the response nor the stored state
+    // may carry a raw Error.message.
+    const message = safeOperationMessage(error, BACKFILL_FAILED_MESSAGE);
     const state = await getDictionary<BackfillState | null>(STATE_KEY, null);
     if (state) await saveDictionary(STATE_KEY, { ...state, status: "error", lastError: message });
     return Response.json({ error: message }, { status: 500 });

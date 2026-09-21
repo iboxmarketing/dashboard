@@ -1,4 +1,4 @@
-import { safeBitrixMessage } from "@/lib/bitrix";
+import { SYNC_FAILED_MESSAGE, safeOperationMessage } from "@/lib/safe-errors";
 import { pauseSync, resumeSync, runSyncSteps, startSync } from "@/lib/sync";
 import { isSyncAction, type SyncAction } from "@/lib/sync-actions";
 import { authorizePermission } from "@/lib/auth/http";
@@ -30,7 +30,7 @@ export async function POST(request: Request) {
           : await resumeSync();
     return Response.json(result);
   } catch (error) {
-    const safe = safeBitrixMessage(error);
-    return Response.json({ error: safe === "Kutilmagan xavfsiz server xatosi" && error instanceof Error ? error.message.slice(0, 240) : safe }, { status: 500 });
+    // Fixed, pre-written text only — never a raw Error.message.
+    return Response.json({ error: safeOperationMessage(error, SYNC_FAILED_MESSAGE) }, { status: 500 });
   }
 }

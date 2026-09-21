@@ -12,6 +12,7 @@ import {
   shareStatus, shareUrl, validateShareInput,
 } from "../lib/share-tokens";
 import * as store from "../lib/share-store";
+import { SOURCE_PERMISSION, canUseWidget, publicShareWidgetIds, widgetPermission } from "../lib/widget-permissions";
 import type { ShareDb, ShareStatement } from "../lib/share-store";
 import { pageRangeBounds, type CustomPage, type PageWidget, type WidgetType } from "../lib/custom-pages";
 import { buildDashboardMetrics, resolveDashboardMetric, selectPeriodPopulations } from "../lib/dashboard-metrics";
@@ -33,7 +34,7 @@ import type { AnalyticsRecord } from "../lib/types";
 function testDb(): ShareDb & { dump: (table: string) => Record<string, unknown>[] } {
   const sqlite = new DatabaseSync(":memory:");
   sqlite.exec("PRAGMA foreign_keys = ON");
-  for (const file of ["drizzle/0003_projects_and_updates.sql", "drizzle/0004_custom_pages.sql", "drizzle/0005_page_shares.sql"]) {
+  for (const file of ["drizzle/0003_projects_and_updates.sql", "drizzle/0004_custom_pages.sql", "drizzle/0005_page_shares.sql", "drizzle/0010_share_owner.sql"]) {
     for (const statement of readFileSync(new URL(`../${file}`, import.meta.url), "utf8").split("--> statement-breakpoint")) {
       if (statement.trim()) sqlite.exec(statement);
     }
@@ -175,7 +176,7 @@ test("the raw token never reaches the database, and its hash resolves the share"
   seedPage(db, page());
   await seedWidget(db, widget("SALES_KPI", "Leadlar", { metricId: "leads", range: "" }, { id: "w1" }));
 
-  const { id, token } = await store.createShare(db, { pageId: "page-1", label: "CEO", expiresAt: null, widgetIds: ["w1"] });
+  const { id, token } = await store.createShare(db, { ownerUserId: "u-owner", pageId: "page-1", label: "CEO", expiresAt: null, widgetIds: ["w1"] });
 
   const stored = [...db.dump("page_share_tokens"), ...db.dump("page_share_widgets")]
     .flatMap((row) => Object.values(row)).map(String);
@@ -194,7 +195,7 @@ test("unknown, revoked, expired and archived shares are all equally unavailable"
   const db = testDb();
   seedPage(db, page());
   await seedWidget(db, widget("SALES_KPI", "Leadlar", { metricId: "leads", range: "" }, { id: "w1" }));
-  const make = () => store.createShare(db, { pageId: "page-1", label: "", expiresAt: null, widgetIds: ["w1"] });
+  const make = () => store.createShare(db, { ownerUserId: "u-owner", pageId: "page-1", label: "", expiresAt: null, widgetIds: ["w1"] });
 
   assert.equal(await store.resolveShareByToken(db, generateShareToken(), NOW), null, "unknown token");
   assert.equal(await store.resolveShareByToken(db, "not-a-token", NOW), null, "malformed token");
@@ -204,7 +205,7 @@ test("unknown, revoked, expired and archived shares are all equally unavailable"
   await store.revokeShare(db, revoked.id, iso("2026-03-01"));
   assert.equal(await store.resolveShareByToken(db, revoked.token, NOW), null, "revoked token");
 
-  const expired = await store.createShare(db, { pageId: "page-1", label: "", expiresAt: iso("2026-01-05"), widgetIds: ["w1"] });
+  const expired = await store.createShare(db, { ownerUserId: "u-owner", pageId: "page-1", label: "", expiresAt: iso("2026-01-05"), widgetIds: ["w1"] });
   assert.equal(await store.resolveShareByToken(db, expired.token, NOW), null, "expired token");
   assert.ok(await store.resolveShareByToken(db, expired.token, new Date("2026-01-04T00:00:00Z")), "…but valid before expiry");
 
@@ -218,7 +219,7 @@ test("listShares exposes metadata only — never a token or a hash", async () =>
   const db = testDb();
   seedPage(db, page());
   await seedWidget(db, widget("SALES_KPI", "Leadlar", { metricId: "leads", range: "" }, { id: "w1" }));
-  const { token } = await store.createShare(db, { pageId: "page-1", label: "Board weekly", expiresAt: null, widgetIds: ["w1"] });
+  const { token } = await store.createShare(db, { ownerUserId: "u-owner", pageId: "page-1", label: "Board weekly", expiresAt: null, widgetIds: ["w1"] });
   const hash = await hashShareToken(token);
 
   const shares = await store.listShares(db);
@@ -227,7 +228,8 @@ test("listShares exposes metadata only — never a token or a hash", async () =>
   assert.equal(serialized.includes(token), false, "no raw token");
   assert.equal(serialized.includes(hash), false, "no hash");
   assert.deepEqual(Object.keys(shares[0]).sort(),
-    ["createdAt", "expiresAt", "id", "label", "lastAccessedAt", "pageId", "revokedAt", "widgetIds"],
+    // ownerUserId names who vouches for the share — a user id, not a credential.
+    ["createdAt", "expiresAt", "id", "label", "lastAccessedAt", "ownerUserId", "pageId", "revokedAt", "widgetIds"],
     "the shape itself has no room for a credential");
 
   const single = await store.getShare(db, shares[0].id);
@@ -241,17 +243,17 @@ test("two shares of one page can expose different widget sets", async () => {
   await seedWidget(db, widget("SALES_KPI", "Leadlar", { metricId: "leads", range: "" }, { id: "w1" }));
   await seedWidget(db, widget("TEXT_NOTE", "Ichki izoh", { body: "maxfiy" }, { id: "w2" }));
 
-  const board = await store.createShare(db, { pageId: "page-1", label: "Board", expiresAt: null, widgetIds: ["w1"] });
-  const inner = await store.createShare(db, { pageId: "page-1", label: "Ichki", expiresAt: null, widgetIds: ["w1", "w2"] });
+  const board = await store.createShare(db, { ownerUserId: "u-owner", pageId: "page-1", label: "Board", expiresAt: null, widgetIds: ["w1"] });
+  const inner = await store.createShare(db, { ownerUserId: "u-owner", pageId: "page-1", label: "Ichki", expiresAt: null, widgetIds: ["w1", "w2"] });
 
   assert.deepEqual((await store.resolveShareByToken(db, board.token, NOW))!.share.widgetIds, ["w1"]);
   assert.deepEqual((await store.resolveShareByToken(db, inner.token, NOW))!.share.widgetIds.slice().sort(), ["w1", "w2"]);
 
   // Editing one share must not touch the other.
-  await store.updateShare(db, board.id, { label: "Board", expiresAt: null, widgetIds: ["w1", "w2"] });
+  await store.updateShare(db, board.id, { ownerUserId: "u-owner", label: "Board", expiresAt: null, widgetIds: ["w1", "w2"] });
   assert.equal((await store.resolveShareByToken(db, board.token, NOW))!.share.widgetIds.length, 2);
   assert.equal((await store.resolveShareByToken(db, inner.token, NOW))!.share.widgetIds.length, 2);
-  await store.updateShare(db, inner.id, { label: "Ichki", expiresAt: null, widgetIds: ["w1"] });
+  await store.updateShare(db, inner.id, { ownerUserId: "u-owner", label: "Ichki", expiresAt: null, widgetIds: ["w1"] });
   assert.equal((await store.resolveShareByToken(db, board.token, NOW))!.share.widgetIds.length, 2);
   assert.deepEqual((await store.resolveShareByToken(db, inner.token, NOW))!.share.widgetIds, ["w1"]);
 });
@@ -260,7 +262,7 @@ test("access stamping and cleanup never disturb the token or the page", async ()
   const db = testDb();
   seedPage(db, page());
   await seedWidget(db, widget("SALES_KPI", "Leadlar", { metricId: "leads", range: "" }, { id: "w1" }));
-  const { id, token } = await store.createShare(db, { pageId: "page-1", label: "", expiresAt: null, widgetIds: ["w1"] });
+  const { id, token } = await store.createShare(db, { ownerUserId: "u-owner", pageId: "page-1", label: "", expiresAt: null, widgetIds: ["w1"] });
 
   await store.touchShareAccess(db, id, iso("2026-06-15T12:00:00Z"));
   assert.equal(db.dump("page_share_tokens")[0].last_accessed_at, "2026-06-15T12:00:00.000Z");
@@ -554,4 +556,87 @@ test("no settings, credentials or raw analytics reach a shared payload", () => {
   }
   // Individual deals never appear — only the aggregate.
   for (const each of records) assert.equal(html.includes(`"${each.dealId}"`), false);
+});
+
+// ------------------------------------------- source permissions (2nd audit) ---
+
+const MEMBER = (permissions: string[], active = true) => ({ role: "MEMBER" as const, permissions, active });
+
+test("pages is not a data permission: each widget type needs its own source permission", () => {
+  assert.equal(widgetPermission("SALES_KPI"), "dashboard");
+  for (const type of ["PROJECT_SUMMARY", "PROJECT_STATUS_BREAKDOWN", "PROJECTS_LIST", "LATEST_UPDATES"]) assert.equal(widgetPermission(type), "projects", type);
+  for (const type of ["SECTION_HEADER", "TEXT_NOTE", "MANUAL_KPI"]) assert.equal(widgetPermission(type), null, type);
+  assert.equal(SOURCE_PERMISSION.FINANCE, "finance", "a Finance-backed widget needs finance");
+  assert.equal(widgetPermission("SOMETHING_NEW"), "users", "an unknown type fails closed");
+  const pagesOnly = MEMBER(["pages"]);
+  assert.equal(canUseWidget(pagesOnly, "SALES_KPI"), false);
+  assert.equal(canUseWidget(pagesOnly, "PROJECTS_LIST"), false);
+  assert.equal(canUseWidget(pagesOnly, "TEXT_NOTE"), true);
+  assert.equal(canUseWidget(MEMBER(["pages", "dashboard"]), "SALES_KPI"), true);
+  assert.equal(canUseWidget({ role: "ADMIN", permissions: [], active: true }, "PROJECTS_LIST"), true);
+  assert.equal(canUseWidget(MEMBER(["pages", "dashboard"], false), "SALES_KPI"), false, "deactivated");
+});
+
+test("pages-only cannot create, update, template or publish Sales / Projects widgets", () => {
+  const pagesRoute = readFileSync(new URL("../app/api/pages/route.ts", import.meta.url), "utf8");
+  const add = pagesRoute.slice(pagesRoute.indexOf('action === "addWidget"'), pagesRoute.indexOf('action === "updateWidget"'));
+  assert.ok(add.indexOf("canUseWidget(access, parsed.value.widgetType)") < add.indexOf("addWidget(parsed.value)"), "create checks before writing");
+  const update = pagesRoute.slice(pagesRoute.indexOf('action === "updateWidget"'), pagesRoute.indexOf('action === "deleteWidget"'));
+  assert.match(update, /canUseWidget\(access, stored\.widgetType\)/, "update checks the STORED type");
+  assert.match(update, /validateWidgetConfig\(stored\.widgetType, payload\.config\)/, "a client cannot relabel the type");
+  const template = pagesRoute.slice(pagesRoute.indexOf('action === "createFromTemplate"'));
+  assert.ok(template.indexOf("canUseWidget(access, widget.widgetType)") < template.indexOf("createPage("), "templates are checked before anything is created");
+  const sharesRoute = readFileSync(new URL("../app/api/shares/route.ts", import.meta.url), "utf8");
+  assert.equal((sharesRoute.match(/allowedWidgets\(access, available\)/g) ?? []).length, 2, "share create AND update check every selected widget");
+  assert.match(sharesRoute, /createShare\(\{ pageId, \.\.\.parsed\.value, ownerUserId: caller\.user\.id \}\)/);
+  assert.match(sharesRoute, /updateShare\(id, \{ \.\.\.parsed\.value, ownerUserId: caller\.user\.id \}\)/);
+  const publicRoute = readFileSync(new URL("../app/share/[token]/route.ts", import.meta.url), "utf8");
+  assert.match(publicRoute, /loadUserAccess\(resolved\.share\.ownerUserId\)/, "the owner is re-read on every public request");
+  assert.match(publicRoute, /shareDataNeeds\(resolved\.widgets, allowedWidgetIds\)/, "withheld widgets load no data");
+  assert.doesNotMatch(publicRoute, /allowedWidgetIds: resolved\.share\.widgetIds/);
+});
+
+test("a public share re-checks its owner's CURRENT access on every read", async () => {
+  const db = testDb();
+  seedPage(db, page());
+  await seedWidget(db, widget("SALES_KPI", "Leadlar", { metricId: "leads", range: "" }, { id: "kpi" }));
+  await seedWidget(db, widget("PROJECTS_LIST", "Loyihalar", {}, { id: "proj" }));
+  await seedWidget(db, widget("TEXT_NOTE", "Izoh", { body: "salom" }, { id: "note" }));
+  const { token } = await store.createShare(db, { ownerUserId: "u-owner", pageId: "page-1", label: "CEO", expiresAt: null, widgetIds: ["kpi", "proj", "note"] });
+  const resolved = (await store.resolveShareByToken(db, token, NOW))!;
+  assert.equal(resolved.share.ownerUserId, "u-owner", "the owner is stored and read back");
+
+  let owner: { role: "MEMBER" | "ADMIN"; permissions: string[]; active: boolean } | null = MEMBER(["pages", "dashboard", "projects"]);
+  const visible = async () => {
+    const current = (await store.resolveShareByToken(db, token, NOW))!;
+    return publicShareWidgetIds(current.share.widgetIds, current.widgets, owner).sort();
+  };
+  assert.deepEqual(await visible(), ["kpi", "note", "proj"]);
+
+  owner = MEMBER(["pages", "projects"]);          // dashboard revoked after the share was made
+  assert.deepEqual(await visible(), ["note", "proj"], "Sales data stops at once");
+  owner = MEMBER(["pages"]);                       // projects revoked too
+  assert.deepEqual(await visible(), ["note"]);
+  owner = MEMBER(["pages", "dashboard", "projects"], false); // deactivated
+  assert.deepEqual(await visible(), ["note"]);
+  owner = null;                                    // owner deleted
+  assert.deepEqual(await visible(), ["note"]);
+
+  // A widget changed later is judged by its CURRENT type.
+  owner = MEMBER(["pages", "projects"]);
+  db.prepare("UPDATE custom_page_widgets SET widget_type = 'SALES_KPI' WHERE id = 'proj'").bind().run();
+  assert.deepEqual(await visible(), ["note"], "a projects widget turned into Sales is withheld");
+
+  // Withheld widgets get no data: the payload builder never sees them.
+  const current = (await store.resolveShareByToken(db, token, NOW))!;
+  const allowed = publicShareWidgetIds(current.share.widgetIds, current.widgets, owner);
+  assert.deepEqual(shareDataNeeds(current.widgets, allowed), { analytics: false, projects: false });
+});
+
+test("a legacy share with no recorded owner serves no data widgets", () => {
+  const widgets = [{ id: "kpi", widgetType: "SALES_KPI" }, { id: "note", widgetType: "TEXT_NOTE" }, { id: "list", widgetType: "PROJECTS_LIST" }];
+  assert.deepEqual(publicShareWidgetIds(["kpi", "note", "list"], widgets, null), ["note"]);
+  const migration = readFileSync(new URL("../drizzle/0010_share_owner.sql", import.meta.url), "utf8");
+  assert.match(migration, /ALTER TABLE `page_share_tokens` ADD `owner_user_id` text;/);
+  assert.doesNotMatch(migration.replace(/--.*$/gm, ""), /DROP|UPDATE|DELETE|INSERT/i, "additive only");
 });

@@ -1,7 +1,7 @@
 import { getD1 } from "@/db";
 import { PERMISSION_KEYS, normalizeMemberPermissions, type PermissionKey } from "./permissions";
 import { createSessionToken, hashOpaqueToken, LAST_SEEN_WRITE_INTERVAL_MS, sessionIsUsable, SESSION_TTL_SECONDS } from "./security";
-import type { ThrottleStore } from "./throttle";
+import { sqlThrottleStore, type ThrottleStore } from "./throttle";
 import { isAuthRole, normalizeEmail, type AuthContext, type AuthRole, type AuthSession, type AuthUser, type PublicAuthUser } from "./types";
 
 type UserRow = {
@@ -40,6 +40,16 @@ export async function findUserByEmail(email: string) {
   const row = await getD1().prepare("SELECT * FROM app_users WHERE email = ? COLLATE NOCASE LIMIT 1").bind(normalizeEmail(email)).first<UserRow>();
   return row ? userFromRow(row) : null;
 }
+/**
+ * A user's CURRENT access, read fresh — used by the public share route to
+ * re-check the share owner on every read. Null for an unknown user.
+ */
+export async function loadUserAccess(id: string) {
+  const user = await findUserById(id);
+  if (!user) return null;
+  return { role: user.role, active: user.active, permissions: user.role === "ADMIN" ? [...PERMISSION_KEYS] : await permissionRows(user.id) };
+}
+
 export async function findUserById(id: string) {
   const row = await getD1().prepare("SELECT * FROM app_users WHERE id = ? LIMIT 1").bind(id).first<UserRow>();
   return row ? userFromRow(row) : null;
@@ -138,26 +148,14 @@ export async function changeOwnPassword(userId: string, passwordHash: string) {
 }
 
 /**
- * D1 storage for `lib/auth/throttle.ts`. Keys are `ip:<bucket>` or
- * `user:<existing id>`, so the table holds at most IP_BUCKETS + user-count rows
+ * D1 storage for `lib/auth/throttle.ts`: every reservation is one atomic
+ * INSERT … ON CONFLICT DO UPDATE … RETURNING. Keys are `ip:<bucket>` or
+ * `acct:<bucket>`, so the table holds at most IP_BUCKETS + ACCOUNT_BUCKETS rows
  * whatever an attacker sends. No raw address and no email is ever written.
  */
 export const d1ThrottleStore: ThrottleStore = {
-  async get(key) {
-    const row = await getD1().prepare("SELECT failure_count, window_started_at, blocked_until, updated_at FROM app_login_attempts WHERE key_hash = ?").bind(key)
-      .first<{ failure_count: number; window_started_at: string; blocked_until: string | null; updated_at: string }>();
-    return row ? { failureCount: Number(row.failure_count), windowStartedAt: row.window_started_at, blockedUntil: row.blocked_until, updatedAt: row.updated_at } : null;
-  },
-  async put(key, row) {
-    await getD1().prepare(`INSERT INTO app_login_attempts (key_hash, failure_count, window_started_at, blocked_until, updated_at)
-      VALUES (?, ?, ?, ?, ?) ON CONFLICT(key_hash) DO UPDATE SET failure_count = excluded.failure_count,
-      window_started_at = excluded.window_started_at, blocked_until = excluded.blocked_until, updated_at = excluded.updated_at`)
-      .bind(key, row.failureCount, row.windowStartedAt, row.blockedUntil, row.updatedAt).run();
-  },
-  async delete(key) { await getD1().prepare("DELETE FROM app_login_attempts WHERE key_hash = ?").bind(key).run(); },
-  async sweep(before, now, limit) {
-    await getD1().prepare(`DELETE FROM app_login_attempts WHERE key_hash IN (
-      SELECT key_hash FROM app_login_attempts WHERE updated_at < ? AND (blocked_until IS NULL OR blocked_until < ?) LIMIT ?)`)
-      .bind(before, now, limit).run();
-  },
+  reserve: (key, input) => sqlThrottleStore(getD1()).reserve(key, input),
+  refund: (key) => sqlThrottleStore(getD1()).refund(key),
+  clear: (key) => sqlThrottleStore(getD1()).clear(key),
+  sweep: (before, now, limit) => sqlThrottleStore(getD1()).sweep(before, now, limit),
 };

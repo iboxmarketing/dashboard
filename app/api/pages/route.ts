@@ -7,10 +7,11 @@ import {
   type PageWidget,
 } from "@/lib/custom-pages";
 import { deleteShareWidgetLinks, deleteSharesForPage } from "@/lib/share-storage";
-import { authError, authorizePermission, requirePermission } from "@/lib/auth/http";
+import { authError, requirePermission } from "@/lib/auth/http";
 import { hasPermission } from "@/lib/auth/permissions";
 import { loadSalesRecords } from "@/lib/sales-http";
 import { salesKpiValue } from "@/lib/sales-sections";
+import { canUseWidget, WIDGET_FORBIDDEN } from "@/lib/widget-permissions";
 
 /**
  * A page's SALES_KPI widgets are computed here, and only for a caller who also
@@ -48,8 +49,12 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const denied = await authorizePermission(request, "pages");
-  if (denied) return denied;
+  let caller;
+  try { caller = await requirePermission(request, "pages"); }
+  catch (error) { return authError(error) ?? Response.json({ error: "Kirishni tekshirib bo‘lmadi" }, { status: 500 }); }
+  // `pages` arranges a page; each data widget needs its own data permission.
+  const access = { role: caller.user.role, permissions: caller.user.permissions, active: caller.user.active };
+  const forbidden = () => Response.json({ error: WIDGET_FORBIDDEN, code: "FORBIDDEN" }, { status: 403 });
   try {
     const payload = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const action = String(payload.action ?? "");
@@ -84,12 +89,18 @@ export async function POST(request: Request) {
     if (action === "addWidget") {
       const parsed = validateWidgetInput(payload);
       if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 });
+      if (!canUseWidget(access, parsed.value.widgetType)) return forbidden();
       return Response.json({ id: await addWidget(parsed.value) });
     }
 
     if (action === "updateWidget") {
       if (!id || !pageId) return Response.json({ error: "Widget ID kerak" }, { status: 400 });
-      const parsed = validateWidgetConfig(payload.widgetType, payload.config);
+      // The STORED type decides — a client cannot relabel a Sales widget to
+      // slip past the check or validate its config against another type.
+      const stored = ((await listPageWidgets()) as PageWidget[]).find((widget) => widget.id === id && widget.pageId === pageId);
+      if (!stored) return Response.json({ error: "Widget topilmadi" }, { status: 404 });
+      if (!canUseWidget(access, stored.widgetType)) return forbidden();
+      const parsed = validateWidgetConfig(stored.widgetType, payload.config);
       if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 });
       await updateWidget(id, { pageId, title: String(payload.title ?? "").trim().slice(0, 200), config: parsed.value });
       return Response.json({ ok: true });
@@ -113,6 +124,8 @@ export async function POST(request: Request) {
     if (action === "createFromTemplate") {
       const template = templateById(String(payload.templateId ?? ""));
       if (!template) return Response.json({ error: "Shablon topilmadi" }, { status: 400 });
+      // A template is refused whole rather than silently thinned out.
+      if (template.widgets.some((widget) => !canUseWidget(access, widget.widgetType))) return forbidden();
       const newPageId = await createPage({ name: template.name, description: "", audience: template.audience, defaultRange: "30", defaultFrom: null, defaultTo: null });
       for (const widget of template.widgets) {
         const parsed = validateWidgetConfig(widget.widgetType, widget.config);

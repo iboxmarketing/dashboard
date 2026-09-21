@@ -124,7 +124,8 @@ test("every existing API is guarded and high-risk routes use the exact permissio
 test("mutation routes authorize before business storage can mutate", () => {
   for (const path of ["settings", "sync", "projects", "pages", "shares", "finance/accounts", "finance/transactions"]) {
     const source = route(path);
-    const guard = source.indexOf("await authorizePermission(request");
+    // Either guard form; routes that need the caller's identity use requirePermission.
+    const guard = Math.min(...["await authorizePermission(request", "await requirePermission(request"].map((needle) => source.indexOf(needle)).filter((index) => index >= 0));
     const firstMutation = Math.min(...["saveSettings(", "startSync(", "createProject(", "createPage(", "createShare(", "createFinanceAccount(", "createFinanceTransaction("].map((needle) => source.indexOf(needle)).filter((index) => index >= 0));
     assert.equal(guard >= 0 && guard < firstMutation, true, `${path} must authorize before mutation`);
   }
