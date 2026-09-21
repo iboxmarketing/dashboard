@@ -55,7 +55,11 @@ test("4: Full Sync yo‘li yozuvlarni aynan shu builder orqali qayta quradi", ()
   assert.equal(/analyticsVersion\s*[:=]\s*\d/.test(sync), false, "sync o‘z versiya raqamini yozmaydi");
   const ui = read("../app/dashboard-client.tsx");
   assert.equal(/analyticsVersion\s*<\s*\d/.test(ui), false, "UI qattiq raqam emas, ANALYTICS_VERSION ishlatadi");
-  assert.ok(ui.includes("record.analyticsVersion < ANALYTICS_VERSION"));
+  // The comparison runs server-side now; the banner reads the resulting flag.
+  const bootstrap = read("../lib/sales-sections.ts");
+  assert.equal(/analyticsVersion\s*<\s*\d/.test(bootstrap), false);
+  assert.ok(bootstrap.includes("record.analyticsVersion < ANALYTICS_VERSION"));
+  assert.ok(ui.includes("setLegacyData(bootstrap.legacyData === true)"));
   assert.match(ui, /Post-sale observer seller dalilini yuklash[\s\S]*To‘liq qayta sync/,
     "v11 observer evidence requires a Full Sync");
   assert.match(ui, /Analytics Backfill observer’ni Bitrix’dan yuklamaydi/);

@@ -1,6 +1,7 @@
 import { buildFinanceSummary } from "./finance/summary";
 import { FINANCE_CURRENCIES } from "./finance/money";
 import { cloneFixtures } from "./finance-fixtures";
+import { SessionLostError, authFetch } from "./auth-fetch";
 import type {
   FinanceDataset, FinanceEntity, FinanceSummary, NewAccount, NewCategory, NewProject,
   NewSubscription, NewTransaction,
@@ -39,12 +40,17 @@ async function errorMessage(response: Response) {
   return typeof payload?.error === "string" && payload.error ? payload.error : `Finance API xatosi (${response.status})`;
 }
 
-export function createHttpTransport(fetchImpl: typeof fetch = fetch): Transport {
+export function createHttpTransport(fetchImpl: typeof fetch = authFetch): Transport {
   const call = async (path: string, init?: RequestInit) => {
     let response: Response;
     try {
       response = await fetchImpl(path, { ...init, headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) } });
-    } catch { throw new FinanceError("Finance API bilan aloqa yo‘q"); }
+    } catch (error) {
+      // A lost session has already been reported to the auth shell; it is not
+      // a connection problem and must not read as one.
+      if (error instanceof SessionLostError) throw error;
+      throw new FinanceError("Finance API bilan aloqa yo‘q");
+    }
     if (!response.ok) throw new FinanceError(await errorMessage(response), response.status);
     if (!/\bjson\b/i.test(response.headers.get("content-type") ?? "")) throw new FinanceError("Finance API JSON qaytarmadi", response.status);
     return response.json() as Promise<Record<string, unknown>>;

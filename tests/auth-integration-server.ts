@@ -1,7 +1,13 @@
 import { authenticateCredentials } from "../lib/auth/authenticate";
 import { hashPassword, validatePassword, verifyPassword } from "../lib/auth/password";
 import { PERMISSION_KEYS, hasPermission, normalizeMemberPermissions, type PermissionKey } from "../lib/auth/permissions";
-import { assertSafeMutation, clearSessionCookie, cookieValue, hashOpaqueToken, createSessionToken, sessionCookie, sessionIsUsable } from "../lib/auth/security";
+import { assertSafeMutation, clearSessionCookie, cookieValue, hashOpaqueToken, createSessionToken, sessionIsUsable } from "../lib/auth/security";
+import { handleLogin } from "../lib/auth/login";
+import { handleLogout } from "../lib/auth/logout";
+import type { ThrottleRow, ThrottleStore } from "../lib/auth/throttle";
+import type { DashboardRecord } from "../lib/dashboard-record";
+import { bootstrapPayload, buildSalesSection, filterPermissionError, parseSalesQuery, type SalesSection } from "../lib/sales-sections";
+import type { DashboardSettings } from "../lib/types";
 import { isAuthRole, normalizeEmail, type AuthRole } from "../lib/auth/types";
 
 /**
@@ -31,7 +37,13 @@ type Session = { tokenHash: string; userId: string; expiresAt: string; revokedAt
 /** Route → the permission the real route guards it with. */
 export const ROUTE_PERMISSIONS: Record<string, PermissionKey | PermissionKey[] | "ADMIN" | "ANY"> = {
   "/api/bootstrap": "ANY",
-  "/api/dashboard": ["dashboard", "managers", "leadFlow", "quality", "deals"],
+  "/api/sales/dashboard": "dashboard",
+  "/api/sales/managers": "managers",
+  "/api/sales/manager": "managers",
+  "/api/sales/lead-flow": "leadFlow",
+  "/api/sales/quality": "quality",
+  "/api/sales/deals": "deals",
+  "/api/diagnostics": "diagnostics",
   "/api/current-stages": "stages",
   "/api/stage-funnel": "stages",
   "/api/finance/summary": "finance",
@@ -58,9 +70,37 @@ const json = (body: unknown, init: ResponseInit = {}) => new Response(JSON.strin
   ...init, headers: { "content-type": "application/json", ...(init.headers ?? {}) },
 });
 
-export async function createTestServer(seed: SeedUser[]) {
+/** In-memory ThrottleStore with the same bounded-key semantics as D1. */
+export function memoryThrottleStore() {
+  const rows = new Map<string, ThrottleRow>();
+  const store: ThrottleStore = {
+    get: async (key) => rows.get(key) ?? null,
+    put: async (key, row) => { rows.set(key, { ...row }); },
+    delete: async (key) => { rows.delete(key); },
+    sweep: async (before, now, limit) => {
+      let removed = 0;
+      for (const [key, row] of rows) {
+        if (removed >= limit) break;
+        if (row.updatedAt < before && (!row.blockedUntil || row.blockedUntil < now)) { rows.delete(key); removed += 1; }
+      }
+    },
+  };
+  return { store, rows };
+}
+
+export type SalesFixture = { records: DashboardRecord[]; settings: DashboardSettings };
+
+const SALES_PATHS: Record<string, SalesSection> = {
+  "/api/sales/dashboard": "dashboard", "/api/sales/managers": "managers", "/api/sales/manager": "manager",
+  "/api/sales/lead-flow": "leadFlow", "/api/sales/quality": "quality", "/api/sales/deals": "deals",
+};
+
+export async function createTestServer(seed: SeedUser[], sales?: SalesFixture) {
   const users = new Map<string, Row>();
   const sessions = new Map<string, Session>();
+  const { store: throttle, rows: throttleRows } = memoryThrottleStore();
+  const authenticateCalls = { count: 0 };
+  const failRevocation = { on: false };
   /** Hashing is the real 600k-iteration PBKDF2, so seeds are hashed once. */
   for (const person of seed) {
     users.set(person.id, {
@@ -119,24 +159,31 @@ export async function createTestServer(seed: SeedUser[]) {
     const path = new URL(request.url).pathname;
 
     if (path === "/api/auth/login") {
-      try { assertSafeMutation(request); } catch { return json({ error: "So‘rov manbasi rad etildi" }, { status: 403 }); }
-      const body = await request.json() as { email?: string; password?: string };
-      const email = normalizeEmail(body.email);
-      const row = [...users.values()].find((candidate) => candidate.email === email) ?? null;
-      const authenticated = await authenticateCredentials(
-        row ? { ...row, passwordHash: row.passwordHash, createdAt: "", updatedAt: "" } as never : null,
-        body.password ?? "",
-      ) as Row | null;
-      // One status and one sentence for wrong password, unknown email and
-      // deactivated account alike.
-      if (!authenticated) return json({ error: "Email yoki parol noto‘g‘ri" }, { status: 401 });
-      const token = createSessionToken();
-      sessions.set(await hashOpaqueToken(token), {
-        tokenHash: await hashOpaqueToken(token), userId: authenticated.id,
-        expiresAt: new Date(Date.now() + 3_600_000).toISOString(), revokedAt: null,
+      // The real handler, including the bounded throttle, over in-memory rows.
+      return handleLogin(request, {
+        throttle,
+        findUserByEmail: async (email) => {
+          const row = [...users.values()].find((candidate) => candidate.email === normalizeEmail(email));
+          return row ? { ...row, createdAt: "", updatedAt: "" } : null;
+        },
+        authenticate: async (user, password) => {
+          authenticateCalls.count += 1;
+          return authenticateCredentials(user, password);
+        },
+        createSession: async (userId) => {
+          const token = createSessionToken();
+          const tokenHash = await hashOpaqueToken(token);
+          sessions.set(tokenHash, { tokenHash, userId, expiresAt: new Date(Date.now() + 3_600_000).toISOString(), revokedAt: null });
+          return { token };
+        },
+        completeLogin: async (userId) => { const row = users.get(userId); if (row) row.lastLoginAt = new Date().toISOString(); },
+        resolveSession: async (token) => {
+          const session = sessions.get(await hashOpaqueToken(token));
+          const row = session ? users.get(session.userId) : null;
+          if (!session || !row) return null;
+          return { user: publicUser(row), session: { id: "s", userId: row.id, createdAt: "", expiresAt: session.expiresAt, lastSeenAt: "", revokedAt: null } };
+        },
       });
-      authenticated.lastLoginAt = new Date().toISOString();
-      return json({ user: publicUser(authenticated) }, { headers: { "set-cookie": sessionCookie(token) } });
     }
 
     if (path === "/api/auth/me") {
@@ -146,12 +193,11 @@ export async function createTestServer(seed: SeedUser[]) {
     }
 
     if (path === "/api/auth/logout") {
-      const token = cookieValue(request);
-      if (token) {
+      return handleLogout(request, async (token) => {
+        if (failRevocation.on) throw new Error("D1_ERROR: write failed");
         const session = sessions.get(await hashOpaqueToken(token));
         if (session) session.revokedAt ??= new Date().toISOString();
-      }
-      return json({ ok: true }, { headers: { "set-cookie": clearSessionCookie() } });
+      });
     }
 
     if (path === "/api/auth/change-password") {
@@ -230,6 +276,24 @@ export async function createTestServer(seed: SeedUser[]) {
     if (rule === undefined) return json({ error: "Not found" }, { status: 404 });
     const context = await guard(request, rule);
     if (context instanceof Response) return context;
+    const can = (key: PermissionKey) => hasPermission(context.row.role, context.row.permissions, key);
+
+    // The real section builders and filter rules, over fixture records — the
+    // same steps lib/sales-http.ts takes after its D1 read.
+    const section = SALES_PATHS[path];
+    if (section && sales) {
+      const parsed = parseSalesQuery(new URL(request.url).searchParams);
+      if (!parsed.ok) return json({ error: parsed.error }, { status: 400 });
+      const refused = filterPermissionError(parsed.query, can);
+      if (refused) return json({ error: refused, code: "FILTER_FORBIDDEN" }, { status: 403 });
+      return json(buildSalesSection(section, sales.records, parsed.query, { can, settings: sales.settings, dataAsOf: "2026-09-20T00:00:00.000Z" }));
+    }
+    if (path === "/api/bootstrap" && sales) {
+      return json(bootstrapPayload(can("settings"), () => ({
+        configured: true, domain: "ibox.bitrix24.test", settings: sales.settings,
+        sync: { status: "success", lastSyncAt: "2026-09-20T00:00:00.000Z" }, providers: [{ key: "p" }], records: sales.records,
+      })));
+    }
     return json({ ok: true, path });
   }) as unknown as typeof fetch;
 
@@ -249,5 +313,5 @@ export async function createTestServer(seed: SeedUser[]) {
     }) as unknown as typeof fetch;
   }
 
-  return { client, users, sessions, publicUser };
+  return { client, users, sessions, publicUser, throttleRows, authenticateCalls, failRevocation };
 }

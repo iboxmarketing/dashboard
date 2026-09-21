@@ -1,17 +1,17 @@
 import type { AuthRole } from "./types";
 
 export const PERMISSIONS = [
-  { key: "dashboard", label: "Dashboard", views: ["dashboard"], apiScopes: ["/api/bootstrap", "/api/dashboard"], risk: "read" },
-  { key: "managers", label: "Menejerlar", views: ["managers", "managerDetail"], apiScopes: ["/api/dashboard"], risk: "read" },
-  { key: "leadFlow", label: "Lead oqimi", views: ["leadFlow"], apiScopes: ["/api/dashboard"], risk: "read" },
-  { key: "quality", label: "Sifat", views: ["quality"], apiScopes: ["/api/dashboard"], risk: "read" },
+  { key: "dashboard", label: "Dashboard", views: ["dashboard"], apiScopes: ["/api/sales/dashboard"], risk: "read" },
+  { key: "managers", label: "Menejerlar", views: ["managers", "managerDetail"], apiScopes: ["/api/sales/managers", "/api/sales/manager"], risk: "read" },
+  { key: "leadFlow", label: "Lead oqimi", views: ["leadFlow"], apiScopes: ["/api/sales/lead-flow"], risk: "read" },
+  { key: "quality", label: "Sifat", views: ["quality"], apiScopes: ["/api/sales/quality"], risk: "read" },
   { key: "stages", label: "Bosqichlar", views: ["stages"], apiScopes: ["/api/current-stages", "/api/stage-funnel"], risk: "read" },
-  { key: "deals", label: "Deallar", views: ["deals"], apiScopes: ["/api/dashboard"], risk: "read" },
+  { key: "deals", label: "Deallar", views: ["deals"], apiScopes: ["/api/sales/deals"], risk: "read" },
   { key: "finance", label: "Finance", views: ["finance"], apiScopes: ["/api/finance/*"], risk: "financial" },
   { key: "projects", label: "Loyihalar", views: ["projects", "projectDetail"], apiScopes: ["/api/projects"], risk: "write" },
   { key: "pages", label: "Sahifalar", views: ["pages", "pageDetail"], apiScopes: ["/api/pages", "/api/shares"], risk: "write" },
-  { key: "diagnostics", label: "Diagnostika", views: ["diagnostics"], apiScopes: ["/api/providers", "/api/reconcile"], risk: "operational" },
-  { key: "settings", label: "Sozlamalar", views: ["settings"], apiScopes: ["/api/settings", "/api/pipelines", "/api/test-connection", "/api/sync", "/api/backfill"], risk: "administrative" },
+  { key: "diagnostics", label: "Diagnostika", views: ["diagnostics"], apiScopes: ["/api/diagnostics", "/api/providers", "/api/reconcile"], risk: "operational" },
+  { key: "settings", label: "Sozlamalar", views: ["settings"], apiScopes: ["/api/bootstrap", "/api/settings", "/api/pipelines", "/api/test-connection", "/api/sync", "/api/backfill"], risk: "administrative" },
   { key: "users", label: "Foydalanuvchilar", views: ["users"], apiScopes: ["/api/admin/users"], risk: "administrative" },
 ] as const;
 export type PermissionKey = (typeof PERMISSIONS)[number]["key"];

@@ -121,7 +121,9 @@ test("the builder and the public renderer resolve ranges through one helper", ()
   const shareModel = readFileSync(new URL("../lib/share-model.ts", import.meta.url), "utf8");
   assert.match(shareModel, /pageRangeBounds\(range, now, custom\)/);
   assert.match(shareModel, /resolveWidgetCustomRange\(config, input\.page\)/);
-  assert.match(client, /pageRangeBounds\(range, new Date\(\), custom\)/);
+  // The builder's SALES_KPI values are computed by /api/pages, with the same helpers.
+  const pagesRoute = readFileSync(new URL("../app/api/pages/route.ts", import.meta.url), "utf8");
+  assert.match(pagesRoute, /pageRangeBounds\(range, now, resolveWidgetCustomRange\(widget\.config, page\)\)/);
   assert.match(client, /resolveWidgetCustomRange\(widget\.config, page\)/);
 });
 

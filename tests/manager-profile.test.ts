@@ -11,8 +11,11 @@ import { historicalManagerOptions } from "../lib/record-filters";
 import type { AnalyticsRecord } from "../lib/types";
 
 const code = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
-const client = code("../app/dashboard-client.tsx");
-const profile = client.slice(client.indexOf("function ManagerDetailView("), client.indexOf("function LeadFlowView("));
+// Sales view logic spans the client and lib/sales-sections.ts since sections are computed on the server.
+const client = code("../app/dashboard-client.tsx") + "\n" + code("../lib/sales-sections.ts");
+// The profile renders in the client; its figures are built by managerSection.
+const profile = client.slice(client.indexOf("function ManagerDetailView("), client.indexOf("function LeadFlowView("))
+  + "\n" + client.slice(client.indexOf("function managerSection("), client.indexOf("function leadFlowSection("));
 const pct = (value: number, total: number) => (total ? Math.round((value / total) * 100) : 0);
 
 function deal(over: Partial<AnalyticsRecord> = {}): AnalyticsRecord {
@@ -63,8 +66,8 @@ test("Ali sotgan post-sale Deal Ali revenue/conversionida qoladi, Madina seller 
   assert.equal(madinaProfile.metrics.counts.leads, 0);
   assert.equal(madinaProfile.metrics.counts.period_sales, 0);
   assert.deepEqual(historicalManagerOptions([sold]), [{ id: "7", name: "Ali" }], "current post-sale owner is absent from seller selector");
-  assert.match(client, /: historicalManagerOptions\(records\)/, "historical selector uses seller identity only");
-  assert.match(client, /filterHistoricalRecords\(records, filters\)/, "historical views share the seller-only predicate");
+  assert.match(client, /managers: can\("managers"\) \? historicalManagerOptions\(records\) : \[\]/, "historical selector uses seller identity only");
+  assert.match(client, /filterHistoricalRecords\(records, query\)/, "historical views share the seller-only predicate");
 });
 
 test("unknown seller historical selector’da Unknown bo‘lib qoladi", () => {
@@ -78,11 +81,11 @@ test("A: profile counts equal the clicked row's canonical values", () => {
   assert.equal(metrics.counts.sql, rowMetrics.counts.sql);
   assert.equal(metrics.counts.cohort_sales, rowMetrics.counts.cohort_sales);
   assert.equal(metrics.money.cohort_revenue, rowMetrics.money.cohort_revenue);
-  assert.match(profile, /buildManagerProfile\(cohortRecords, salesRecords, manager\.id\)/, "one canonical build");
+  assert.match(profile, /buildManagerProfile\(pop\.cohort, pop\.won, managerId\)/, "one canonical build");
 });
 
 test("B: lead share divides by every manager, not a displayed subset", () => {
-  assert.match(profile, /buildManagers\(cohortRecords, salesRecords\)/, "the whole team");
+  assert.match(profile, /buildManagers\(pop\.cohort, pop\.won\)/, "the whole team");
   assert.match(profile, /team\.reduce\(\(sum, row\) => sum \+ row\.leads, 0\)/);
   assert.match(profile, /jamoa leadlaridan/);
   assert.doesNotMatch(profile, /slice\(0, 8\)/, "never a top-8 denominator");
@@ -242,7 +245,7 @@ test("unknown stays in lead share but is excluded from every performance median"
   assert.equal(teamMedian(benchmarkTeam, (row) => row.slaRate, (row) => row.slaDenominator > 0), 70, "F");
   assert.equal(teamMedian(benchmarkTeam, (row) => row.salesCycleHours, (row) => row.salesCycleHours !== null), 30, "G");
 
-  assert.match(profile, /const teamLeads = team\.reduce\(\(sum, row\) => sum \+ row\.leads, 0\)/, "lead share still reads team");
+  assert.match(profile, /teamLeads: team\.reduce\(\(sum, row\) => sum \+ row\.leads, 0\)/, "lead share still reads team");
   for (const metric of ["sqlToSale", "salesLostRate", "avgProcessing", "slaRate", "salesCycleHours"])
     assert.match(profile, new RegExp(`teamMedian\\(benchmarkTeam, \\(row\\) => row\\.${metric}`), `${metric} reads benchmarkTeam`);
 });

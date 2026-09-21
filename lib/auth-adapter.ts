@@ -1,4 +1,4 @@
-import { cloneAuthFixtures } from "./auth-fixtures";
+import { reportSessionLost } from "./auth-fetch";
 import { normalizePermissions } from "./auth-permissions";
 import { isAuthRole } from "./auth/types";
 import type {
@@ -88,7 +88,7 @@ export function createHttpAuthAdapter(fetchImpl: typeof fetch = fetch): AuthAdap
    * belgidan iborat bo‘lishi kerak" — and replacing those with the login
    * sentence would tell a user changing their password that their email is wrong.
    */
-  const call = async (path: string, init?: RequestInit, genericOn401 = false) => {
+  const call = async (path: string, init?: RequestInit, genericOn401 = false, authenticated = true) => {
     let response: Response;
     try {
       response = await fetchImpl(path, {
@@ -101,6 +101,10 @@ export function createHttpAuthAdapter(fetchImpl: typeof fetch = fetch): AuthAdap
     const isJson = /\bjson\b/i.test(response.headers.get("content-type") ?? "");
     const payload = isJson ? await response.json().catch(() => null) as Record<string, unknown> | null : null;
     if (!response.ok) {
+      // A 401 from an endpoint that needs a session means the session is gone;
+      // the shell is told once through the shared path. Login and `me` are not
+      // authenticated calls — their 401 is an ordinary answer, not a loss.
+      if (response.status === 401 && authenticated) reportSessionLost();
       const kind = errorKind(response.status);
       const serverMessage = typeof payload?.error === "string" && payload.error ? payload.error : null;
       const message = kind === "INVALID_CREDENTIALS" && genericOn401
@@ -122,7 +126,7 @@ export function createHttpAuthAdapter(fetchImpl: typeof fetch = fetch): AuthAdap
   return {
     source: "api",
     me: async () => {
-      try { return userFrom(await call(AUTH_ENDPOINTS.me)); }
+      try { return userFrom(await call(AUTH_ENDPOINTS.me, undefined, false, false)); }
       catch (error) {
         // 401 at startup simply means "not signed in", not a failure to report.
         if (error instanceof AuthError && (error.status === 401 || error.status === 403)) return null;
@@ -132,8 +136,8 @@ export function createHttpAuthAdapter(fetchImpl: typeof fetch = fetch): AuthAdap
     // Every login failure — wrong password, unknown email, deactivated account,
     // throttled — is collapsed into one sentence by `genericOn401`, so the form
     // cannot be used to discover which emails exist or who has left.
-    login: async (body) => userFrom(await call(AUTH_ENDPOINTS.login, { method: "POST", body: JSON.stringify(body) }, true)),
-    logout: async () => { await call(AUTH_ENDPOINTS.logout, { method: "POST" }); },
+    login: async (body) => userFrom(await call(AUTH_ENDPOINTS.login, { method: "POST", body: JSON.stringify(body) }, true, false)),
+    logout: async () => { await call(AUTH_ENDPOINTS.logout, { method: "POST" }, false, false); },
     changePassword: async (body) => {
       const payload = await call(AUTH_ENDPOINTS.changePassword, { method: "POST", body: JSON.stringify(body) });
       // The server revokes every session on a password change, so a success here
@@ -156,58 +160,11 @@ export function createHttpAuthAdapter(fetchImpl: typeof fetch = fetch): AuthAdap
   };
 }
 
-/** Explicit test/development stand-in. Production never reaches this. */
-export function createFixtureAuthAdapter({ signedInAs = null, users = cloneAuthFixtures() }: {
-  signedInAs?: string | null;
-  users?: AuthUser[];
-} = {}): AuthAdapter {
-  let current = users.find((user) => user.id === signedInAs) ?? null;
-  let counter = 0;
-  return {
-    source: "fixtures",
-    me: async () => (current ? structuredClone(current) : null),
-    login: async ({ email }) => {
-      const found = users.find((user) => user.email.toLowerCase() === email.trim().toLowerCase());
-      if (!found || !found.active) throw new AuthError("INVALID_CREDENTIALS", GENERIC_LOGIN_ERROR, 401);
-      current = found;
-      return structuredClone(found);
-    },
-    logout: async () => { current = null; },
-    changePassword: async () => {
-      if (!current) throw new AuthError("INVALID_CREDENTIALS", GENERIC_LOGIN_ERROR, 401);
-      const index = users.findIndex((user) => user.id === current!.id);
-      if (index >= 0) users[index] = { ...users[index], mustChangePassword: false };
-      // Mirrors the API: the password change revokes the session.
-      current = null;
-      return { loginRequired: true };
-    },
-    listUsers: async () => structuredClone(users),
-    createUser: async (body) => {
-      const id = `u-local-${++counter}`;
-      users.push({
-        id, email: body.email, name: body.name, role: body.role,
-        mustChangePassword: body.mustChangePassword, active: true,
-        permissions: normalizePermissions(body.permissions), lastLoginAt: null,
-      });
-      return { id };
-    },
-    updateUser: async (patch) => {
-      const index = users.findIndex((user) => user.id === patch.id);
-      if (index < 0) throw new AuthError("SERVER", "Foydalanuvchi topilmadi", 404);
-      // `temporaryPassword` is write-only: accepted and stored nowhere, exactly
-      // as the API behaves, so no later read can echo it back.
-      const { id, ...rest } = patch;
-      delete rest.temporaryPassword;
-      users[index] = { ...users[index], ...rest, permissions: rest.permissions ? normalizePermissions(rest.permissions) : users[index].permissions };
-      if (current?.id === id) current = users[index];
-    },
-  };
-}
-
-export function createAuthAdapter({ mode = "api", fetchImpl, fixture }: {
-  mode?: "api" | "fixtures";
-  fetchImpl?: typeof fetch;
-  fixture?: Parameters<typeof createFixtureAuthAdapter>[0];
-} = {}): AuthAdapter {
-  return mode === "fixtures" ? createFixtureAuthAdapter(fixture) : createHttpAuthAdapter(fetchImpl);
+/**
+ * The production adapter. There is no fixture mode here: sample identities are
+ * a test concern and live in `tests/auth-fixture-adapter.ts`, so no production
+ * bundle can contain them, let alone fall back to them.
+ */
+export function createAuthAdapter({ fetchImpl }: { fetchImpl?: typeof fetch } = {}): AuthAdapter {
+  return createHttpAuthAdapter(fetchImpl);
 }

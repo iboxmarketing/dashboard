@@ -3,16 +3,25 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { hashPassword, validatePassword } from "../lib/auth/password";
-import { normalizeEmail } from "../lib/auth/types";
+import { hashPassword } from "../lib/auth/password";
+import { bootstrapAdmin, type Target } from "./bootstrap-admin-lib";
 
-type Target = "staging" | "production";
+/**
+ * First-administrator bootstrap CLI. All decisions live in
+ * bootstrap-admin-lib.ts; this file only reads arguments and the terminal.
+ *
+ *   npm run auth:bootstrap-admin -- --target staging \
+ *     --config /abs/staging.wrangler.jsonc --binding DB \
+ *     --database-name bitrix-dashboard-staging --database-id <uuid> \
+ *     --email admin@example.com --name "Admin Name" [--env <name>]
+ */
+
 function valueAfter(args: string[], name: string) { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; }
-function fail(message: string): never { throw new Error(message); }
-function sqlText(value: string) { return `'${value.replaceAll("'", "''")}'`; }
+function required(args: string[], name: string) { const value = valueAfter(args, name); if (!value) throw new Error(`${name} is required`); return value; }
 
+/** Hidden TTY input: the password is never echoed, logged or passed on argv. */
 async function readSecret(prompt: string) {
-  if (!process.stdin.isTTY || !process.stdin.setRawMode) fail("Bootstrap requires an interactive TTY for the temporary password");
+  if (!process.stdin.isTTY || !process.stdin.setRawMode) throw new Error("Bootstrap requires an interactive TTY for the temporary password");
   process.stderr.write(prompt);
   process.stdin.setRawMode(true);
   process.stdin.resume();
@@ -27,7 +36,7 @@ async function readSecret(prompt: string) {
         if (byte === 3) return finish(new Error("Bootstrap cancelled"));
         if (byte === 13 || byte === 10) return finish();
         if (byte === 127 || byte === 8) { if (value) { value = value.slice(0, -1); process.stderr.write("\b \b"); } continue; }
-        const character = String.fromCharCode(byte); value += character; process.stderr.write("*");
+        value += String.fromCharCode(byte); process.stderr.write("*");
       }
     };
     process.stdin.on("data", onData);
@@ -35,39 +44,27 @@ async function readSecret(prompt: string) {
 }
 
 const args = process.argv.slice(2);
-const configPath = resolve(valueAfter(args, "--config") ?? fail("--config is required"));
-const database = valueAfter(args, "--database") ?? fail("--database is required");
-const target = valueAfter(args, "--target") as Target | undefined;
-const email = normalizeEmail(valueAfter(args, "--email"));
-const name = String(valueAfter(args, "--name") ?? "").trim();
-if (target !== "staging" && target !== "production") fail("--target must be staging or production");
-if (target === "production" && !args.includes("--confirm-production")) fail("Production bootstrap requires --confirm-production");
-if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email)) fail("--email is invalid");
-if (name.length < 2 || name.length > 120) fail("--name must be 2–120 characters");
-
-const configText = readFileSync(configPath, "utf8");
-const configuredWorker = /"name"\s*:\s*"([^"]+)"/.exec(configText)?.[1] ?? "";
-const configuredDatabase = /"database_name"\s*:\s*"([^"]+)"/.exec(configText)?.[1] ?? "";
-if (configuredDatabase !== database) fail("--database does not match the config DB binding");
-if (target === "staging" && (!configuredDatabase.toLowerCase().includes("staging") || !configuredWorker.toLowerCase().includes("staging"))) fail("Config Worker and D1 must both be explicitly staging");
-if (target === "production" && (configuredDatabase.toLowerCase().includes("staging") || configuredWorker.toLowerCase().includes("staging"))) fail("Production bootstrap refuses a staging config");
-
-const password = await readSecret("Temporary password: ");
-const confirmation = await readSecret("Repeat temporary password: ");
-if (password !== confirmation) fail("Passwords do not match");
-const checked = validatePassword(password);
-if (!checked.ok) fail(checked.error);
-const passwordHash = await hashPassword(checked.value);
-const id = crypto.randomUUID();
-const now = new Date().toISOString();
-const sql = `INSERT INTO app_users (id,email,name,role,password_hash,must_change_password,active,created_at,updated_at,last_login_at)
-SELECT ${sqlText(id)},${sqlText(email)},${sqlText(name)},'ADMIN',${sqlText(passwordHash)},1,1,${sqlText(now)},${sqlText(now)},NULL
-WHERE NOT EXISTS (SELECT 1 FROM app_users); SELECT changes() AS created;`;
-const run = spawnSync("npx", ["--no-install", "wrangler", "d1", "execute", "DB", "--remote", "--config", configPath, "--yes", "--command", sql], {
-  cwd: process.cwd(), encoding: "utf8",
-  env: { ...process.env, NO_COLOR: "1", WRANGLER_LOG_PATH: resolve(tmpdir(), `auth-bootstrap-${process.pid}.log`) },
+const configPath = resolve(required(args, "--config"));
+const result = await bootstrapAdmin({
+  target: required(args, "--target") as Target,
+  configPath,
+  config: readFileSync(configPath, "utf8"),
+  binding: required(args, "--binding"),
+  databaseName: required(args, "--database-name"),
+  databaseId: required(args, "--database-id"),
+  env: valueAfter(args, "--env"),
+  email: required(args, "--email"),
+  name: required(args, "--name"),
+  confirmProduction: args.includes("--confirm-production"),
+}, {
+  hashPassword,
+  readSecret,
+  runWrangler: (wranglerArgs) => {
+    const run = spawnSync("npx", ["--no-install", "wrangler", ...wranglerArgs], {
+      cwd: process.cwd(), encoding: "utf8",
+      env: { ...process.env, NO_COLOR: "1", WRANGLER_LOG_PATH: resolve(tmpdir(), `auth-bootstrap-${process.pid}.log`) },
+    });
+    return { status: run.status, stdout: run.stdout };
+  },
 });
-if (run.status !== 0) fail(`Wrangler D1 command failed with exit ${run.status ?? "unknown"}`);
-const created = /"created"\s*:\s*1/u.test(run.stdout);
-if (!created) fail("Bootstrap refused: app_users already contains a user");
-console.log(JSON.stringify({ target, database, created: true, userId: id, email, mustChangePassword: true }));
+console.log(JSON.stringify(result));

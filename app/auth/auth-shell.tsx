@@ -7,6 +7,7 @@ import { AuthErrorState, AuthLoadingScreen, NoSectionsState } from "./auth-primi
 import { ChangePasswordScreen } from "./change-password-screen";
 import { LoginScreen } from "./login-screen";
 import { AuthError, createAuthAdapter, type AuthAdapter } from "@/lib/auth-adapter";
+import { onSessionLost, resetSessionLost } from "@/lib/auth-fetch";
 import { hasAnySection } from "@/lib/auth-permissions";
 import type { AuthState, AuthUser, ChangePasswordRequest, LoginRequest } from "@/lib/auth-types";
 
@@ -20,6 +21,12 @@ export type AuthSession = {
   /** Report that a call found the session gone; returns cleanly to login. */
   sessionLost: () => void;
 };
+
+/** Shown when logout cleared the browser but the server could not revoke the session. */
+export const LOGOUT_PARTIAL_NOTICE = "Brauzerdan chiqildi, lekin serverdagi sessiyani yopib bo‘lmadi. Administratorga xabar bering.";
+
+/** Shown when a request finds the session expired, revoked or deactivated. */
+export const SESSION_ENDED_NOTICE = "Sessiya tugadi. Qaytadan kiring.";
 
 /** Shown on the login screen after the password change that revoked the session. */
 export const PASSWORD_CHANGED_NOTICE = "Parol almashtirildi. Yangi parol bilan qaytadan kiring.";
@@ -50,6 +57,15 @@ export function useAuth(adapter: AuthAdapter) {
   const mounted = useRef(true);
 
   useEffect(() => () => { mounted.current = false; }, []);
+
+  // A 401 from any authenticated request in the app lands here, once.
+  useEffect(() => onSessionLost(() => {
+    if (mounted.current) { setVoluntaryPassword(false); setState({ status: "unauthenticated", error: null, notice: SESSION_ENDED_NOTICE }); }
+  }), []);
+
+  // Re-arm the one-shot session-lost signal whenever a session is established.
+  const signedIn = state.status === "authenticated" || state.status === "mustChangePassword";
+  useEffect(() => { if (signedIn) resetSessionLost(); }, [signedIn]);
 
   useEffect(() => {
     let cancelled = false;
@@ -99,9 +115,17 @@ export function useAuth(adapter: AuthAdapter) {
     setReloadToken((token) => token + 1);
   }, [adapter]);
 
+  /**
+   * The API clears the cookie on every logout path. If it could not revoke the
+   * session in D1 it says so, and the user is told instead of shown a clean
+   * "logged out" — the browser is out either way.
+   */
   const logout = useCallback(async () => {
-    try { await adapter.logout(); } finally {
-      if (mounted.current) { setVoluntaryPassword(false); setState({ status: "unauthenticated", error: null, notice: null }); }
+    let notice: string | null = null;
+    try { await adapter.logout(); }
+    catch { notice = LOGOUT_PARTIAL_NOTICE; }
+    finally {
+      if (mounted.current) { setVoluntaryPassword(false); setState({ status: "unauthenticated", error: null, notice }); }
     }
   }, [adapter]);
 
@@ -112,7 +136,7 @@ export function useAuth(adapter: AuthAdapter) {
    * how a refresh loop starts.
    */
   const sessionLost = useCallback(() => {
-    if (mounted.current) setState({ status: "unauthenticated", error: null, notice: null });
+    if (mounted.current) setState({ status: "unauthenticated", error: null, notice: SESSION_ENDED_NOTICE });
   }, []);
 
   const refresh = useCallback(() => setReloadToken((token) => token + 1), []);

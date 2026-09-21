@@ -12,9 +12,10 @@ import { UsersTable, matchesUserFilters } from "../app/auth/users-screen";
 import { isManagementView, isSalesView } from "../app/dashboard-client";
 import {
   AUTH_ENDPOINTS, AuthError, FORBIDDEN_MESSAGE, GENERIC_LOGIN_ERROR,
-  createAuthAdapter, createFixtureAuthAdapter, createHttpAuthAdapter, readUser,
+  createAuthAdapter, createHttpAuthAdapter, readUser,
 } from "../lib/auth-adapter";
-import { AUTH_FIXTURE_USERS, cloneAuthFixtures } from "../lib/auth-fixtures";
+import { createFixtureAuthAdapter } from "./auth-fixture-adapter";
+import { AUTH_FIXTURE_USERS, cloneAuthFixtures } from "./auth-fixture-adapter";
 import { checkEmail, checkNewPassword, checkTemporaryPassword, normalizeEmailInput, PASSWORD_MIN_LENGTH } from "../lib/auth-password";
 import { validatePassword } from "../lib/auth/password";
 import { PASSWORD_CHANGED_NOTICE } from "../app/auth/auth-shell";
@@ -454,13 +455,19 @@ test("exactly the agreed endpoints, same-origin credentials, and no component fe
   ]);
 });
 
-test("fixtures are never a fallback and are refused outright in a production build", () => {
+test("fixtures are never a fallback and cannot be reached from production code", () => {
   assert.equal(createAuthAdapter().source, "api");
-  assert.equal(createAuthAdapter({ mode: "fixtures" }).source, "fixtures");
-  // No catch anywhere hands a failed API call to the fixture adapter.
-  assert.doesNotMatch(adapterSource, /catch[\s\S]{0,120}createFixtureAuthAdapter/);
+  // The fixture adapter and identities live under tests/ only.
+  // Checked on import statements and code, not prose: a comment may say where
+  // the fixtures live without importing them.
+  const imports = (source: string) => source.split("\n").filter((line) => /^\s*import\b|\bfrom\s+["']/.test(line)).join("\n");
+  assert.doesNotMatch(adapterSource, /function createFixtureAuthAdapter|AUTH_FIXTURE_USERS|mode: "fixtures"/);
+  for (const path of ["../lib/auth-adapter.ts", "../app/auth/auth-shell.tsx", "../app/dashboard-client.tsx", "../app/auth/users-screen.tsx"]) {
+    assert.doesNotMatch(imports(readFileSync(new URL(path, import.meta.url), "utf8")), /auth-fixture|finance-fixtures.*auth/, `${path} must not import auth fixtures`);
+  }
+  assert.throws(() => readFileSync(new URL("../lib/auth-fixtures.ts", import.meta.url), "utf8"), "the lib fixture module is gone");
+  // Belt and braces: an injected fixture adapter still throws in production.
   assert.match(shellSource, /adapter\.source === "fixtures" && process\.env\.NODE_ENV === "production"/);
-  assert.doesNotMatch(client, /createFixtureAuthAdapter|mode: "fixtures"/);
 });
 
 test("the adapter normalises unknown permission keys and a missing name out of the payload", () => {

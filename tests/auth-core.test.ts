@@ -110,9 +110,12 @@ test("auth migration is additive, indexed, constrained, and isolated from busine
 });
 
 test("every existing API is guarded and high-risk routes use the exact permission", () => {
-  const protectedRoutes = ["backfill", "bootstrap", "current-stages", "dashboard", "pages", "pipelines", "projects", "providers", "reconcile", "settings", "shares", "stage-funnel", "sync", "test-connection",
+  const protectedRoutes = ["backfill", "bootstrap", "current-stages", "diagnostics", "pages", "pipelines", "projects", "providers", "reconcile", "settings", "shares", "stage-funnel", "sync", "test-connection",
     "finance/accounts", "finance/categories", "finance/currencies", "finance/projects", "finance/subscriptions", "finance/summary", "finance/transactions"];
-  for (const path of protectedRoutes) assert.match(route(path), /authorizePermission|authorizeAnyPermission/u, path);
+  for (const path of protectedRoutes) assert.match(route(path), /authorizePermission|authorizeAnyPermission|requirePermission|requireAnyPermission/u, path);
+  // The Sales sections share one handler that checks the section's permission first.
+  for (const path of ["sales/dashboard", "sales/managers", "sales/manager", "sales/lead-flow", "sales/quality", "sales/deals"]) assert.match(route(path), /salesSectionResponse\(request, "/u, path);
+  assert.throws(() => route("dashboard"), "the all-records /api/dashboard route is gone");
   for (const path of ["finance/accounts", "finance/categories", "finance/currencies", "finance/projects", "finance/subscriptions", "finance/summary", "finance/transactions"]) assert.match(route(path), /authorizePermission\(request, "finance"\)/u, path);
   for (const path of ["backfill", "pipelines", "settings", "sync", "test-connection"]) assert.match(route(path), /authorizePermission\(request, "settings"\)/u, path);
   assert.match(route("admin/users"), /requireAdmin\(request\)/u);
@@ -141,14 +144,16 @@ test("deactivate and password reset revoke sessions and bootstrap cannot overwri
   assert.match(storage, /!active \|\| input\.passwordHash/u);
   assert.match(storage, /UPDATE app_sessions SET revoked_at/u);
   const bootstrap = readFileSync(`${root}/scripts/bootstrap-admin.ts`, "utf8");
-  assert.match(bootstrap, /WHERE NOT EXISTS \(SELECT 1 FROM app_users\)/u);
-  assert.match(bootstrap, /readSecret\("Temporary password:/u);
-  assert.doesNotMatch(bootstrap, /--password/u);
+  const bootstrapLib = readFileSync(`${root}/scripts/bootstrap-admin-lib.ts`, "utf8");
+  assert.match(bootstrapLib, /WHERE NOT EXISTS \(SELECT 1 FROM app_users\)/u);
+  assert.match(bootstrapLib, /readSecret\("Temporary password: "\)/u);
+  assert.doesNotMatch(bootstrap + bootstrapLib, /--password/u);
 });
 
 test("logout revokes the server session and clears the browser cookie", () => {
-  const logout = route("auth/logout");
-  assert.match(logout, /await revokeSession\(token\)/u);
+  assert.match(route("auth/logout"), /handleLogout\(request, revokeSession\)/u);
+  const logout = readFileSync(`${root}/lib/auth/logout.ts`, "utf8");
+  assert.match(logout, /await revoke\(token\)/u);
   assert.match(logout, /"set-cookie": clearSessionCookie\(\)/u);
   const change = route("auth/change-password");
   assert.match(change, /await changeOwnPassword/u);

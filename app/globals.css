@@ -1097,3 +1097,6 @@ button:focus-visible, a:focus-visible, summary:focus-visible,
   .auth-profile-name { display: none; }
   .users-table th:nth-child(6), .users-table td:nth-child(6) { display: none; }
 }
+
+/* Sales section loading placeholder while its endpoint answers. */
+.section-loading { display: grid; gap: 10px; padding: 26px 4px; }

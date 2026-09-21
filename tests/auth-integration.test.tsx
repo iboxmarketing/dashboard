@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 
 import { ROUTE_PERMISSIONS, createTestServer, type SeedUser } from "./auth-integration-server";
@@ -9,6 +9,7 @@ import {
   ASSIGNABLE_PERMISSIONS, NAV_ENTRIES, allowedNavEntries, canAccess, canAccessView, firstAllowedView, hasAnySection,
 } from "../lib/auth-permissions";
 import { PERMISSIONS } from "../lib/auth-types";
+import { SALES_SECTION_PERMISSION, type SalesSection } from "../lib/sales-sections";
 import { PERMISSION_KEYS, hasPermission, normalizeMemberPermissions, permissionForView, type PermissionKey } from "../lib/auth/permissions";
 
 const root = process.cwd();
@@ -77,7 +78,7 @@ test("2. a finance-only MEMBER sees Finance, no Sales, and the APIs agree", asyn
   for (const allowed of ["/api/finance/summary", "/api/finance/transactions", "/api/finance/accounts", "/api/bootstrap"]) {
     assert.equal((await callApi(fetchImpl, allowed)).status, 200, `${allowed} must be allowed`);
   }
-  for (const denied of ["/api/dashboard", "/api/current-stages", "/api/stage-funnel", "/api/settings", "/api/sync", "/api/projects", "/api/pages", "/api/admin/users"]) {
+  for (const denied of ["/api/sales/dashboard", "/api/sales/managers", "/api/sales/deals", "/api/diagnostics", "/api/current-stages", "/api/stage-funnel", "/api/settings", "/api/sync", "/api/projects", "/api/pages", "/api/admin/users"]) {
     const response = await callApi(fetchImpl, denied, denied === "/api/settings" || denied === "/api/sync" ? { method: "POST", body: "{}" } : undefined);
     assert.equal(response.status, 403, `${denied} must be forbidden`);
   }
@@ -95,7 +96,7 @@ test("3. a MEMBER without finance gets 403 from the Finance API directly", async
     assert.equal(body.code, "FORBIDDEN");
   }
   // Hiding the nav item is not what does this; the API refuses on its own.
-  assert.equal((await callApi(fetchImpl, "/api/dashboard")).status, 200);
+  assert.equal((await callApi(fetchImpl, "/api/sales/dashboard")).status, 200);
 });
 
 /* ================= 4. ADMIN reaches everything ================= */
@@ -141,7 +142,7 @@ test("6. a temporary password blocks the dashboard until it is changed", async (
   assert.equal(user.mustChangePassword, true);
 
   // Server side: every permissioned route refuses, with its own code.
-  for (const path of ["/api/bootstrap", "/api/dashboard"]) {
+  for (const path of ["/api/bootstrap", "/api/sales/dashboard"]) {
     const response = await callApi(fetchImpl, path);
     assert.equal(response.status, 403);
     assert.equal((await response.json() as { code?: string }).code, "PASSWORD_CHANGE_REQUIRED");
@@ -191,7 +192,7 @@ test("7. logout makes the session unusable straight away", async () => {
   assert.equal((await callApi(fetchImpl, "/api/auth/me")).status, 200);
   assert.equal((await callApi(fetchImpl, "/api/auth/logout", { method: "POST" })).status, 200);
   assert.equal((await callApi(fetchImpl, "/api/auth/me")).status, 401);
-  assert.equal((await callApi(fetchImpl, "/api/dashboard")).status, 401);
+  assert.equal((await callApi(fetchImpl, "/api/sales/dashboard")).status, 401);
   // The adapter reads that 401 as "signed out", not as an error to display.
   assert.equal(await createHttpAuthAdapter(fetchImpl).me(), null);
 });
@@ -291,9 +292,13 @@ test("10c. an admin cannot remove the last active administrator, or demote thems
   const drawer = read("app/auth/user-drawer.tsx");
   assert.match(drawer, /if \(isSelf && !active\) return setError/);
   assert.match(drawer, /if \(isSelf && role !== "ADMIN" && user!\.role === "ADMIN"\) return setError/);
-  // And the server refuses the last-admin case independently of who asks.
-  assert.match(routeSource("admin/users"), /Oxirgi faol administratorni o‘chirib bo‘lmaydi/);
-  assert.match(routeSource("admin/users"), /countActiveAdminsExcluding/);
+  // The last-admin rule is a database invariant, not a JS count-then-update:
+  // the route only maps the trigger's refusal (proven against real SQLite in
+  // tests/auth-hardening.test.ts).
+  assert.match(routeSource("admin/users"), /LAST_ACTIVE_ADMIN/);
+  assert.doesNotMatch(routeSource("admin/users"), /countActiveAdmins/);
+  assert.doesNotMatch(read("lib/auth/storage.ts"), /countActiveAdmins/);
+  assert.match(read("drizzle/0009_auth_admin_invariant.sql"), /RAISE\(ABORT, 'LAST_ACTIVE_ADMIN'\)/);
 });
 
 /* ================= 11. secrets never leave the server ================= */
@@ -324,8 +329,12 @@ test("11. no password hash, session token or token hash ever reaches a payload",
 /* ============ 12. the business formulas are untouched ============ */
 
 test("12. the auth integration changes no analytics, seller or finance calculation", () => {
-  const changed = execFileSync("git", ["diff", "--name-only", "cd1d418..HEAD"], { cwd: root, encoding: "utf8" })
-    .split("\n").filter(Boolean);
+  // Committed and uncommitted changes since the Finance base, so this guard
+  // holds before a commit as well as after it.
+  const changed = [...new Set([
+    ...execFileSync("git", ["diff", "--name-only", "cd1d418"], { cwd: root, encoding: "utf8" }).split("\n"),
+    ...execFileSync("git", ["ls-files", "--others", "--exclude-standard"], { cwd: root, encoding: "utf8" }).split("\n"),
+  ].filter(Boolean))];
   assert.ok(changed.length > 0, "the branch must actually contain the auth work");
 
   // Every module that decides a Lead, an SQL, a Not Relevant, a Sales Lost, a
@@ -334,18 +343,29 @@ test("12. the auth integration changes no analytics, seller or finance calculati
     "lib/analytics.ts", "lib/sales-logic.ts", "lib/dashboard-metrics.ts", "lib/dashboard-cards.ts",
     "lib/lead-flow-analytics.ts", "lib/quality-analytics.ts", "lib/manager-profile.ts",
     "lib/stage-control-analytics.ts", "lib/trend-series.ts", "lib/period.ts", "lib/record-filters.ts",
-    "lib/sales-snapshots.ts", "lib/stable-seller-field.ts", "lib/dashboard-record.ts",
-    "lib/finance-metrics.ts", "lib/finance-money.ts", "lib/finance-core.ts", "lib/finance-adapter.ts",
+    "lib/sales-snapshots.ts", "lib/stable-seller-field.ts", "lib/dashboard-record.ts", "lib/sla.ts", "lib/duplicates.ts",
+    "lib/finance-metrics.ts", "lib/finance-money.ts", "lib/finance-core.ts", "lib/finance/summary.ts", "lib/finance/money.ts",
   ];
   const touched = protectedModules.filter((module) => changed.includes(module));
   assert.deepEqual(touched, [], `auth must not touch calculation modules: ${touched.join(", ")}`);
 
-  // Nothing under lib/ was changed except the auth modules themselves.
-  const libChanges = changed.filter((path) => path.startsWith("lib/"));
-  assert.deepEqual(libChanges.filter((path) => !/^lib\/auth[/-]/.test(path)), []);
-  // No migration other than the auth one.
-  assert.deepEqual(changed.filter((path) => path.startsWith("drizzle/") && path.endsWith(".sql")), ["drizzle/0008_auth_core.sql"]);
+  // Outside lib/auth*, lib/ changes are limited to: the server-side Sales
+  // sections (which call the protected modules above, moved verbatim from the
+  // client), the one authenticated fetch path, and Finance's transport default.
+  const libChanges = changed.filter((path) => path.startsWith("lib/") && !/^lib\/auth[/-]/.test(path));
+  assert.deepEqual(libChanges.sort(), ["lib/auth-fetch.ts", "lib/finance-adapter.ts", "lib/sales-http.ts", "lib/sales-sections.ts"].filter((path) => !/^lib\/auth[/-]/.test(path)).sort());
+  // Finance's change is transport only: every changed line is about the fetch path.
+  const financeDiff = execFileSync("git", ["diff", "-U0", "cd1d418", "--", "lib/finance-adapter.ts"], { cwd: root, encoding: "utf8" })
+    .split("\n").filter((line) => /^[+-](?![+-])/.test(line) && line.slice(1).trim());
+  for (const line of financeDiff) {
+    assert.match(line, /authFetch|SessionLostError|createHttpTransport\(fetchImpl: typeof fetch = fetch\)|catch \(error\)|throw error|FinanceError\("Finance API bilan aloqa|^[+-]\s*(\/\/|\}|\} catch)/, `unexpected Finance change: ${line}`);
+  }
+  // Migrations: only the two auth ones, both additive.
+  assert.deepEqual(changed.filter((path) => path.startsWith("drizzle/") && path.endsWith(".sql")).sort(), ["drizzle/0008_auth_core.sql", "drizzle/0009_auth_admin_invariant.sql"]);
+  // Triggers only: no statement that drops, alters or rewrites data.
+  assert.doesNotMatch(read("drizzle/0009_auth_admin_invariant.sql"), /^\s*(DROP|ALTER|DELETE|UPDATE|INSERT)\b/im);
 });
+
 
 /* ============ the one contract: frontend mapping == backend guards ============ */
 
@@ -362,21 +382,37 @@ test("the frontend permission mapping and the backend route guards are the same 
   // Every route this suite exercises is guarded in the real source with the
   // same rule the test server applies.
   const guardOf: Record<string, RegExp> = {
-    "/api/bootstrap": /authorizeAnyPermission\(request, PERMISSION_KEYS\)/,
-    "/api/dashboard": /authorizeAnyPermission\(request, \["dashboard", "managers", "leadFlow", "quality", "deals"\]\)/,
+    "/api/bootstrap": /requireAnyPermission\(request, PERMISSION_KEYS\)/,
     "/api/admin/users": /requireAdmin\(request\)/,
+    "/api/diagnostics": /requirePermission\(request, "diagnostics"\)/,
+    "/api/pages": /requirePermission\(request, "pages"\)/,
+  };
+  const sectionOf: Record<string, SalesSection> = {
+    "/api/sales/dashboard": "dashboard", "/api/sales/managers": "managers", "/api/sales/manager": "manager",
+    "/api/sales/lead-flow": "leadFlow", "/api/sales/quality": "quality", "/api/sales/deals": "deals",
   };
   for (const [path, rule] of Object.entries(ROUTE_PERMISSIONS)) {
     const source = routeSource(path.replace("/api/", ""));
+    const section = sectionOf[path];
+    if (section) {
+      // A Sales route names its section; the section names exactly one permission.
+      assert.match(source, new RegExp(`salesSectionResponse\\(request, "${section}"\\)`), `${path} does not name its section`);
+      assert.equal(SALES_SECTION_PERMISSION[section], rule, `${path} is not guarded by ${String(rule)}`);
+      continue;
+    }
     const expected = guardOf[path] ?? new RegExp(`authorizePermission\\(request, "${rule as string}"\\)`);
     assert.match(source, expected, `${path} is not guarded as the mapping says`);
   }
+  // The shared Sales handler checks that permission before reading anything.
+  const handler = read("lib/sales-http.ts");
+  assert.ok(handler.indexOf("requirePermission(request, SALES_SECTION_PERMISSION[section])") < handler.indexOf("loadSalesRecords()"));
 });
 
 test("every application route is guarded; only login, logout and the share link are open", () => {
-  const routes = execFileSync("git", ["ls-files", "app/**/route.ts"], { cwd: root, encoding: "utf8" })
-    .split("\n").filter(Boolean);
-  const open = routes.filter((path) => !/require(Admin|Session)|authorize(Any)?Permission/.test(read(path)));
+  // Walks the filesystem rather than git, so a new, uncommitted route is seen.
+  const routes = (readdirSync(`${root}/app`, { recursive: true }) as string[])
+    .filter((path) => path.endsWith("route.ts")).map((path) => `app/${path}`);
+  const open = routes.filter((path) => !/require(Admin|Session|AnyPermission|Permission)|authorize(Any)?Permission|salesSectionResponse\(request/.test(read(path)));
   assert.deepEqual(open.sort(), [
     // Both are entry points that establish or destroy a session, and both still
     // call assertSafeMutation.
@@ -385,7 +421,10 @@ test("every application route is guarded; only login, logout and the share link 
     // Independently protected by a bearer token, by existing design.
     "app/share/[token]/route.ts",
   ]);
-  for (const path of ["app/api/auth/login/route.ts", "app/api/auth/logout/route.ts"]) {
+  // Both delegate to handlers that reject cross-site writes first.
+  assert.match(read("app/api/auth/login/route.ts"), /handleLogin\(request,/);
+  assert.match(read("app/api/auth/logout/route.ts"), /handleLogout\(request,/);
+  for (const path of ["lib/auth/login.ts", "lib/auth/logout.ts"]) {
     assert.match(read(path), /assertSafeMutation\(request\)/, `${path} must still reject cross-site writes`);
   }
   assert.match(read("app/share/[token]/route.ts"), /The token is a bearer credential/);
@@ -413,7 +452,12 @@ test("the dashboard never fetches a section the user cannot open", () => {
   assert.match(client, /if \(!accessRef\.current\.canStages\) return;/);
   assert.match(client, /if \(!accessRef\.current\.canProjects\) return;/);
   assert.match(client, /if \(!accessRef\.current\.canPages\) return;/);
-  assert.match(client, /if \(bootstrap\.configured && accessRef\.current\.hasSalesAccess\)/);
+  // Operational config is fetched only by Settings; each Sales section only
+  // while its own view is open.
+  assert.match(client, /if \(accessRef\.current\.canSettings\) \{\n\s+const bootstrapResponse = await authFetch\("\/api\/bootstrap"/);
+  assert.match(client, /useSalesSection<DashboardSection>\(view === "dashboard" \? "dashboard" : null/);
+  assert.match(client, /useSalesSection<DealsSection>\(view === "deals" \? "deals" : null/);
+  assert.doesNotMatch(client, /\/api\/dashboard"/);
   // Sync is an administrative action, so its controls and its timers are gated.
   assert.match(client, /if \(!canSettings \|\| !configured/);
   assert.match(client, /\{!isManagementView\(view\) && canSettings &&/);

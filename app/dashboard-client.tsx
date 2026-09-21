@@ -8,24 +8,23 @@ import {
 } from "lucide-react";
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ErrorInfo, ReactNode } from "react";
-import type { DashboardRecord, StageFunnelRecord } from "@/lib/dashboard-record";
+import type { StageFunnelRecord } from "@/lib/dashboard-record";
 import {
   buildHistorical, buildManagerMatrix, buildOverdueRows, buildReconciliationView, buildStageCatalog,
   buildStageHealth, buildSummary, humanDuration, stageKey,
   type MatrixCell, type OverdueSort, type ReconciliationView, type StageCatalogEntry,
 } from "@/lib/stage-control-analytics";
 import { DASHBOARD_HEADLINE_CARD_IDS, headlineCardLabel, resolveHeadlineCardIds, type HeadlineCardId } from "@/lib/dashboard-cards";
-import { BUCKET_COUNT, DEFAULT_LEAD_FLOW_METRIC, LEAD_FLOW_METRICS, WEEKDAY_LABELS, bucketLabel, buildLeadFlow, higherIsHealthier, leadFlowValue, type LeadFlowMetricId } from "@/lib/lead-flow-analytics";
-import { buildManagerProfile, notRelevantRecords, reasonBreakdown, salesLostRecords, sourceFunnelRows, stageWorkloadRows, teamMedian } from "@/lib/manager-profile";
-import { buildQualityAnalytics, type MarketingManagerDiagnostic, type SalesManagerDiagnostic } from "@/lib/quality-analytics";
-import { DEFAULT_TREND_METRIC, TREND_METRICS, buildTrendSeries, supportsMovingAverage, trendBarHeight, trendMetric, type TrendBounds, type TrendMetricId, type TrendPoint } from "@/lib/trend-series";
+import { BUCKET_COUNT, DEFAULT_LEAD_FLOW_METRIC, LEAD_FLOW_METRICS, WEEKDAY_LABELS, bucketLabel, higherIsHealthier, leadFlowValue, type LeadFlowMetricId } from "@/lib/lead-flow-analytics";
+import { stageWorkloadRows } from "@/lib/manager-profile";
+import type { MarketingManagerDiagnostic, QualityAnalytics, SalesManagerDiagnostic } from "@/lib/quality-analytics";
+import { DEFAULT_TREND_METRIC, TREND_METRICS, supportsMovingAverage, trendBarHeight, trendMetric, type TrendMetricId, type TrendPoint } from "@/lib/trend-series";
 import { initialStageFunnelState, stageFunnelNext, type StageFunnelAction, type StageFunnelState, type StageFunnelStatus } from "@/lib/stage-funnel-cache";
 import {
   classifyStartRecovery, classifySyncResponse, retryDelayMs, shouldRetry, SYNC_EXHAUSTED_MESSAGE,
   SYNC_START_UNCONFIRMED_MESSAGE, SYNC_STEP_DELAY_MS, SYNC_STEPS_PER_REQUEST, transientFromNetworkError,
 } from "@/lib/sync-transport";
-import type { CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, ProviderDiagnostic, StageReconciliation, SyncProgressState } from "@/lib/types";
-import { ANALYTICS_VERSION } from "@/lib/analytics";
+import type { CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, StageReconciliation, SyncProgressState } from "@/lib/types";
 import { canonicalizeFieldOptions, normalizeCrmFields } from "@/lib/crm-fields";
 import { normalizeSettings } from "@/lib/settings-safety";
 import { isSafeStableSellerField } from "@/lib/stable-seller-field";
@@ -35,30 +34,33 @@ import {
 } from "@/lib/projects";
 import {
   MANUAL_KPI_FORMATS, PAGE_RANGES, PAGE_TEMPLATES, WIDGET_REGISTRY, WIDGET_SOURCE_LABELS,
-  filterPages, formatManualValue, pageRangeBounds, pageRangeLabel, pageWidgets, templateById,
+  filterPages, formatManualValue, pageRangeLabel, pageWidgets, templateById,
   resolveWidgetCustomRange, resolveWidgetRange, selectLatestUpdates, selectProjectsListRows, widgetSource,
   type CustomPage, type PageWidget, type WidgetSource, type WidgetType,
 } from "@/lib/custom-pages";
-import { boundsFromKeys } from "@/lib/period";
 import {
   DEFAULT_SHARED_WIDGET_TYPES, SHARE_STATUS_LABELS, defaultVisibleWidgetIds, shareStatus,
   type PageShare,
 } from "@/lib/share-tokens";
-import { countClassificationConflicts, dealOutcomeLabel, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isUnclassifiedLead, salesManagerKey } from "@/lib/sales-logic";
+import { dealOutcomeLabel } from "@/lib/sales-logic";
 import {
-  activeFilterCount, dedupeByDealId, filterCurrentStageRecords, filterHistoricalRecords, filterStageHistoryRecords,
-  historicalManagerOptions, liveManagerOptions,
+  activeFilterCount, filterCurrentStageRecords, filterStageHistoryRecords, liveManagerOptions,
 } from "@/lib/record-filters";
 import { MultiSelect } from "./ui/multi-select";
 import { AuthGate, type AuthSession } from "./auth/auth-shell";
 import { ProfileMenu } from "./auth/profile-menu";
 import { UsersScreen } from "./auth/users-screen";
 import { canAccessView } from "@/lib/auth-permissions";
-import { countDuplicates, markDuplicates } from "@/lib/duplicates";
+import { authFetch } from "@/lib/auth-fetch";
+import { SectionStatus, useSalesSection, useSectionFetch, type SectionCommon, type SectionState } from "./sales-data";
+import type {
+  DashboardSection, DealRow, DealsSection, DiagnosticsData, FilterOptions, LeadFlowSection, ManagerRow, ManagerSection,
+  ManagersSection, QualitySection,
+} from "@/lib/sales-sections";
+import type { LeadFlow } from "@/lib/lead-flow-analytics";
 import { stageConfigConflicts } from "@/lib/stage-config";
-import { DASHBOARD_METRICS, buildDashboardMetrics, resolveDashboardMetric, selectPeriodPopulations, type DashboardMetricId } from "@/lib/dashboard-metrics";
-import { SLA_LABELS, SLA_TONES, resolveSlaState } from "@/lib/sla";
-import { stageConfigReadiness, summarizeDataQuality } from "@/lib/diagnostics";
+import { DASHBOARD_METRICS } from "@/lib/dashboard-metrics";
+import { SLA_LABELS, SLA_TONES } from "@/lib/sla";
 import {
   canFullSync, fullSyncBlockers, fullSyncConfirmation, isSettingsDirty, settingsReadiness,
   type SettingsReadiness,
@@ -141,43 +143,6 @@ function fmtDate(value: string | null, withTime = true) {
     ...(withTime ? { hour: "2-digit", minute: "2-digit" } : {}),
   }).format(date);
 }
-/** Re-resolves SLA state against the current clock so a lead can cross its
- * deadline without waiting for another sync. */
-function withLiveSlaState(rows: DashboardRecord[], settings: DashboardSettings, now = new Date()): DashboardRecord[] {
-  return rows.map((row) => ({ ...row, slaStatus: resolveSlaState(row, settings, now) }));
-}
-function hydrateRecord(row: DashboardRecord): DashboardRecord {
-  return {
-    ...row,
-    analyticsVersion: Number(row.analyticsVersion ?? 1),
-    originCategoryId: row.originCategoryId ?? row.categoryId,
-    originPipeline: row.originPipeline ?? row.pipeline,
-    operationalPipeline: row.operationalPipeline ?? true,
-    stageEnteredAt: row.stageEnteredAt ?? row.createdAt,
-    stageAgeHours: Number(row.stageAgeHours ?? 0),
-    stageLimitHours: Number(row.stageLimitHours ?? 24),
-    stageOverdue: row.stageOverdue ?? false,
-    salesStatus: row.salesStatus ?? "ACTIVE",
-    qualified: row.qualified ?? true,
-    qualifiedAt: row.qualifiedAt ?? (row.qualified ? row.createdAt : null),
-    qualifiedStageId: row.qualifiedStageId ?? null,
-    qualifiedStage: row.qualifiedStage ?? null,
-    wonAt: row.wonAt ?? null,
-    salesCycleHours: row.salesCycleHours ?? (row.wonAt ? Math.max(0, (new Date(row.wonAt).getTime() - new Date(row.createdAt).getTime()) / 3_600_000) : null),
-    opportunity: Number(row.opportunity ?? 0),
-    currencyId: row.currencyId ?? "",
-    lossReason: row.lossReason ?? "",
-    lossReasonGroup: row.lossReasonGroup ?? (row.salesStatus === "LOW_QUALITY" ? "MARKETING" : row.salesStatus === "LOST" ? "SALES" : "NONE"),
-    contactId: row.contactId ?? null,
-    companyId: row.companyId ?? null,
-    customerKey: row.customerKey ?? null,
-    duplicateOfDealId: row.duplicateOfDealId ?? null,
-    stageHistoryCount: Number(row.stageHistoryCount ?? 0),
-    salesManagerId: row.salesManagerId ?? null,
-    salesManager: row.salesManager ?? null,
-    salesManagerAttribution: row.salesManagerAttribution ?? "UNKNOWN",
-  };
-}
 function localDateKey(date: Date) {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tashkent", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
 }
@@ -193,6 +158,23 @@ function rangeBounds(filters: Filters) {
     return { from: localDateKey(new Date(now.getFullYear(), now.getMonth() - 1, 1)), to: localDateKey(new Date(now.getFullYear(), now.getMonth(), 0)) };
   }
   return { from: filters.from, to: filters.to };
+}
+
+/**
+ * The query a Sales section is fetched with. The range is resolved to Tashkent
+ * dates here, as it always was; filters the caller may not use are dropped
+ * rather than sent to be refused.
+ */
+function salesQueryString(filters: Filters, allow: { managers: boolean; search: boolean }) {
+  const bounds = rangeBounds(filters);
+  const params = new URLSearchParams();
+  if (bounds.from) params.set("from", bounds.from);
+  if (bounds.to) params.set("to", bounds.to);
+  if (allow.managers) for (const manager of filters.managers) params.append("manager", manager);
+  for (const source of filters.sources) params.append("source", source);
+  for (const key of ["pipeline", "stage", "period", "sla", "processing"] as const) if (filters[key]) params.set(key, filters[key]);
+  if (allow.search && filters.search.trim()) params.set("search", filters.search.trim());
+  return params.toString();
 }
 
 function StatusDot({ state }: { state: string }) {
@@ -224,7 +206,7 @@ function SetupScreen({ configured, sync, syncing, externalError, onStart, onPaus
   async function testConnection() {
     setTesting(true); setError(null);
     try {
-      const response = await fetch("/api/test-connection", { method: "POST" });
+      const response = await authFetch("/api/test-connection", { method: "POST" });
       const payload = await response.json() as Record<string, string | null>;
       if (!response.ok) throw new Error(payload.error ?? "Ulanishni tekshirib bo‘lmadi");
       setResult(payload);
@@ -283,89 +265,6 @@ function SectionHeader({ title, subtitle, action }: { title: string; subtitle?: 
  * records, so a row is the dashboard's definitions restricted to one seller
  * rather than a second set of formulas.
  */
-type ManagerRow = {
-  id: string; name: string;
-  leads: number; leadShare: number;
-  classified: number; classificationCoverage: number;
-  sql: number; qualityAcceptedRate: number;
-  notRelevant: number; lowQualityRate: number;
-  cohortSales: number; leadToSale: number; cohortRevenue: number;
-  sqlToSale: number;
-  salesLost: number; salesLostRate: number;
-  periodSales: number; revenue: number;
-  active: number;
-  avgProcessing: number | null;
-  overdueUnprocessed: number; overdueRate: number;
-  // Carried for the profile's team benchmarks; the table does not show them.
-  slaRate: number | null; slaDenominator: number; salesCycleHours: number | null;
-  currency: string;
-};
-
-
-/**
- * Manager rows built from the canonical metric helper.
- *
- * The two populations mirror the dashboard exactly: `records` is the cohort
- * (deals created in the period) and `wonRecords` is the period-sales set
- * (deals won in the period). They are partitioned by `salesManagerKey`, so
- * every deal lands in exactly one row and the rows sum back to the dashboard's
- * own totals — which is what makes the lead-share denominator trustworthy.
- */
-function buildManagers(records: DashboardRecord[], wonRecords: DashboardRecord[] = records.filter((row) => row.salesStatus === "WON")): ManagerRow[] {
-  const cohortByManager = new Map<string, DashboardRecord[]>();
-  const wonByManager = new Map<string, DashboardRecord[]>();
-  for (const record of records) {
-    const key = salesManagerKey(record);
-    cohortByManager.set(key, [...(cohortByManager.get(key) ?? []), record]);
-  }
-  for (const record of wonRecords) {
-    const key = salesManagerKey(record);
-    wonByManager.set(key, [...(wonByManager.get(key) ?? []), record]);
-  }
-  const ids = new Set([...cohortByManager.keys(), ...wonByManager.keys()]);
-  const built = [...ids].map((id) => {
-    const cohort = cohortByManager.get(id) ?? [];
-    const won = wonByManager.get(id) ?? [];
-    const metrics = buildDashboardMetrics(cohort, won);
-    return {
-      id,
-      name: cohort[0]?.salesManager ?? won[0]?.salesManager ?? "Aniqlanmagan",
-      leads: metrics.counts.leads,
-      leadShare: 0, // filled once every row is known — see below
-      classified: metrics.counts.classified_leads,
-      classificationCoverage: metrics.rates.classification_coverage,
-      sql: metrics.counts.sql,
-      qualityAcceptedRate: metrics.rates.quality_accepted_rate,
-      notRelevant: metrics.counts.not_relevant,
-      lowQualityRate: metrics.rates.low_quality_rate,
-      cohortSales: metrics.counts.cohort_sales,
-      leadToSale: metrics.rates.lead_to_sale,
-      cohortRevenue: metrics.money.cohort_revenue,
-      sqlToSale: metrics.rates.sql_to_sale,
-      salesLost: metrics.counts.sales_lost,
-      salesLostRate: metrics.rates.sales_lost,
-      periodSales: metrics.counts.period_sales,
-      revenue: metrics.money.revenue,
-      active: metrics.counts.active_cohort,
-      avgProcessing: metrics.timing.avg_processing,
-      // Canonical OVERDUE_UNPROCESSED, not the SLA rate — different metrics.
-      overdueUnprocessed: metrics.sla.overdue,
-      overdueRate: pct(metrics.sla.overdue, metrics.counts.leads),
-      slaRate: metrics.sla.denominator ? metrics.rates.sla : null,
-      slaDenominator: metrics.sla.denominator,
-      salesCycleHours: metrics.timing.sales_cycle,
-      currency: metrics.money.currency,
-    } satisfies ManagerRow;
-  });
-  // The share denominator is every manager's leads, never just the rows a
-  // caller happens to display: the Dashboard shows a top-8 slice, and dividing
-  // by that would report percentages of a subset as percentages of the team.
-  const totalLeads = built.reduce((sum, row) => sum + row.leads, 0);
-  return built
-    .map((row) => ({ ...row, leadShare: pct(row.leads, totalLeads) }))
-    .sort((a, b) => b.periodSales - a.periodSales || b.cohortSales - a.cohortSales);
-}
-
 /**
  * @param limit shows only the first N rows *after* sorting. The Dashboard uses
  * it for a top-8 summary; the Managers page passes nothing and shows everyone.
@@ -433,14 +332,25 @@ function ManagerTable({ rows, onSelect, limit }: { rows: ManagerRow[]; onSelect:
   </table>{!rows.length && <div className="empty-table">Tanlangan filtr bo‘yicha menejerlar topilmadi.</div>}</div>;
 }
 
-function FiltersBar({ filters, setFilters, records, currentStages, mode = "cohort" }: { filters: Filters; setFilters: React.Dispatch<React.SetStateAction<Filters>>; records: DashboardRecord[]; currentStages?: CurrentStageRecord[]; mode?: "cohort" | "current" }) {
+/**
+ * Filter bar. Its options arrive with each Sales section from the server — the
+ * browser no longer holds the records they used to be derived from.
+ *
+ * The Manager filter is shown only with `managers` and search only with
+ * `deals`: filtering the dashboard to one seller is that seller's report, and
+ * searching by Deal ID probes single Deals through the totals. The API refuses
+ * both independently; hiding them here only keeps the UI honest.
+ */
+function FiltersBar({ filters, setFilters, options, currentStages, historySources = [], mode = "cohort", canManagers, canSearch }: { filters: Filters; setFilters: React.Dispatch<React.SetStateAction<Filters>>; options: FilterOptions | null; currentStages?: CurrentStageRecord[]; historySources?: string[]; mode?: "cohort" | "current"; canManagers: boolean; canSearch: boolean }) {
   const [expanded, setExpanded] = useState(false);
   // Seller options come from the same key the filter compares against:
   // salesManagerId for history, the current assignee for the live stage view.
-  const managers = mode === "current" ? liveManagerOptions(currentStages ?? []) : historicalManagerOptions(records);
-  const pipelines = mode === "current" ? [...new Set((currentStages ?? []).map((row) => row.pipeline))].sort() : [...new Set(records.map((row) => row.originPipeline))].sort();
-  const sources = [...new Set(records.map((row) => row.source))].sort().map((value) => ({ id: value, name: value }));
-  const stages = mode === "current" ? [...new Set((currentStages ?? []).map((row) => row.stage))].sort() : [...new Set(records.map((row) => row.stage))].sort();
+  const managers = mode === "current" ? liveManagerOptions(currentStages ?? []) : options?.managers ?? [];
+  const pipelines = mode === "current" ? [...new Set((currentStages ?? []).map((row) => row.pipeline))].sort() : options?.pipelines ?? [];
+  const sources = mode === "current"
+    ? [...new Set(historySources)].sort().map((value) => ({ id: value, name: value }))
+    : options?.sources ?? [];
+  const stages = mode === "current" ? [...new Set((currentStages ?? []).map((row) => row.stage))].sort() : options?.stages ?? [];
   const set = (key: keyof Filters, value: string) => setFilters((current) => ({ ...current, [key]: value }));
   const setMany = (key: "managers" | "sources", value: string[]) => setFilters((current) => ({ ...current, [key]: value }));
   const activeCount = activeFilterCount(filters);
@@ -457,9 +367,9 @@ function FiltersBar({ filters, setFilters, records, currentStages, mode = "cohor
   }
   return <div className="filters-shell">
     <div className="filters-main">
-      <div className="search-box"><Search size={16} /><input value={filters.search} onChange={(event) => set("search", event.target.value)} placeholder="Deal ID yoki nomi…" /></div>
+      {canSearch && <div className="search-box"><Search size={16} /><input value={filters.search} onChange={(event) => set("search", event.target.value)} placeholder="Deal ID yoki nomi…" /></div>}
       <Select label="Sana oralig‘i" value={filters.range} onChange={(value) => set("range", value)}><option value="today">Bugun</option><option value="yesterday">Kecha</option><option value="7">Oxirgi 7 kun</option><option value="30">Oxirgi 30 kun</option><option value="month">Shu oy</option><option value="lastMonth">O‘tgan oy</option><option value="custom">Custom</option></Select>
-      <MultiSelect label="Menejer" allLabel="Barcha menejerlar" options={managers} selected={filters.managers} onChange={(value) => setMany("managers", value)} />
+      {canManagers && <MultiSelect label="Menejer" allLabel="Barcha menejerlar" options={managers} selected={filters.managers} onChange={(value) => setMany("managers", value)} />}
       <Select label="Pipeline" value={filters.pipeline} onChange={(value) => set("pipeline", value)}><option value="">Barcha pipeline</option>{pipelines.map((value) => <option key={value}>{value}</option>)}</Select>
       <button className={`filter-toggle ${activeCount ? "active" : ""}`} onClick={() => setExpanded(!expanded)}><SlidersHorizontal size={16} />Boshqa filtrlar{activeCount > 0 && <span>{activeCount}</span>}</button>
       {(activeCount > 0 || filters.search) && <button className="clear-filter" onClick={() => setFilters(emptyFilters)}><X size={15} />Tozalash</button>}
@@ -475,10 +385,8 @@ function FiltersBar({ filters, setFilters, records, currentStages, mode = "cohor
   </div>;
 }
 
-function DashboardView({ records, salesRecords, previousRecords, previousSalesRecords, metricIds, onManager }: { records: DashboardRecord[]; salesRecords: DashboardRecord[]; previousRecords: DashboardRecord[]; previousSalesRecords: DashboardRecord[]; metricIds: string[]; onManager: (manager: ManagerRow) => void }) {
-  const previousMetrics = buildDashboardMetrics(previousRecords, previousSalesRecords);
-  const managers = buildManagers(records, salesRecords);
-  const metrics = buildDashboardMetrics(records, salesRecords);
+function DashboardView({ section, onManager }: { section: DashboardSection; onManager: (manager: ManagerRow) => void }) {
+  const { metrics, previousMetrics, managers, metricIds } = section;
   const selected = resolveHeadlineCardIds(metricIds);
   const money = (value: number) => `${Math.round(value).toLocaleString("uz-UZ")} ${metrics.money.currency || "UZS"}`;
   const number = (value: number | null) => (value === null ? "—" : Math.round(value).toLocaleString("uz-UZ"));
@@ -545,7 +453,8 @@ function DashboardView({ records, salesRecords, previousRecords, previousSalesRe
         return <KpiCard key={id} label={headlineCardLabel(id)} value={card.value} detail={card.detail} tone={card.tone} icon={card.icon} />;
       })}
     </section>
-    <section className="panel"><SectionHeader title="Menejerlar performance" subtitle="Qatorni bossangiz dashboard shu menejer bo‘yicha filtrlanadi" /><ManagerTable rows={managers} limit={8} onSelect={onManager} /></section>
+    {/* Only with `managers`: the server sends no manager rows otherwise. */}
+    {managers && <section className="panel"><SectionHeader title="Menejerlar performance" subtitle="Qatorni bossangiz dashboard shu menejer bo‘yicha filtrlanadi" /><ManagerTable rows={managers} limit={8} onSelect={onManager} /></section>}
   </>;
 }
 
@@ -559,13 +468,11 @@ const MONTHS_UZ = ["yanvar", "fevral", "mart", "aprel", "may", "iyun", "iyul", "
  *
  * Sales metrics are intentionally not offered here — see `lib/trend-series.ts`.
  */
-function TrendChart({ records, previousRecords, bounds, previousBounds }: { records: DashboardRecord[]; previousRecords: DashboardRecord[]; bounds: TrendBounds | null; previousBounds: TrendBounds | null }) {
+function TrendChart({ trend }: { trend: DashboardSection["trend"] }) {
   const [metric, setMetric] = useState<TrendMetricId>(DEFAULT_TREND_METRIC);
   const definition = trendMetric(metric);
-  const { points, hasPrevious } = useMemo(
-    () => buildTrendSeries(records, previousRecords, metric, bounds ?? undefined, previousBounds ?? undefined),
-    [records, previousRecords, metric, bounds, previousBounds],
-  );
+  // Every metric's series arrives precomputed, so switching metric is local.
+  const { points, hasPrevious } = trend[metric] ?? { points: [], hasPrevious: false };
   const format = (value: number | null) => {
     if (value === null) return "—";
     if (definition.unit === "minutes") return fmtMinutes(value);
@@ -627,13 +534,10 @@ function TrendChart({ records, previousRecords, bounds, previousBounds }: { reco
  * reconcile with the row that was clicked. The lower sections explain the top
  * rather than repeating it.
  */
-function ManagerDetailView({ manager, cohortRecords, salesRecords, currentStages, onBack }: { manager: ManagerRow; cohortRecords: DashboardRecord[]; salesRecords: DashboardRecord[]; currentStages: CurrentStageRecord[] | null; onBack: () => void }) {
-  const { cohort, metrics } = buildManagerProfile(cohortRecords, salesRecords, manager.id);
-  // Lead share reconciles to every manager bucket, including unattributed
-  // deals. Performance benchmarks compare real seller accounts only.
-  const team = useMemo(() => buildManagers(cohortRecords, salesRecords), [cohortRecords, salesRecords]);
-  const benchmarkTeam = team.filter((row) => row.id !== "unknown");
-  const teamLeads = team.reduce((sum, row) => sum + row.leads, 0);
+function ManagerDetailView({ section, currentStages, onBack }: { section: ManagerSection; currentStages: CurrentStageRecord[] | null; onBack: () => void }) {
+  // Profile, team lead total and team medians are computed on the server from
+  // the same helpers; only the finished figures arrive here.
+  const { manager, metrics, teamLeads, medians } = section;
 
   const money = (value: number) => `${Math.round(value).toLocaleString("uz-UZ")} ${metrics.money.currency || "UZS"}`;
   const number = (value: number | null) => (value === null ? "—" : Math.round(value).toLocaleString("uz-UZ"));
@@ -649,20 +553,21 @@ function ManagerDetailView({ manager, cohortRecords, salesRecords, currentStages
     const good = betterIsHigher ? delta >= 0 : delta <= 0;
     return `Jamoa medianasi ${Math.round(median)}% · ${sign}${delta} p.p.${good ? "" : ""}`;
   };
-  const withSql = (row: ManagerRow) => row.sql > 0;
-  const medianSqlToSale = teamMedian(benchmarkTeam, (row) => row.sqlToSale, withSql);
-  const medianSalesLostRate = teamMedian(benchmarkTeam, (row) => row.salesLostRate, withSql);
-  const medianProcessing = teamMedian(benchmarkTeam, (row) => row.avgProcessing, (row) => row.avgProcessing !== null);
-  const medianSla = teamMedian(benchmarkTeam, (row) => row.slaRate, (row) => row.slaDenominator > 0);
-  const medianCycle = teamMedian(benchmarkTeam, (row) => row.salesCycleHours, (row) => row.salesCycleHours !== null);
+  const medianSqlToSale = medians.sqlToSale;
+  const medianSalesLostRate = medians.salesLostRate;
+  const medianProcessing = medians.processing;
+  const medianSla = medians.sla;
+  const medianCycle = medians.cycle;
 
+  // Live workload comes from Stage Control's own data, present only for a
+  // caller who also holds `stages` — exactly as before.
   const active = currentStages?.filter((row) => (row.assignedManagerId || "unknown") === manager.id) ?? [];
   const stageRows = stageWorkloadRows(active);
-  const notRelevant = notRelevantRecords(cohort);
-  const salesLost = salesLostRecords(cohort);
-  const notRelevantReasons = reasonBreakdown(notRelevant);
-  const salesLostReasons = reasonBreakdown(salesLost);
-  const sources = sourceFunnelRows(cohort);
+  const notRelevant = { length: section.notRelevant.count };
+  const salesLost = { length: section.salesLost.count };
+  const notRelevantReasons = section.notRelevant.reasons;
+  const salesLostReasons = section.salesLost.reasons;
+  const sources = section.sources;
 
   return <><div className="page-title manager-detail-title"><div><button className="back-button" onClick={onBack}><ArrowLeft size={16} />Menejerlarga qaytish</button><p className="eyebrow">INDIVIDUAL PERFORMANCE</p><h1>{manager.name}</h1><p>Nima berildi → qanday saralandi → qanday natija berdi → nima ochiq qoldi.</p></div><div className="manager-identity"><span>{manager.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span><div><strong>{manager.name}</strong><small>{manager.id === "unknown" ? "Sotuvchi aniqlanmagan" : `Bitrix user #${manager.id}`}</small></div></div></div>
 
@@ -741,9 +646,8 @@ function ManagerDetailView({ manager, cohortRecords, salesRecords, currentStages
  * quality share one grid the user can switch between. The daily created-cohort
  * trend lives on the Main Dashboard and is deliberately not repeated here.
  */
-function LeadFlowView({ records }: { records: DashboardRecord[] }) {
+function LeadFlowView({ flow }: { flow: LeadFlow }) {
   const [metric, setMetric] = useState<LeadFlowMetricId>(DEFAULT_LEAD_FLOW_METRIC);
-  const flow = useMemo(() => buildLeadFlow(records), [records]);
   const definition = LEAD_FLOW_METRICS.find((entry) => entry.id === metric) ?? LEAD_FLOW_METRICS[0];
   const format = (value: number | null) => {
     if (value === null) return "—";
@@ -830,7 +734,7 @@ function LeadFlowView({ records }: { records: DashboardRecord[] }) {
   </>;
 }
 
-function DealsTable({ records }: { records: DashboardRecord[] }) {
+function DealsTable({ records }: { records: DealRow[] }) {
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<"createdAt" | "processingBusinessMinutes">("createdAt");
   const perPage = 20;
@@ -860,11 +764,6 @@ function DealsTable({ records }: { records: DashboardRecord[] }) {
   </section>;
 }
 
-function groupedCount<T>(records: T[], key: (row: T) => string) {
-  const counts = new Map<string, number>();
-  for (const row of records) { const label = key(row) || "Ko‘rsatilmagan"; counts.set(label, (counts.get(label) ?? 0) + 1); }
-  return [...counts.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value);
-}
 
 type QualitySortDirection = "asc" | "desc";
 type MarketingQualitySort = "default" | "name" | "classified" | "notRelevant" | "notRelevantRate" | "topReasonShare" | "missingReasons" | "reasonFillRate";
@@ -890,7 +789,7 @@ function QualityManagerName({ row, onSelect }: { row: { id: string; name: string
     {row.isUnknown ? <small>Atributsiya diagnostikasi</small> : row.smallSample ? <small className="sample-note">kam sample</small> : null}
   </button>;
 }
-function ReasonPanels({ marketing, sales }: { marketing: ReturnType<typeof buildQualityAnalytics>["marketingReasons"]; sales: ReturnType<typeof buildQualityAnalytics>["salesReasons"] }) {
+function ReasonPanels({ marketing, sales }: { marketing: QualityAnalytics["marketingReasons"]; sales: QualityAnalytics["salesReasons"] }) {
   return <section className="quality-reasons">
     <article className="panel"><SectionHeader title="Marketing sifatsizligi sabablari" subtitle="Faqat canonical Not Relevant · ulush Not Relevant’dan" />{marketing.length ? <BarList rows={marketing.map((row) => ({ label: row.reason, value: row.count, total: marketing.reduce((sum, entry) => sum + entry.count, 0), color: "#f59e0b" }))} /> : <div className="empty-table">Not Relevant sababi yo‘q.</div>}</article>
     <article className="panel"><SectionHeader title="Sales’da sotilmagan sabablar" subtitle="Faqat canonical Sales Lost · ulush Sotilmadi’dan" />{sales.length ? <BarList rows={sales.map((row) => ({ label: row.reason, value: row.count, total: sales.reduce((sum, entry) => sum + entry.count, 0), color: "#ef5962" }))} /> : <div className="empty-table">Sales Lost sababi yo‘q.</div>}</article>
@@ -951,8 +850,7 @@ function SalesQualityTable({ rows, onSelect }: { rows: SalesManagerDiagnostic[];
   </section>;
 }
 
-function QualityView({ records, onManager }: { records: DashboardRecord[]; onManager: (managerId: string) => void }) {
-  const analytics = useMemo(() => buildQualityAnalytics(records), [records]);
+function QualityView({ analytics, onManager }: { analytics: QualityAnalytics; onManager: (managerId: string) => void }) {
   const { summary } = analytics;
   const topMarketing = summary.topMarketingReason;
   const topSales = summary.topSalesReason;
@@ -1156,53 +1054,35 @@ function StageControlView({ records, historicalRecords, reconciliation, stageCat
     </section>}
   </>;
 }
-function CoverageNotice({ records, filters }: { records: DashboardRecord[]; filters: Filters }) {
+function CoverageNotice({ earliestDay, filters }: { earliestDay: string | null; filters: Filters }) {
   const bounds = rangeBounds(filters);
-  if (!bounds.from || !records.length) return null;
-  const earliest = records.reduce((min, row) => (row.createdAt && row.createdAt < min ? row.createdAt : min), records[0].createdAt);
-  if (!earliest) return null;
-  const earliestDay = earliest.slice(0, 10);
-  if (bounds.from >= earliestDay) return null;
+  if (!bounds.from || !earliestDay) return null;
   return <div className="notice warning page-notice"><AlertTriangle size={17} />
     <span>Tanlangan oraliq {bounds.from} dan boshlanadi, lekin sinxronlangan eng eski lead {earliestDay}. {bounds.from} — {earliestDay} oralig‘idagi kunlar bazada yo‘q, shuning uchun Leadlar, Saralangan va barcha sifat foizlari to‘liq emas.</span>
   </div>;
 }
 
-function ClassificationDiagnostics({ records }: { records: DashboardRecord[] }) {
-  const excluded = records.filter((row) => !isEligibleCohortDeal(row));
-  const eligible = records.filter(isEligibleCohortDeal);
-  const classified = eligible.filter(isClassifiedLead);
-  const unclassified = eligible.filter(isUnclassifiedLead);
-  const sql = eligible.filter((row) => row.qualified);
-  const notRelevant = eligible.filter((row) => row.lossReasonGroup === "MARKETING");
-  const preSql = eligible.filter(isPreSqlClosed);
-  const conflicts = countClassificationConflicts(eligible);
-  const stageRows = groupedCount(unclassified, (row) => row.stage || "Stage ko‘rsatilmagan");
-  const rows: { label: string; value: string; hint: string }[] = [
-    { label: "Xom cohort", value: String(records.length), hint: `${eligible.length} canonical + ${excluded.length} chiqarilgan` },
-    { label: "Leadlar", value: String(eligible.length), hint: "Sales kirishi + joriy loyiha funneli" },
-    { label: "Saralangan", value: String(classified.length), hint: `${sql.length} SQL + ${notRelevant.length} Not Relevant` },
-    { label: "Saralanmagan", value: String(unclassified.length), hint: "Aktiv pre-SQL + SQLgacha yopilgan" },
-    { label: "SQLgacha yopilgan", value: String(preSql.length), hint: "Sales’da yopilgan, SQL dalili yo‘q" },
-    { label: "Saralash qamrovi", value: `${pct(classified.length, eligible.length)}%`, hint: "Saralangan / Leadlar" },
-    { label: "Takroriy (xom cohort)", value: String(countDuplicates(records)), hint: "Canonical tashqarisidagi yozuvlar ham kiradi" },
-    { label: "Takroriy (Leadlar ichida)", value: String(countDuplicates(eligible)), hint: "Leadlar bilan solishtirish uchun" },
-  ];
+function ClassificationDiagnostics({ data }: { data: DiagnosticsData["classification"] }) {
+  const { rows, partitionMismatch, conflicts, unclassifiedCount, unclassifiedStages, preSqlCount, preSqlReasons } = data;
   return <section className="panel"><SectionHeader title="Lead saralash diagnostikasi" subtitle="Xom cohort = canonical Leadlar + chiqarilganlar · Saralangan = Sifatli + Sifatsiz" />
     <div className="quality-grid">{rows.map((row) => <div key={row.label}><span>{row.label}</span><strong>{row.value}</strong><small>{row.hint}</small></div>)}</div>
-    {records.length !== eligible.length + excluded.length && <div className="notice warning page-notice"><AlertTriangle size={17} /><span>Xom cohort canonical Leadlar + chiqarilgan yozuvlar yig‘indisiga teng emas.</span></div>}
+    {partitionMismatch && <div className="notice warning page-notice"><AlertTriangle size={17} /><span>Xom cohort canonical Leadlar + chiqarilgan yozuvlar yig‘indisiga teng emas.</span></div>}
     {conflicts > 0 && <div className="notice warning page-notice"><AlertTriangle size={17} /><span>{conflicts} ta yozuv bir vaqtda ham Sifatli, ham Sifatsiz deb belgilangan. Saralangan = Sifatli + Sifatsiz tenglamasi shu yozuvlarda buziladi.</span></div>}
-    {Boolean(unclassified.length) && <div className="table-wrap"><table className="data-table"><thead><tr><th>Saralanmagan stage</th><th>Soni</th><th>Saralanmaganlarning %</th></tr></thead><tbody>{stageRows.map((row) => <tr key={row.label}><td><strong>{row.label}</strong></td><td>{row.value}</td><td>{pct(row.value, unclassified.length)}%</td></tr>)}</tbody></table></div>}
-    {Boolean(preSql.length) && <><SectionHeader title="SQLgacha yopilgan sabablar" subtitle="Sales’da yopilgan, lekin SQL bosqichiga yetmagan — workflow signali, KPI emas" /><div className="table-wrap"><table className="data-table"><thead><tr><th>Sabab</th><th>Soni</th><th>%</th></tr></thead><tbody>{groupedCount(preSql, (row) => row.lossReason || "Sabab ko‘rsatilmagan").slice(0, 12).map((row) => <tr key={row.label}><td><strong>{row.label}</strong></td><td>{row.value}</td><td>{pct(row.value, preSql.length)}%</td></tr>)}</tbody></table></div></>}
+    {Boolean(unclassifiedCount) && <div className="table-wrap"><table className="data-table"><thead><tr><th>Saralanmagan stage</th><th>Soni</th><th>Saralanmaganlarning %</th></tr></thead><tbody>{unclassifiedStages.map((row) => <tr key={row.label}><td><strong>{row.label}</strong></td><td>{row.value}</td><td>{pct(row.value, unclassifiedCount)}%</td></tr>)}</tbody></table></div>}
+    {Boolean(preSqlCount) && <><SectionHeader title="SQLgacha yopilgan sabablar" subtitle="Sales’da yopilgan, lekin SQL bosqichiga yetmagan — workflow signali, KPI emas" /><div className="table-wrap"><table className="data-table"><thead><tr><th>Sabab</th><th>Soni</th><th>%</th></tr></thead><tbody>{preSqlReasons.map((row) => <tr key={row.label}><td><strong>{row.label}</strong></td><td>{row.value}</td><td>{pct(row.value, preSqlCount)}%</td></tr>)}</tbody></table></div></>}
   </section>;
 }
 
-function DiagnosticsView({ sync, records, reconciliation, settings }: { sync: SyncState; records: DashboardRecord[]; reconciliation: StageReconciliation | null; settings: DashboardSettings }) {
+/**
+ * Diagnostics renders one server-built view model (`/api/diagnostics`): sync
+ * health, data-quality counts, classification diagnostics and stage-config
+ * readiness. It no longer needs the record list or the CRM settings.
+ */
+function DiagnosticsView({ data, reconciliation }: { data: DiagnosticsData; reconciliation: StageReconciliation | null }) {
+  const { sync, readiness, conflicts } = data;
   // Calls are no longer a data source, so those API permissions are irrelevant.
   const permissions = [["Deal API", sync.permissions.deals], ["Stage history", sync.permissions.stageHistory], ["User API", sync.permissions.managers]];
-  const quality = summarizeDataQuality(records);
-  const readiness = stageConfigReadiness(settings);
-  const conflicts = stageConfigConflicts(settings);
+  const quality = data.dataQuality;
   const qualities: { label: string; hint: string; count: number }[] = [
     { label: "Sotuv vaqti aniqlanmagan", hint: "Sotuv hisoblangan, lekin aniq sotuv sanasi yo‘q", count: quality.wonWithoutSaleDate },
     { label: "Sotuvchi aniqlanmagan", hint: "Hech bir manbadan sotuvchi topilmadi", count: quality.missingSalesManager },
@@ -1216,9 +1096,9 @@ function DiagnosticsView({ sync, records, reconciliation, settings }: { sync: Sy
   ];
   return <><div className="page-title"><div><p className="eyebrow">ADMIN</p><h1>Diagnostika</h1><p>API ruxsatlari, call provider’lar va data quality nazorati.</p></div></div>
     <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Bitrix24 ruxsatlari" /><div className="permission-list">{permissions.map(([label, state]) => <div key={label}><StatusDot state={state ?? "error"} /><span>{label}</span><strong>{state === "ok" ? "Tayyor" : state === "warning" ? "Cheklangan" : "Tekshirish kerak"}</strong></div>)}</div></article>
-      <article className="panel"><SectionHeader title="Data counts" /><div className="diagnostic-counts"><div><span>Deal</span><strong>{sync.counts.deals ?? records.length}</strong></div><div><span>Stage history</span><strong>{sync.counts.stageHistory ?? 0}</strong></div></div></article>
+      <article className="panel"><SectionHeader title="Data counts" /><div className="diagnostic-counts"><div><span>Deal</span><strong>{sync.counts.deals ?? data.recordCount}</strong></div><div><span>Stage history</span><strong>{sync.counts.stageHistory ?? 0}</strong></div></div></article>
     </section>
-    <ClassificationDiagnostics records={records} />
+    <ClassificationDiagnostics data={data.classification} />
     <section className="panel"><SectionHeader title="Data quality" subtitle="O‘lchov uchun; bu sonlar hech qanday funnel ko‘rsatkichini o‘zgartirmaydi" /><div className="quality-grid">{qualities.map((row) => <div key={row.label}><span>{row.label}</span><strong>{row.count}</strong><small>{row.hint}</small></div>)}</div>
       {quality.wonWithoutSaleDate > 0 && <div className="notice warning page-notice"><AlertTriangle size={17} /><span>{quality.wonWithoutSaleDate} ta sotuv Cohort sotuvda hisoblanadi, lekin sotuv sanasi yo‘qligi uchun Davr sotuvi, summa, o‘rtacha chek va savdo sikliga kirmaydi.</span></div>}
     </section>
@@ -1362,7 +1242,7 @@ function SettingsView({ settings, syncing, lastSyncAt, onSave, onFullSync, onDir
   const [customFieldCount, setCustomFieldCount] = useState(0);
   const days = [[1, "Dushanba"], [2, "Seshanba"], [3, "Chorshanba"], [4, "Payshanba"], [5, "Juma"], [6, "Shanba"], [0, "Yakshanba"]] as const;
   useEffect(() => {
-    void fetch("/api/pipelines", { cache: "no-store" }).then(async (response) => {
+    void authFetch("/api/pipelines", { cache: "no-store" }).then(async (response) => {
       const payload = await response.json() as { pipelines?: PipelineOption[]; selectedIds?: string[]; reportingIds?: string[]; fields?: CrmFieldOption[]; customFieldCount?: number; detectedFailureReasonField?: string | null; stages?: PipelineStageOption[]; error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Pipeline’lar yuklanmadi");
       const options = Array.isArray(payload.pipelines) ? payload.pipelines : [];
@@ -1799,8 +1679,8 @@ type PageDraft = { id?: string; name: string; description: string; audience: str
 type WidgetDraft = { id?: string; pageId: string; widgetType: WidgetType; title: string; config: Record<string, unknown> };
 
 /** Renders one widget. Sales numbers come from the canonical metric helper. */
-function WidgetBlock({ widget, records, projects, updates, page, editing }: {
-  widget: PageWidget; records: DashboardRecord[]; projects: Project[]; updates: ProjectUpdate[];
+function WidgetBlock({ widget, salesKpi, salesKpiLocked, projects, updates, page, editing }: {
+  widget: PageWidget; salesKpi: Record<string, { label: string; value: string }>; salesKpiLocked: boolean; projects: Project[]; updates: ProjectUpdate[];
   page: Pick<CustomPage, "defaultRange" | "defaultFrom" | "defaultTo">; editing: boolean;
 }) {
   const pageRange = page.defaultRange;
@@ -1815,10 +1695,12 @@ function WidgetBlock({ widget, records, projects, updates, page, editing }: {
   if (widget.widgetType === "SALES_KPI") {
     const range = resolveWidgetRange(widget.config, pageRange);
     const custom = resolveWidgetCustomRange(widget.config, page);
-    const bounds = pageRangeBounds(range, new Date(), custom);
-    const populations = selectPeriodPopulations(records, bounds.from, bounds.to);
-    const metrics = buildDashboardMetrics(populations.cohort, populations.periodSales);
-    const resolved = resolveDashboardMetric(metrics, String(widget.config.metricId) as DashboardMetricId);
+    // Computed by /api/pages, and only for a caller who also holds `dashboard`.
+    const resolved = salesKpi[widget.id];
+    if (!resolved) {
+      return <KpiCard label={widget.title || "Sales KPI"} value="—"
+        detail={<>{salesKpiLocked ? "Dashboard ruxsati kerak" : pageRangeLabel(range, custom)}{badge}</>} icon={BarChart3} tone="slate" />;
+    }
     return <KpiCard label={widget.title || resolved.label} value={resolved.value}
       detail={<>{pageRangeLabel(range, custom)}{badge}</>} icon={BarChart3} tone="blue" />;
   }
@@ -2104,10 +1986,20 @@ function DashboardApp({ session }: { session: AuthSession }) {
   const canProjects = canAccess("projects");
   const canPages = canAccess("pages");
   const canSettings = canAccess("settings");
-  const accessRef = useRef({ hasSalesAccess, canStages, canProjects, canPages });
+  const accessRef = useRef({ hasSalesAccess, canStages, canProjects, canPages, canSettings });
+  const canManagers = canAccess("managers");
+  const canDeals = canAccess("deals");
   const [loading, setLoading] = useState(true);
   const [configured, setConfigured] = useState(false);
-  const [records, setRecords] = useState<DashboardRecord[]>([]);
+  // What the setup screen and the re-sync banner need, as two facts from
+  // /api/bootstrap (Settings only) instead of the whole record list.
+  const [recordCount, setRecordCount] = useState(0);
+  const [legacyData, setLegacyData] = useState(false);
+  // Bumped whenever the dataset may have changed, so open sections refetch.
+  const [salesReload, setSalesReload] = useState(0);
+  const [stageSettings, setStageSettings] = useState<Partial<DashboardSettings> | null>(null);
+  const [salesKpi, setSalesKpi] = useState<Record<string, { label: string; value: string }>>({});
+  const [salesKpiLocked, setSalesKpiLocked] = useState(false);
   // Stage history is fetched the first time Stage Control is opened, never on
   // the dashboard's initial load.
   const [stageFunnelRecords, setStageFunnelRecords] = useState<StageFunnelRecord[]>([]);
@@ -2135,7 +2027,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
   // never painted first. The API rejects the data calls regardless; this only
   // keeps the UI honest.
   const view: View = canAccessView(authUser, requestedView) ? requestedView : defaultView;
-  const [selectedManager, setSelectedManager] = useState<ManagerRow | null>(null);
+  const [selectedManager, setSelectedManager] = useState<{ id: string; name: string } | null>(null);
   const [filters, setFilters] = useState<Filters>(emptyFilters);
   const [refreshing, setRefreshing] = useState(false);
   const [syncPipelineId, setSyncPipelineId] = useState("");
@@ -2171,10 +2063,12 @@ function DashboardApp({ session }: { session: AuthSession }) {
     if (!accessRef.current.canStages) return;
     setCurrentStageLoading(true); setCurrentStageError(null);
     try {
-      const response = await fetch("/api/current-stages", { cache: "no-store" });
-      const payload = await response.json() as { records?: CurrentStageRecord[]; reconciliation?: StageReconciliation | null; stageCatalog?: PipelineStageOption[]; truncated?: boolean; error?: string };
+      const response = await authFetch("/api/current-stages", { cache: "no-store" });
+      const payload = await response.json() as { records?: CurrentStageRecord[]; reconciliation?: StageReconciliation | null; stageCatalog?: PipelineStageOption[]; truncated?: boolean; stageSettings?: Partial<DashboardSettings>; error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Joriy stage’lar yuklanmadi");
       setCurrentStageRecords(payload.records ?? []); setStageReconciliation(payload.reconciliation ?? null);
+      // Funnel names and stage semantics only — not the CRM settings.
+      setStageSettings(payload.stageSettings ?? null);
       // Bitrix pagination truncation makes the live counts themselves partial,
       // so the signal must survive all the way into the trust banner.
       setStageCatalog(payload.stageCatalog ?? []); setStageSnapshotTruncated(Boolean(payload.truncated));
@@ -2190,7 +2084,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
    */
   const runStageFunnelFetch = useCallback(async () => {
     try {
-      const response = await fetch("/api/stage-funnel", { cache: "no-store" });
+      const response = await authFetch("/api/stage-funnel", { cache: "no-store" });
       const payload = await response.json() as { records?: StageFunnelRecord[]; error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Stage tarixi yuklanmadi");
       setStageFunnelRecords(payload.records ?? []);
@@ -2221,7 +2115,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
   const loadProjects = useCallback(async () => {
     if (!accessRef.current.canProjects) return;
     try {
-      const response = await fetch("/api/projects", { cache: "no-store" });
+      const response = await authFetch("/api/projects", { cache: "no-store" });
       const payload = await response.json() as { projects?: Project[]; updates?: ProjectUpdate[]; error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Loyihalar yuklanmadi");
       setProjects(payload.projects ?? []); setProjectUpdateRows(payload.updates ?? []);
@@ -2231,7 +2125,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
   async function projectAction(body: Record<string, unknown>) {
     setProjectBusy(true); setProjectError(null);
     try {
-      const response = await fetch("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const response = await authFetch("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const payload = await response.json() as { error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Amal bajarilmadi");
       await loadProjects();
@@ -2243,17 +2137,19 @@ function DashboardApp({ session }: { session: AuthSession }) {
   const loadPages = useCallback(async () => {
     if (!accessRef.current.canPages) return;
     try {
-      const response = await fetch("/api/pages", { cache: "no-store" });
-      const payload = await response.json() as { pages?: CustomPage[]; widgets?: PageWidget[]; error?: string };
+      const response = await authFetch("/api/pages", { cache: "no-store" });
+      const payload = await response.json() as { pages?: CustomPage[]; widgets?: PageWidget[]; salesKpi?: Record<string, { label: string; value: string }>; salesKpiLocked?: boolean; error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Sahifalar yuklanmadi");
       setPages(payload.pages ?? []); setWidgets(payload.widgets ?? []);
+      // SALES_KPI values are computed by the server — only with `dashboard`.
+      setSalesKpi(payload.salesKpi ?? {}); setSalesKpiLocked(payload.salesKpiLocked === true);
     } catch (caught) { setProjectError(caught instanceof Error ? caught.message : "Sahifalar yuklanmadi"); }
   }, [setProjectError]);
 
   const loadShares = useCallback(async () => {
     if (!accessRef.current.canPages) return;
     try {
-      const response = await fetch("/api/shares", { cache: "no-store" });
+      const response = await authFetch("/api/shares", { cache: "no-store" });
       const payload = await response.json() as { shares?: PageShare[]; error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Havolalar yuklanmadi");
       setShares(payload.shares ?? []);
@@ -2264,7 +2160,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
   async function shareAction(body: Record<string, unknown>) {
     setProjectBusy(true); setProjectError(null);
     try {
-      const response = await fetch("/api/shares", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const response = await authFetch("/api/shares", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const payload = await response.json() as { url?: string; error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Amal bajarilmadi");
       await loadShares();
@@ -2276,7 +2172,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
   async function pageAction(body: Record<string, unknown>) {
     setProjectBusy(true); setProjectError(null);
     try {
-      const response = await fetch("/api/pages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const response = await authFetch("/api/pages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const payload = await response.json() as { id?: string; error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Amal bajarilmadi");
       await loadPages();
@@ -2288,23 +2184,20 @@ function DashboardApp({ session }: { session: AuthSession }) {
   const load = useCallback(async () => {
     setLoadError(null);
     try {
-      const bootstrapResponse = await fetch("/api/bootstrap", { cache: "no-store" });
-      const bootstrap = await bootstrapResponse.json() as { configured: boolean; settings: DashboardSettings; sync: SyncState; providers: ProviderDiagnostic[]; error?: string };
-      if (!bootstrapResponse.ok) throw new Error(bootstrap.error ?? "Dashboard yuklanmadi");
-      setConfigured(bootstrap.configured); setSettings(normalizeSettings(bootstrap.settings)); setSync(bootstrap.sync);
-      if (bootstrap.configured && accessRef.current.hasSalesAccess) {
-        const response = await fetch("/api/dashboard", { cache: "no-store" });
-        const payload = await response.json() as { records: DashboardRecord[]; settings: DashboardSettings; sync: SyncState; providers: ProviderDiagnostic[]; error?: string };
-        if (!response.ok) throw new Error(payload.error ?? "Dashboard ma’lumotlari yuklanmadi");
-        const selectedOrigins = new Set(payload.settings.selectedPipelineIds.map(String));
-        const selectedProjectCategories = new Set([...payload.settings.selectedPipelineIds, ...payload.settings.postSalePipelineIds].map(String));
-        const projectRecords = (payload.records ?? []).map(hydrateRecord).filter((row) => !selectedOrigins.size || selectedOrigins.has(String(row.originCategoryId)) || selectedProjectCategories.has(String(row.categoryId)));
-        setRecords(markDuplicates(withLiveSlaState(projectRecords, normalizeSettings(payload.settings)))); setSettings(normalizeSettings(payload.settings)); setSync(payload.sync);
-        // The analytics dataset was just replaced, so any cached Stage Control
-        // history now describes an older one. Deliberately here and nowhere
-        // else: project/page/share/current-stage reloads are unrelated.
-        invalidateStageFunnel();
+      // Operational configuration belongs to `settings`. Every other section
+      // brings its own data, so a Finance-only or Projects-only member never
+      // asks for CRM settings or sync state at all.
+      if (accessRef.current.canSettings) {
+        const bootstrapResponse = await authFetch("/api/bootstrap", { cache: "no-store" });
+        const bootstrap = await bootstrapResponse.json() as { configured: boolean; settings: DashboardSettings; sync: SyncState; recordCount?: number; legacyData?: boolean; error?: string };
+        if (!bootstrapResponse.ok) throw new Error(bootstrap.error ?? "Dashboard yuklanmadi");
+        setConfigured(bootstrap.configured); setSettings(normalizeSettings(bootstrap.settings)); setSync(bootstrap.sync);
+        setRecordCount(Number(bootstrap.recordCount ?? 0)); setLegacyData(bootstrap.legacyData === true);
       }
+      // The dataset may have changed, so open Sales sections refetch and any
+      // cached Stage Control history is marked stale.
+      if (accessRef.current.hasSalesAccess) setSalesReload((token) => token + 1);
+      if (accessRef.current.canStages) invalidateStageFunnel();
       if (accessRef.current.canStages) void loadCurrentStages();
       if (accessRef.current.canProjects) void loadProjects();
       if (accessRef.current.canPages) { void loadPages(); void loadShares(); }
@@ -2325,41 +2218,40 @@ function DashboardApp({ session }: { session: AuthSession }) {
     return () => window.clearInterval(interval);
   }, [configured, loadCurrentStages, canStages]);
 
-  const { cohortFiltered, wonFiltered, previousCohortFiltered, previousWonFiltered, trendBounds, previousTrendBounds, detailFiltered } = useMemo(() => {
-    const bounds = rangeBounds(filters);
-    const from = bounds.from ? boundsFromKeys({ from: bounds.from, to: bounds.from }).from : -Infinity;
-    const to = bounds.to ? boundsFromKeys({ from: bounds.to, to: bounds.to }).to : Infinity;
-    // One predicate for both populations below, so the cohort and the period
-    // sales can never diverge on manager/source. Historical seller identity is
-    // salesManagerId only — see lib/record-filters.ts.
-    const base = filterHistoricalRecords(records, filters);
-    const cohort = base.filter((row) => { const created = new Date(row.createdAt).getTime(); return created >= from && created <= to; });
-    const won = base.filter((row) => row.salesStatus === "WON" && row.wonAt && new Date(row.wonAt).getTime() >= from && new Date(row.wonAt).getTime() <= to);
-    const span = Number.isFinite(from) && Number.isFinite(to) ? Math.max(86_400_000, to - from + 1) : 0;
-    const previousTo = from - 1; const previousFrom = previousTo - span + 1;
-    const previousCohort = span ? base.filter((row) => { const created = new Date(row.createdAt).getTime(); return created >= previousFrom && created <= previousTo; }) : [];
-    const previousWon = span ? base.filter((row) => row.salesStatus === "WON" && row.wonAt && new Date(row.wonAt).getTime() >= previousFrom && new Date(row.wonAt).getTime() <= previousTo) : [];
-    // The Trend needs the period itself, not just the records in it: its
-    // calendar axis must include days on which nobody created a lead.
-    const trendBounds = bounds.from && bounds.to ? { from: bounds.from, to: bounds.to } : null;
-    const previousTrendBounds = span && trendBounds
-      ? { from: localDateKey(new Date(previousFrom)), to: localDateKey(new Date(previousTo)) }
-      : null;
-    return { cohortFiltered: cohort, wonFiltered: won, previousCohortFiltered: previousCohort, previousWonFiltered: previousWon, trendBounds, previousTrendBounds, detailFiltered: dedupeByDealId(cohort, won) };
-  }, [records, filters]);
+  // Each Sales view asks its own endpoint, with the permission-gated filters
+  // stripped for a caller who lacks them. Only the open view fetches.
+  const salesQuery = salesQueryString(filters, { managers: canManagers, search: canDeals });
+  const dashboardSection = useSalesSection<DashboardSection>(view === "dashboard" ? "dashboard" : null, salesQuery, salesReload);
+  const managersSection = useSalesSection<ManagersSection>(view === "managers" ? "managers" : null, salesQuery, salesReload);
+  const managerSection = useSalesSection<ManagerSection>(view === "managerDetail" && selectedManager ? "manager" : null,
+    selectedManager ? `${salesQuery}&managerId=${encodeURIComponent(selectedManager.id)}` : salesQuery, salesReload);
+  const leadFlowSection = useSalesSection<LeadFlowSection>(view === "leadFlow" ? "lead-flow" : null, salesQuery, salesReload);
+  const qualitySection = useSalesSection<QualitySection>(view === "quality" ? "quality" : null, salesQuery, salesReload);
+  const dealsSection = useSalesSection<DealsSection>(view === "deals" ? "deals" : null, salesQuery, salesReload);
+  const diagnostics = useSectionFetch<DiagnosticsData>(view === "diagnostics" ? "/api/diagnostics" : null, salesReload);
+  const activeSales = ({ dashboard: dashboardSection, managers: managersSection, managerDetail: managerSection, leadFlow: leadFlowSection, quality: qualitySection, deals: dealsSection } as Partial<Record<View, SectionState<SectionCommon>>>)[view] ?? null;
+  const salesOptions = activeSales?.data?.options ?? null;
 
-  // The Managers page and Quality drill-down open the same canonical row
-  // object; Quality does not build a parallel manager/profile model.
-  const managerRows = useMemo(() => buildManagers(cohortFiltered, wonFiltered), [cohortFiltered, wonFiltered]);
+  /**
+   * A 403 on the open section means the permissions this page was rendered
+   * with may be stale — an admin changed them, or forced a password change.
+   * Re-read `/api/auth/me` once for this view and permission set: the shell
+   * then re-resolves the allowed views (or shows the password gate). Never a
+   * sign-out, and never a loop: the same view with the same permissions is not
+   * refreshed twice. Filter refusals are not permission changes and are skipped.
+   */
+  const refreshedFor = useRef<string | null>(null);
+  const forbiddenState = activeSales ?? (view === "diagnostics" ? diagnostics : null);
+  const forbiddenKey = forbiddenState?.forbidden && forbiddenState.code !== "FILTER_FORBIDDEN"
+    ? `${view}|${authUser.role}|${authUser.permissions.join(",")}` : null;
+  const refreshSession = session.refresh;
+  useEffect(() => {
+    if (!forbiddenKey || refreshedFor.current === forbiddenKey) return;
+    refreshedFor.current = forbiddenKey;
+    refreshSession();
+  }, [forbiddenKey, refreshSession]);
 
-  const cachedCurrentStages = useMemo<CurrentStageRecord[]>(() => records.filter((row) => row.salesStatus === "ACTIVE" && row.operationalPipeline).map((row) => ({
-    dealId: row.dealId, title: row.title, createdAt: row.createdAt,
-    assignedManagerId: row.assignedManagerId, assignedManager: row.assignedManager,
-    categoryId: row.categoryId, pipeline: row.pipeline, stageId: row.stageId, stage: row.stage,
-    stageEnteredAt: row.stageEnteredAt, stageAgeHours: row.stageAgeHours, stageLimitHours: row.stageLimitHours,
-    stageOverdue: row.stageOverdue, bitrixUrl: row.bitrixUrl,
-  })), [records]);
-  const effectiveCurrentStages = currentStageRecords ?? cachedCurrentStages;
+  const effectiveCurrentStages = useMemo(() => currentStageRecords ?? [], [currentStageRecords]);
   const filteredCurrentStages = useMemo(
     () => filterCurrentStageRecords(effectiveCurrentStages, filters),
     [effectiveCurrentStages, filters],
@@ -2378,7 +2270,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
    */
   async function recoverStartedSync(pipelineId: unknown) {
     try {
-      const response = await fetch("/api/bootstrap", { cache: "no-store" });
+      const response = await authFetch("/api/bootstrap", { cache: "no-store" });
       if (!response.ok || !/\bjson\b/i.test(response.headers.get("content-type") ?? "")) return null;
       const payload = await response.json() as { sync?: SyncState };
       const decision = classifyStartRecovery({
@@ -2405,7 +2297,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
     for (let attempt = 0; ; attempt += 1) {
       let outcome;
       try {
-        const response = await fetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        const response = await authFetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
         outcome = classifySyncResponse<SyncState & { error?: string }>({
           ok: response.ok, status: response.status,
           contentType: response.headers.get("content-type"), body: await response.text(),
@@ -2452,7 +2344,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
     }
   }
   async function saveSettings(next: DashboardSettings) {
-    const response = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next) });
+    const response = await authFetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next) });
     const payload = await response.json() as { settings?: DashboardSettings; error?: string };
     if (!response.ok || !payload.settings) throw new Error(payload.error ?? "Sozlamalar saqlanmadi"); setSettings(normalizeSettings(payload.settings)); void loadCurrentStages();
   }
@@ -2481,11 +2373,13 @@ function DashboardApp({ session }: { session: AuthSession }) {
   }, [canSettings, configured, settings, sync.status]);
 
   if (loading) return <Skeleton />;
-  if (hasSalesAccess && (!configured || (configured && !records.length && sync.status !== "success"))) {
-    if (!canSettings) return <div className="fatal-error"><ShieldCheck /><p>Sales ma’lumotlari hali tayyor emas. Administrator Sync’ni ishga tushirishi kerak.</p></div>;
+  // Setup belongs to whoever can run Sync. A Sales member without `settings`
+  // sees the not-ready state inside the Sales section instead, and every other
+  // section stays usable meanwhile.
+  if (hasSalesAccess && canSettings && (!configured || (configured && !recordCount && sync.status !== "success"))) {
     return <SetupScreen configured={configured} sync={sync} syncing={refreshing} externalError={loadError} onStart={() => void syncLoop("start", true, 30, settings?.selectedPipelineIds[0])} onPause={() => void pauseCurrentSync()} onResume={() => void syncLoop("resume")} />;
   }
-  if (!settings) return <div className="fatal-error"><XCircle /><p>Sozlamalar yuklanmadi.</p></div>;
+  if (canSettings && !settings) return <div className="fatal-error"><XCircle /><p>Sozlamalar yuklanmadi.</p></div>;
   const title = view === "managerDetail" ? selectedManager?.name ?? "Menejer" : allowedNavItems.find((item) => item.id === view)?.label ?? "Dashboard";
   const openProject = projects.find((project) => project.id === openProjectId) ?? null;
   const projectStatusSuggestions = statusOptions(projects, projectUpdateRows);
@@ -2504,15 +2398,18 @@ function DashboardApp({ session }: { session: AuthSession }) {
 
   const openPage = pages.find((page) => page.id === openPageId) ?? null;
   const openPageWidgets = openPage ? pageWidgets(widgets, openPage.id) : [];
-  const hasLegacyData = records.some((record) => record.analyticsVersion < ANALYTICS_VERSION);
-  const syncOptions = settings.selectedPipelineIds.map((id, index) => ({ id, name: settings.selectedPipelineNames[index] ?? `Sales funnel #${id}` }));
+  const hasLegacyData = legacyData;
+  const syncOptions = settings ? settings.selectedPipelineIds.map((id, index) => ({ id, name: settings.selectedPipelineNames[index] ?? `Sales funnel #${id}` })) : [];
+  // Data freshness: from sync state for Settings, otherwise from whichever
+  // section is open. Shown only when known — a Finance-only member has none.
+  const lastSyncAt = sync.lastSyncAt ?? activeSales?.data?.dataAsOf ?? diagnostics.data?.sync.lastSyncAt ?? null;
   const activeSyncPipelineId = syncOptions.some((pipeline) => pipeline.id === syncPipelineId) ? syncPipelineId : syncOptions[0]?.id ?? "";
 
   return <div className="app-shell">
     <aside className={menuOpen ? "open" : ""}>
       <div className="brand"><div className="brand-mark">B24</div><div><strong>Deal Processing</strong><small>Sales analytics</small></div><button className="mobile-close" onClick={() => setMenuOpen(false)}><X size={18} /></button></div>
       <nav>{allowedNavItems.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => { if (item.id === "stages") setFilters((current) => ({ ...current, period: "", sla: "", processing: "" })); changeView(item.id); setMenuOpen(false); }}><item.icon size={18} /><span>{item.label}</span>{item.id === "diagnostics" && sync.permissions.stageHistory === "error" && <i />}</button>)}</nav>
-      <div className="sidebar-status"><div><span className="live-dot" /><strong>Bitrix24 ulangan</strong></div><small>Oxirgi sync</small><p>{fmtDate(sync.lastSyncAt)}</p></div>
+      {lastSyncAt && <div className="sidebar-status"><div><span className="live-dot" /><strong>Bitrix24 ulangan</strong></div><small>Oxirgi sync</small><p>{fmtDate(lastSyncAt)}</p></div>}
       <div className="sidebar-foot"><ShieldCheck size={16} /><span>Webhook server secret’da himoyalangan</span></div>
     </aside>
     {menuOpen && <button className="sidebar-backdrop" aria-label="Menyuni yopish" onClick={() => setMenuOpen(false)} />}
@@ -2522,18 +2419,22 @@ function DashboardApp({ session }: { session: AuthSession }) {
         {loadError && <div className="notice error page-notice"><XCircle size={18} />{loadError}<button onClick={() => setLoadError(null)}><X size={14} /></button></div>}
         {canSettings && hasLegacyData && sync.status !== "running" && <div className="notice warning page-notice"><AlertTriangle size={18} /><span>Post-sale observer seller dalilini yuklash uchun Sozlamalarda CRM field’larini tekshirib, <strong>“To‘liq qayta sync”</strong>ni bosing. Analytics Backfill observer’ni Bitrix’dan yuklamaydi.</span><button onClick={() => setView("settings")}>Sozlamalar</button></div>}
         {canSettings && ["running", "paused", "error"].includes(sync.status) && <SyncProgress sync={sync} busy={refreshing} onPause={() => void pauseCurrentSync()} onResume={() => void syncLoop("resume")} />}
-        {isSalesView(view) && <FiltersBar filters={filters} setFilters={setFilters} records={records} currentStages={effectiveCurrentStages} mode={view === "stages" ? "current" : "cohort"} />}
-        {isSalesView(view) && <CoverageNotice records={records} filters={filters} />}
+        {isSalesView(view) && <FiltersBar filters={filters} setFilters={setFilters} options={salesOptions} currentStages={effectiveCurrentStages}
+          historySources={stageFunnelRecords.map((row) => row.source)} mode={view === "stages" ? "current" : "cohort"} canManagers={canManagers} canSearch={canDeals || view === "stages"} />}
+        {isSalesView(view) && view !== "stages" && <CoverageNotice earliestDay={activeSales?.data?.coverageStart ?? null} filters={filters} />}
+        {isSalesView(view) && view !== "stages" && activeSales && <SectionStatus state={activeSales} />}
         <ViewErrorBoundary onBack={() => setView(defaultView)}>
-        {view === "dashboard" && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{cohortFiltered.filter(isEligibleCohortDeal).length} Leadlar</strong></div></div><DashboardView records={cohortFiltered} salesRecords={wonFiltered} previousRecords={previousCohortFiltered} previousSalesRecords={previousWonFiltered} metricIds={settings.dashboardMetricIds} onManager={(manager) => { if (canAccess("managers")) { setSelectedManager(manager); setView("managerDetail"); } }} /><TrendChart records={cohortFiltered} previousRecords={previousCohortFiltered} bounds={trendBounds} previousBounds={previousTrendBounds} /></>}
-        {view === "managers" && <><div className="page-title"><div><p className="eyebrow">TEAM PERFORMANCE</p><h1>Menejerlar</h1><p>Lead, sifatsizlik, sales loss, sotuv soni va Opportunity kesimida.</p></div></div><section className="panel"><SectionHeader title="Menejerlar reytingi" subtitle="Lead va cohort konversiya — yaratilgan sana; davr sotuv — Oplata sanasi bo‘yicha" /><ManagerTable rows={managerRows} onSelect={(manager) => { setSelectedManager(manager); setView("managerDetail"); }} /></section></>}
-        {view === "managerDetail" && selectedManager && <ManagerDetailView manager={selectedManager} cohortRecords={cohortFiltered} salesRecords={wonFiltered} currentStages={currentStageRecords} onBack={() => setView("managers")} />}
-        {view === "leadFlow" && <LeadFlowView records={cohortFiltered} />}
-        {view === "quality" && <QualityView records={cohortFiltered} onManager={(managerId) => {
-          const manager = managerRows.find((row) => row.id === managerId);
-          if (manager && canAccess("managers")) { setSelectedManager(manager); setView("managerDetail"); }
+        {view === "dashboard" && dashboardSection.data && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{dashboardSection.data.leadCount} Leadlar</strong></div></div><DashboardView section={dashboardSection.data} onManager={(manager) => { if (canManagers) { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); } }} /><TrendChart trend={dashboardSection.data.trend} /></>}
+        {view === "managers" && managersSection.data && <><div className="page-title"><div><p className="eyebrow">TEAM PERFORMANCE</p><h1>Menejerlar</h1><p>Lead, sifatsizlik, sales loss, sotuv soni va Opportunity kesimida.</p></div></div><section className="panel"><SectionHeader title="Menejerlar reytingi" subtitle="Lead va cohort konversiya — yaratilgan sana; davr sotuv — Oplata sanasi bo‘yicha" /><ManagerTable rows={managersSection.data.managers} onSelect={(manager) => { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); }} /></section></>}
+        {view === "managerDetail" && selectedManager && managerSection.data && <ManagerDetailView section={managerSection.data} currentStages={currentStageRecords} onBack={() => setView("managers")} />}
+        {view === "leadFlow" && leadFlowSection.data && <LeadFlowView flow={leadFlowSection.data.flow} />}
+        {view === "quality" && qualitySection.data && <QualityView analytics={qualitySection.data.analytics} onManager={(managerId) => {
+          // The drill-down opens the Managers profile, so it needs `managers`.
+          if (!canManagers) return;
+          const row = [...qualitySection.data!.analytics.marketingManagers, ...qualitySection.data!.analytics.salesManagers].find((entry) => entry.id === managerId);
+          setSelectedManager({ id: managerId, name: row?.name ?? "Aniqlanmagan" }); setView("managerDetail");
         }} />}
-        {view === "stages" && <StageControlView records={filteredCurrentStages} historicalRecords={stageHistoricalRecords} reconciliation={stageReconciliation} stageCatalog={stageCatalog} truncated={stageSnapshotTruncated} settings={settings} loading={currentStageLoading} error={currentStageError} onRefresh={() => void loadCurrentStages()} funnelStatus={stageFunnelStatus} onRetryFunnel={() => dispatchStageFunnel({ type: "RETRY" })} />}
+        {view === "stages" && <StageControlView records={filteredCurrentStages} historicalRecords={stageHistoricalRecords} reconciliation={stageReconciliation} stageCatalog={stageCatalog} truncated={stageSnapshotTruncated} settings={(stageSettings ?? settings) as DashboardSettings | null} loading={currentStageLoading} error={currentStageError} onRefresh={() => void loadCurrentStages()} funnelStatus={stageFunnelStatus} onRetryFunnel={() => dispatchStageFunnel({ type: "RETRY" })} />}
         {view === "projects" && <ProjectsView projects={projects} updates={projectUpdateRows} filters={projectFilters} setFilters={setProjectFilters} busy={projectBusy}
           onOpen={(project) => { setOpenProjectId(project.id); setView("projectDetail"); }}
           onNew={() => setProjectDraft({ name: "", description: "", status: "", deadline: "" })} />}
@@ -2581,7 +2482,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
               onMove={(direction) => void pageAction({ action: "moveWidget", id: widget.id, pageId: openPage.id, direction })}
               onEdit={() => setWidgetDraft({ id: widget.id, pageId: openPage.id, widgetType: widget.widgetType, title: widget.title, config: widget.config })}
               onDelete={() => { if (window.confirm(`"${widget.title || widget.widgetType}" widgeti o‘chirilsinmi?`)) void pageAction({ action: "deleteWidget", id: widget.id, pageId: openPage.id }); }}>
-              <WidgetBlock widget={widget} records={records} projects={projects} updates={projectUpdateRows} page={openPage} editing={pageEditing} />
+              <WidgetBlock widget={widget} salesKpi={salesKpi} salesKpiLocked={salesKpiLocked} projects={projects} updates={projectUpdateRows} page={openPage} editing={pageEditing} />
             </WidgetShell>)}
             {!openPageWidgets.length && <div className="empty-state builder-empty"><strong>Sahifada hali widget yo‘q</strong>
               <p>{pageEditing ? "Chap tomondagi bloklardan birini qo‘shing." : "Tahrirlash rejimiga o‘ting va blok qo‘shing."}</p>
@@ -2594,11 +2495,12 @@ function DashboardApp({ session }: { session: AuthSession }) {
           </div>
         </>}
 
-        {view === "deals" && <><div className="page-title"><div><p className="eyebrow">DETAIL REPORT</p><h1>Deal’lar</h1><p>Sotuv holati, sotuvchi attribution’i, stage yoshi va processing yagona jadvalda.</p></div></div><DealsTable records={detailFiltered} /></>}
-        {view === "diagnostics" && <DiagnosticsView sync={sync} records={records} reconciliation={stageReconciliation} settings={settings} />}
+        {view === "deals" && dealsSection.data && <><div className="page-title"><div><p className="eyebrow">DETAIL REPORT</p><h1>Deal’lar</h1><p>Sotuv holati, sotuvchi attribution’i, stage yoshi va processing yagona jadvalda.</p></div></div><DealsTable records={dealsSection.data.deals} /></>}
+        {view === "diagnostics" && <SectionStatus state={diagnostics} />}
+        {view === "diagnostics" && diagnostics.data && <DiagnosticsView data={diagnostics.data} reconciliation={stageReconciliation} />}
         {view === "finance" && <FinanceView />}
         {view === "users" && <UsersScreen adapter={session.adapter} selfId={session.user.id} onSelfChanged={session.refresh} onSessionLost={session.sessionLost} />}
-        {view === "settings" && <SettingsView settings={settings} syncing={refreshing || sync.status === "running"} lastSyncAt={sync.lastSyncAt} onSave={saveSettings} onFullSync={saveAndFullSync} onDirtyChange={setSettingsDirty} />}
+        {view === "settings" && settings && <SettingsView settings={settings} syncing={refreshing || sync.status === "running"} lastSyncAt={sync.lastSyncAt} onSave={saveSettings} onFullSync={saveAndFullSync} onDirtyChange={setSettingsDirty} />}
         </ViewErrorBoundary>
         <Drawer open={Boolean(pageDraft)} title={pageDraft?.id ? "Sahifa sozlamasi" : "Yangi sahifa"}
           context={pageDraft?.id ? pageDraft.name : "Auditoriya uchun dashboard"}

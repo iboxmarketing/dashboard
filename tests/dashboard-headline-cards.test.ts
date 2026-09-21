@@ -35,7 +35,7 @@ const M = buildDashboardMetrics(COHORT, WON);
 test("A: the SQL card shows SQL / Saralangan, never Lead → SQL", () => {
   assert.equal(M.counts.sql, 3, "count unchanged: qualified includes WON and Sales Lost");
   assert.equal(M.rates.quality_accepted_rate, Math.round(M.counts.sql / M.counts.classified_leads * 100));
-  const client = code("../app/dashboard-client.tsx");
+  const client = code("../app/dashboard-client.tsx") + "\n" + code("../lib/sales-sections.ts");
   const card = client.slice(client.indexOf("    sql: {"), client.indexOf("    not_relevant: {"));
   assert.match(card, /quality_accepted_rate/, "quality rate is the secondary figure");
   assert.doesNotMatch(card, /lead_to_sql/, "the funnel rate must not sit on the SQL card");
@@ -45,7 +45,7 @@ test("A: the SQL card shows SQL / Saralangan, never Lead → SQL", () => {
 test("B: the Not Relevant card divides by Saralangan, not by Leadlar", () => {
   assert.equal(M.counts.not_relevant, 1);
   assert.equal(M.rates.low_quality_rate, Math.round(M.counts.not_relevant / M.counts.classified_leads * 100));
-  const client = code("../app/dashboard-client.tsx");
+  const client = code("../app/dashboard-client.tsx") + "\n" + code("../lib/sales-sections.ts");
   const card = client.slice(client.indexOf("    not_relevant: {"), client.indexOf("    sales_lost: {"));
   assert.match(card, /low_quality_rate/);
   assert.doesNotMatch(card, /not_relevant_of_leads/, "the all-leads share must not be a headline figure");
@@ -55,7 +55,7 @@ test("C: the Saralangan card carries coverage and the unclassified count", () =>
   assert.equal(M.counts.classified_leads, 4);
   assert.equal(M.counts.unclassified_leads, 1);
   assert.equal(M.rates.classification_coverage, Math.round(4 / 5 * 100));
-  const client = code("../app/dashboard-client.tsx");
+  const client = code("../app/dashboard-client.tsx") + "\n" + code("../lib/sales-sections.ts");
   const card = client.slice(client.indexOf("    classified_leads: {"), client.indexOf("    sql: {"));
   assert.match(card, /classification_coverage/);
   assert.match(card, /unclassified_leads/);
@@ -66,7 +66,7 @@ test("D/E: the two sales cards carry their own money, from different populations
   assert.equal(M.money.revenue, 900);
   assert.equal(M.counts.cohort_sales, 1);
   assert.equal(M.money.cohort_revenue, 900);
-  const client = code("../app/dashboard-client.tsx");
+  const client = code("../app/dashboard-client.tsx") + "\n" + code("../lib/sales-sections.ts");
   const cohortCard = client.slice(client.indexOf("    cohort_sales: {"), client.indexOf("    period_sales: {"));
   const periodCard = client.slice(client.indexOf("    period_sales: {"), client.indexOf("    avg_check: {"));
   assert.match(cohortCard, /money\.cohort_revenue/);
@@ -108,8 +108,8 @@ test("the selected end date includes the final millisecond for cohort and period
   assert.deepEqual(selected.cohort.map((row) => row.dealId), ["end-boundary"]);
   assert.deepEqual(selected.periodSales.map((row) => row.dealId), ["end-boundary"]);
 
-  const client = code("../app/dashboard-client.tsx");
-  assert.match(client, /boundsFromKeys\(\{ from: bounds\.to, to: bounds\.to \}\)\.to/,
+  const client = code("../app/dashboard-client.tsx") + "\n" + code("../lib/sales-sections.ts");
+  assert.match(client, /boundsFromKeys\(\{ from: query\.to, to: query\.to \}\)\.to/,
     "every client view uses the canonical inclusive Tashkent end-of-day bound");
   assert.doesNotMatch(client, /T23:59:59\+05:00/, "the truncated last-second bound cannot return");
 });
@@ -117,7 +117,7 @@ test("the selected end date includes the final millisecond for cohort and period
 test("G/H/I: check, funnel and processing keep their formulas and travel together", () => {
   assert.equal(M.money.avg_check, 900);
   assert.equal(M.money.median_check, 900);
-  const client = code("../app/dashboard-client.tsx");
+  const client = code("../app/dashboard-client.tsx") + "\n" + code("../lib/sales-sections.ts");
   const check = client.slice(client.indexOf("    avg_check: {"), client.indexOf("    lead_to_sql: {"));
   assert.match(check, /median_check/, "median rides along with the average");
   const funnel = client.slice(client.indexOf("    lead_to_sql: {"), client.indexOf("    avg_processing: {"));
@@ -190,7 +190,7 @@ test("N: Custom Pages and the metric resolver still reach every underlying metri
 });
 
 test("the duplicated quality/funnel panel is gone from the main dashboard", () => {
-  const client = code("../app/dashboard-client.tsx");
+  const client = code("../app/dashboard-client.tsx") + "\n" + code("../lib/sales-sections.ts");
   assert.doesNotMatch(client, /QualityVsFunnel/, "the dead presentation component is removed");
   // The exact old rule, not any class that starts with "split": the manager
   // profile legitimately uses a two-equal-column grid of its own.
@@ -207,7 +207,7 @@ test("the duplicated quality/funnel panel is gone from the main dashboard", () =
  * under a different name.
  */
 test("the main Dashboard renders cards and no duplicate summary panels", () => {
-  const client = code("../app/dashboard-client.tsx");
+  const client = code("../app/dashboard-client.tsx") + "\n" + code("../lib/sales-sections.ts");
   const view = client.slice(client.indexOf("function DashboardView("), client.indexOf("function TrendChart("));
   const body = view.slice(view.indexOf("return <>"));
 
@@ -230,7 +230,7 @@ test("the main Dashboard renders cards and no duplicate summary panels", () => {
 });
 
 test("5: the detailed consumers of those metrics are untouched", () => {
-  const client = code("../app/dashboard-client.tsx");
+  const client = code("../app/dashboard-client.tsx") + "\n" + code("../lib/sales-sections.ts");
   // Lead sifati remains its own page, now with the approved split manager diagnostics.
   assert.match(client, /function QualityView\(/);
   assert.match(client, /Lead sifati va yo‘qotish sabablari/);

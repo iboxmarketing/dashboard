@@ -1,6 +1,7 @@
 import { getD1 } from "@/db";
 import { PERMISSION_KEYS, normalizeMemberPermissions, type PermissionKey } from "./permissions";
 import { createSessionToken, hashOpaqueToken, LAST_SEEN_WRITE_INTERVAL_MS, sessionIsUsable, SESSION_TTL_SECONDS } from "./security";
+import type { ThrottleStore } from "./throttle";
 import { isAuthRole, normalizeEmail, type AuthContext, type AuthRole, type AuthSession, type AuthUser, type PublicAuthUser } from "./types";
 
 type UserRow = {
@@ -42,10 +43,6 @@ export async function findUserByEmail(email: string) {
 export async function findUserById(id: string) {
   const row = await getD1().prepare("SELECT * FROM app_users WHERE id = ? LIMIT 1").bind(id).first<UserRow>();
   return row ? userFromRow(row) : null;
-}
-export async function countActiveAdminsExcluding(id: string) {
-  const row = await getD1().prepare("SELECT COUNT(*) AS count FROM app_users WHERE role = 'ADMIN' AND active = 1 AND id <> ?").bind(id).first<{ count: number }>();
-  return Number(row?.count ?? 0);
 }
 export async function listUsers(): Promise<PublicAuthUser[]> {
   const rows = await getD1().prepare("SELECT * FROM app_users ORDER BY name COLLATE NOCASE, email COLLATE NOCASE").all<UserRow>();
@@ -140,20 +137,27 @@ export async function changeOwnPassword(userId: string, passwordHash: string) {
   ]);
 }
 
-export async function loginThrottleKey(email: string, address: string) { return hashOpaqueToken(`${normalizeEmail(email)}|${address}`); }
-export async function loginThrottleStatus(key: string) {
-  return getD1().prepare("SELECT failure_count, window_started_at, blocked_until FROM app_login_attempts WHERE key_hash = ?").bind(key)
-    .first<{ failure_count: number; window_started_at: string; blocked_until: string | null }>();
-}
-export async function recordLoginFailure(key: string) {
-  const now = new Date();
-  const existing = await loginThrottleStatus(key);
-  const reset = !existing || now.getTime() - new Date(existing.window_started_at).getTime() > 15 * 60 * 1000;
-  const count = reset ? 1 : existing.failure_count + 1;
-  const blocked = count >= 5 ? new Date(now.getTime() + 10 * 60 * 1000).toISOString() : null;
-  await getD1().prepare(`INSERT INTO app_login_attempts (key_hash, failure_count, window_started_at, blocked_until, updated_at)
-    VALUES (?, ?, ?, ?, ?) ON CONFLICT(key_hash) DO UPDATE SET failure_count = excluded.failure_count,
-    window_started_at = excluded.window_started_at, blocked_until = excluded.blocked_until, updated_at = excluded.updated_at`)
-    .bind(key, count, reset ? now.toISOString() : existing!.window_started_at, blocked, now.toISOString()).run();
-}
-export async function clearLoginFailures(key: string) { await getD1().prepare("DELETE FROM app_login_attempts WHERE key_hash = ?").bind(key).run(); }
+/**
+ * D1 storage for `lib/auth/throttle.ts`. Keys are `ip:<bucket>` or
+ * `user:<existing id>`, so the table holds at most IP_BUCKETS + user-count rows
+ * whatever an attacker sends. No raw address and no email is ever written.
+ */
+export const d1ThrottleStore: ThrottleStore = {
+  async get(key) {
+    const row = await getD1().prepare("SELECT failure_count, window_started_at, blocked_until, updated_at FROM app_login_attempts WHERE key_hash = ?").bind(key)
+      .first<{ failure_count: number; window_started_at: string; blocked_until: string | null; updated_at: string }>();
+    return row ? { failureCount: Number(row.failure_count), windowStartedAt: row.window_started_at, blockedUntil: row.blocked_until, updatedAt: row.updated_at } : null;
+  },
+  async put(key, row) {
+    await getD1().prepare(`INSERT INTO app_login_attempts (key_hash, failure_count, window_started_at, blocked_until, updated_at)
+      VALUES (?, ?, ?, ?, ?) ON CONFLICT(key_hash) DO UPDATE SET failure_count = excluded.failure_count,
+      window_started_at = excluded.window_started_at, blocked_until = excluded.blocked_until, updated_at = excluded.updated_at`)
+      .bind(key, row.failureCount, row.windowStartedAt, row.blockedUntil, row.updatedAt).run();
+  },
+  async delete(key) { await getD1().prepare("DELETE FROM app_login_attempts WHERE key_hash = ?").bind(key).run(); },
+  async sweep(before, now, limit) {
+    await getD1().prepare(`DELETE FROM app_login_attempts WHERE key_hash IN (
+      SELECT key_hash FROM app_login_attempts WHERE updated_at < ? AND (blocked_until IS NULL OR blocked_until < ?) LIMIT ?)`)
+      .bind(before, now, limit).run();
+  },
+};

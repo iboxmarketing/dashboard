@@ -3,6 +3,20 @@ import { buildCurrentStageRecords, reconcileCurrentStages, type RawCurrentStageD
 import { getDictionary, getSettings, listAnalyticsRecords } from "@/lib/storage";
 import { listPipelineStages } from "@/lib/sync";
 import { authorizePermission } from "@/lib/auth/http";
+import type { DashboardSettings } from "@/lib/types";
+
+/**
+ * The slice of settings Stage Control renders with: funnel names and stage
+ * semantics. A Stages-only member gets this instead of the full CRM settings,
+ * which `/api/bootstrap` now releases only to `settings`.
+ */
+function stageSettings(settings: DashboardSettings) {
+  return {
+    selectedPipelineIds: settings.selectedPipelineIds, selectedPipelineNames: settings.selectedPipelineNames,
+    qualifiedStageIds: settings.qualifiedStageIds, lowQualityStageIds: settings.lowQualityStageIds,
+    paymentStageIds: settings.paymentStageIds, closedLostStageIds: settings.closedLostStageIds,
+  };
+}
 
 function value(row: Record<string, unknown>, key: string) {
   const raw = row[key];
@@ -16,7 +30,7 @@ export async function GET(request: Request) {
   try {
     const settings = await getSettings();
     const categoryIds = [...new Set(settings.selectedPipelineIds.map(String).filter(Boolean))];
-    if (!categoryIds.length) return Response.json({ records: [], reconciliation: null, stageCatalog: [], truncated: false });
+    if (!categoryIds.length) return Response.json({ records: [], reconciliation: null, stageCatalog: [], truncated: false, stageSettings: stageSettings(settings) });
 
     const [deals, stageOptions, userRows, cachedRecords] = await Promise.all([
       bitrixList<RawCurrentStageDeal>("crm.deal.list", {
@@ -58,7 +72,7 @@ export async function GET(request: Request) {
     const stageCatalog = stageOptions.map((stage) => ({
       id: stage.id, name: stage.name, categoryId: stage.categoryId, sort: stage.sort, semantics: stage.semantics,
     }));
-    return Response.json({ records, reconciliation, stageCatalog, truncated });
+    return Response.json({ records, reconciliation, stageCatalog, truncated, stageSettings: stageSettings(settings) });
   } catch (error) {
     return Response.json({ error: safeBitrixMessage(error) }, { status: 500 });
   }
