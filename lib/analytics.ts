@@ -1,4 +1,5 @@
 import { calculateBusinessMinutes, getSlaStart, isInsideWorkingTime } from "./business-time";
+import { OWNER_OVERRIDES, REVIEW_EXCLUSIONS, type OwnerSellerOverride } from "./seller-overrides";
 import { resolveSlaState } from "./sla";
 import { classifyLossReasonGroup, MISSING_LOSS_REASON, classifySalesStatus, fieldDisplayValue, isLowQualityStage, isPaymentStage, isSqlOrDownstreamStage } from "./sales-logic";
 import { sqlThresholdsByCategory, type StageMeta, type StageSemantics } from "./stage-config";
@@ -128,7 +129,11 @@ export function buildAnalyticsRecords(input: {
   pipelines: Map<string, string>; stages: Map<string, string>; sources: Map<string, string>; fieldOptions?: Map<string, Map<string, string>>;
   stageMeta?: Map<string, StageMeta>;
   snapshots?: Map<string, SalesSnapshot>; domain: string | null; activitiesAvailable?: boolean; stageHistoryAvailable: boolean;
+  /** Reviewed per-Deal seller decisions. Default to the version-controlled registry, so every caller — Sync and Backfill — applies them. */
+  ownerOverrides?: Map<string, OwnerSellerOverride>; reviewExclusions?: Set<string>;
 }) {
+  const ownerOverrides = input.ownerOverrides ?? OWNER_OVERRIDES;
+  const reviewExclusions = input.reviewExclusions ?? REVIEW_EXCLUSIONS;
   const historiesByDeal = new Map<string, RawStageHistory[]>();
   for (const history of input.stageHistories) { const id = string(history.OWNER_ID); if (id) historiesByDeal.set(id, [...(historiesByDeal.get(id) ?? []), history]); }
   const mainIds = new Set(input.settings.selectedPipelineIds); const postSaleIds = new Set(input.settings.postSalePipelineIds);
@@ -281,11 +286,22 @@ export function buildAnalyticsRecords(input: {
     // after which this normal unresolved-snapshot fallback chain applies.
     // Newly resolved POST_SALE_OBSERVER snapshots join CUSTOM_FIELD and
     // STAGE_MOVER as immutable trustworthy evidence.
-    const snapshotManagerId = snapshot?.attributionSource === "CURRENT_RESPONSIBLE" ? "" : snapshot?.managerId ?? "";
+    //
+    // Priority: 1 OWNER_CONFIRMED  2 trustworthy frozen snapshot  3 safe UF_CRM_*
+    // field  4 current payment-stage mover  5 category-13 observer  6 Unknown.
+    // An owner confirmation is an explicit per-Deal fact and outranks every
+    // CRM signal, including a frozen snapshot. A reviewed exclusion stops the
+    // automatic fallbacks (3–5) from re-deriving a seller the audit rejected;
+    // it never touches an existing snapshot or an owner confirmation.
+    const ownerOverride = ownerOverrides.get(dealId);
+    const excludedFromRecovery = reviewExclusions.has(dealId);
+    const snapshotManagerId = ownerOverride ? "" : snapshot?.attributionSource === "CURRENT_RESPONSIBLE" ? "" : snapshot?.managerId ?? "";
     let salesManagerId = snapshotManagerId;
     let salesManager = snapshotManagerId ? snapshot?.managerName ?? "" : "";
     let salesManagerAttribution: SalesManagerAttribution = snapshotManagerId ? (snapshot?.attributionSource as SalesManagerAttribution) : "UNKNOWN";
-    if (!snapshotManagerId && customManagerId) { salesManagerId = customManagerId; salesManagerAttribution = "CUSTOM_FIELD"; }
+    const mayRecover = !ownerOverride && !snapshotManagerId && !excludedFromRecovery;
+    if (ownerOverride) { salesManagerId = ownerOverride.sellerId; salesManager = ownerOverride.sellerName; salesManagerAttribution = "OWNER_CONFIRMED"; }
+    else if (mayRecover && customManagerId) { salesManagerId = customManagerId; salesManagerAttribution = "CUSTOM_FIELD"; }
     // Bitrix stage history has stage/category/time but no historical actor.
     // MOVED_BY_ID is only the actor who moved the Deal into its CURRENT stage,
     // so it is sale-time evidence only while that current stage is payment.
@@ -293,16 +309,16 @@ export function buildAnalyticsRecords(input: {
     // ASSIGNED_BY_ID can belong to onboarding/support and must never be frozen
     // as the seller. A single distinct observer is the owner's confirmed CRM
     // handoff evidence; an empty/ambiguous observer list remains Unknown.
-    else if (!snapshotManagerId && moverId && (salesStatus !== "WON" || currentStageIsPayment) && mainIds.has(currentCategoryId)) {
+    else if (mayRecover && moverId && (salesStatus !== "WON" || currentStageIsPayment) && mainIds.has(currentCategoryId)) {
       salesManagerId = moverId; salesManagerAttribution = "STAGE_MOVER";
     }
-    else if (!snapshotManagerId && postSaleObserverId) {
+    else if (mayRecover && postSaleObserverId) {
       salesManagerId = postSaleObserverId; salesManagerAttribution = "POST_SALE_OBSERVER";
     }
     // Current responsibility remains useful for not-yet-won Sales-funnel work
     // (including ordinary Sales Lost), but is operational evidence, never a
     // fallback for a completed sale.
-    else if (!snapshotManagerId && salesStatus !== "WON" && assignedManagerId && mainIds.has(currentCategoryId)) {
+    else if (mayRecover && salesStatus !== "WON" && assignedManagerId && mainIds.has(currentCategoryId)) {
       salesManagerId = assignedManagerId; salesManagerAttribution = "CURRENT_RESPONSIBLE";
     }
     if (!salesManager && salesManagerId) salesManager = managerName(salesManagerId, input.users);

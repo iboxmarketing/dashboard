@@ -189,16 +189,30 @@ The goal is to attribute performance to the seller responsible at the sales outc
 
 Priority order:
 
-1. stored sale snapshot that resolved a seller from trustworthy evidence;
-2. configured Sales manager custom field;
-3. `MOVED_BY_ID` only while the Deal is currently in the payment stage, where
+1. `OWNER_CONFIRMED` — an explicit business-owner decision for one Deal,
+   recorded in the version-controlled registry `lib/seller-overrides.ts`;
+2. stored sale snapshot that resolved a seller from trustworthy evidence;
+3. configured Sales manager custom field (safe `UF_CRM_*` only);
+4. `MOVED_BY_ID` only while the Deal is currently in the payment stage, where
    it is the actor for that sale transition;
-4. for a WON Deal currently in its paired post-sale funnel, the universal
+5. for a WON Deal currently in its paired post-sale funnel, the universal
    Bitrix `observers` user list only when it contains exactly one valid,
    non-zero observer and that user differs from current `ASSIGNED_BY_ID`;
-5. for a not-yet-won Deal still in the Sales funnel, current-stage mover and
+6. for a not-yet-won Deal still in the Sales funnel, current-stage mover and
    then current `ASSIGNED_BY_ID` may attribute the commercial workload;
-6. unknown.
+7. unknown.
+
+Owner confirmations and reviewed exclusions are per-Deal facts, never rules.
+Nothing infers a seller from a job title or department: audits showed titles go
+stale in both directions. An owner confirmation may carry only the seller; it
+can never set `wonAt`, `OPPORTUNITY`, revenue, a sales/lead status, source or
+stage history. Once stored, no Sync, observer, mover, assignee, custom field or
+legacy `FIRST_CALL` value can overwrite it; only a changed registry entry can.
+
+A Deal in the reviewed exclusion list (`SELLER_REVIEW_EXCLUSIONS`) is one an
+audit sent to human review because its automatic evidence is contradictory.
+Steps 3–6 never run for it: an existing snapshot is kept, and if its seller is
+cleared it stays Unknown until an owner confirmation is added.
 
 Bitrix stage history exposes stage, funnel and transition time, but not the
 historical transition actor. After a Deal moves to post-sale, current

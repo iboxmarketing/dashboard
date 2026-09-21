@@ -154,7 +154,7 @@ export type SlaStatus = "ON_TIME" | "LATE" | "PENDING" | "OVERDUE_UNPROCESSED" |
 export type CreationPeriod = "WORK_HOURS" | "AFTER_HOURS";
 export type SalesStatus = "ACTIVE" | "LOW_QUALITY" | "LOST" | "WON";
 export type LossReasonGroup = "MARKETING" | "SALES" | "ROUTING" | "NONE";
-export type SalesManagerAttribution = "CUSTOM_FIELD" | "STAGE_MOVER" | "POST_SALE_OBSERVER" | "CURRENT_RESPONSIBLE" | "UNKNOWN";
+export type SalesManagerAttribution = "OWNER_CONFIRMED" | "CUSTOM_FIELD" | "STAGE_MOVER" | "POST_SALE_OBSERVER" | "CURRENT_RESPONSIBLE" | "UNKNOWN";
 
 export type StageTimelineEntry = {
   categoryId: string;
