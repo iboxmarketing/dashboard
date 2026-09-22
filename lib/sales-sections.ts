@@ -10,7 +10,7 @@ import { buildQualityAnalytics, type QualityAnalytics } from "./quality-analytic
 import { dedupeByDealId, filterHistoricalRecords, historicalManagerOptions, type SalesFilterSelection } from "./record-filters";
 import { countClassificationConflicts, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isUnclassifiedLead, salesManagerKey } from "./sales-logic";
 import { SLA_LABELS, resolveSlaState } from "./sla";
-import { TREND_METRICS, buildTrendSeries, type TrendMetricId, type TrendPoint } from "./trend-series";
+import { TREND_METRICS, buildTrendSeriesSet, type TrendMetricId, type TrendPoint } from "./trend-series";
 import type { DashboardSettings, SyncProgressState } from "./types";
 import type { PermissionKey } from "./auth/permissions";
 import { ANALYTICS_VERSION } from "./analytics";
@@ -142,10 +142,29 @@ export function hydrateRecord(row: DashboardRecord): DashboardRecord {
  * pipelines, re-resolve SLA against the clock, mark duplicates.
  */
 export function prepareSalesRecords(rows: DashboardRecord[], settings: DashboardSettings, now: Date = new Date()): DashboardRecord[] {
+  return resolveSalesSla(prepareSalesBase(rows, settings), settings, now);
+}
+
+/**
+ * The clock-independent part of `prepareSalesRecords`: hydrate, keep the
+ * selected project's pipelines, mark duplicates. It depends only on the stored
+ * rows and the pipeline selection, which is what makes it cacheable between
+ * requests (see `lib/sales-cache.ts`).
+ *
+ * Duplicate marking reads only `createdAt`, `dealId` and `customerKey`, and
+ * sorts stably, so marking before or after the SLA pass yields the same rows
+ * in the same order.
+ */
+export function prepareSalesBase(rows: DashboardRecord[], settings: Pick<DashboardSettings, "selectedPipelineIds" | "postSalePipelineIds">): DashboardRecord[] {
   const selectedOrigins = new Set(settings.selectedPipelineIds.map(String));
   const selectedProjectCategories = new Set([...settings.selectedPipelineIds, ...settings.postSalePipelineIds].map(String));
   const project = rows.map(hydrateRecord).filter((row) => !selectedOrigins.size || selectedOrigins.has(String(row.originCategoryId)) || selectedProjectCategories.has(String(row.categoryId)));
-  return markDuplicates(project.map((row) => ({ ...row, slaStatus: resolveSlaState(row, settings, now) })));
+  return markDuplicates(project);
+}
+
+/** The per-request part: SLA re-resolved against the clock, on fresh row objects. */
+export function resolveSalesSla(base: readonly DashboardRecord[], settings: DashboardSettings, now: Date = new Date()): DashboardRecord[] {
+  return base.map((row) => ({ ...row, slaStatus: resolveSlaState(row, settings, now) }));
 }
 
 /** Tashkent calendar date, as the dashboard has always keyed its days. */
@@ -226,14 +245,13 @@ export type ManagerRow = {
 export function buildManagers(records: DashboardRecord[], wonRecords: DashboardRecord[] = records.filter((row) => row.salesStatus === "WON")): ManagerRow[] {
   const cohortByManager = new Map<string, DashboardRecord[]>();
   const wonByManager = new Map<string, DashboardRecord[]>();
-  for (const record of records) {
+  const add = (map: Map<string, DashboardRecord[]>, record: DashboardRecord) => {
     const key = salesManagerKey(record);
-    cohortByManager.set(key, [...(cohortByManager.get(key) ?? []), record]);
-  }
-  for (const record of wonRecords) {
-    const key = salesManagerKey(record);
-    wonByManager.set(key, [...(wonByManager.get(key) ?? []), record]);
-  }
+    const rows = map.get(key);
+    if (rows) rows.push(record); else map.set(key, [record]);
+  };
+  for (const record of records) add(cohortByManager, record);
+  for (const record of wonRecords) add(wonByManager, record);
   const ids = new Set([...cohortByManager.keys(), ...wonByManager.keys()]);
   const built = [...ids].map((id) => {
     const cohort = cohortByManager.get(id) ?? [];
@@ -352,8 +370,8 @@ function common(records: DashboardRecord[], query: SalesQuery, context: SectionC
 
 export function dashboardSection(records: DashboardRecord[], query: SalesQuery, context: SectionContext): DashboardSection {
   const pop = salesPopulations(records, query);
-  const trend = Object.fromEntries(TREND_METRICS.map((entry) => [entry.id,
-    buildTrendSeries(pop.cohort, pop.previousCohort, entry.id, pop.trendBounds ?? undefined, pop.previousTrendBounds ?? undefined)])) as DashboardSection["trend"];
+  const trend = buildTrendSeriesSet(pop.cohort, pop.previousCohort, TREND_METRICS.map((entry) => entry.id),
+    pop.trendBounds ?? undefined, pop.previousTrendBounds ?? undefined) as DashboardSection["trend"];
   return {
     ...common(records, query, context),
     leadCount: pop.cohort.filter(isEligibleCohortDeal).length,

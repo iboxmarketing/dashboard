@@ -52,7 +52,7 @@ import { ProfileMenu } from "./auth/profile-menu";
 import { UsersScreen } from "./auth/users-screen";
 import { canAccessView } from "@/lib/auth-permissions";
 import { authFetch } from "@/lib/auth-fetch";
-import { SectionStatus, useSalesSection, useSectionFetch, type SectionCommon, type SectionState } from "./sales-data";
+import { EmptyCohortNotice, SectionStatus, useSalesSection, useSectionFetch, type SectionCommon, type SectionState } from "./sales-data";
 import type {
   DashboardSection, DealRow, DealsSection, DiagnosticsData, FilterOptions, LeadFlowSection, ManagerRow, ManagerSection,
   ManagersSection, QualitySection,
@@ -2424,10 +2424,10 @@ function DashboardApp({ session }: { session: AuthSession }) {
         {isSalesView(view) && view !== "stages" && <CoverageNotice earliestDay={activeSales?.data?.coverageStart ?? null} filters={filters} />}
         {isSalesView(view) && view !== "stages" && activeSales && <SectionStatus state={activeSales} />}
         <ViewErrorBoundary onBack={() => setView(defaultView)}>
-        {view === "dashboard" && dashboardSection.data && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{dashboardSection.data.leadCount} Leadlar</strong></div></div><DashboardView section={dashboardSection.data} onManager={(manager) => { if (canManagers) { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); } }} /><TrendChart trend={dashboardSection.data.trend} /></>}
+        {view === "dashboard" && dashboardSection.data && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{dashboardSection.data.leadCount} Leadlar</strong></div></div>{dashboardSection.data.leadCount === 0 && <EmptyCohortNotice />}<DashboardView section={dashboardSection.data} onManager={(manager) => { if (canManagers) { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); } }} /><TrendChart trend={dashboardSection.data.trend} /></>}
         {view === "managers" && managersSection.data && <><div className="page-title"><div><p className="eyebrow">TEAM PERFORMANCE</p><h1>Menejerlar</h1><p>Lead, sifatsizlik, sales loss, sotuv soni va Opportunity kesimida.</p></div></div><section className="panel"><SectionHeader title="Menejerlar reytingi" subtitle="Lead va cohort konversiya — yaratilgan sana; davr sotuv — Oplata sanasi bo‘yicha" /><ManagerTable rows={managersSection.data.managers} onSelect={(manager) => { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); }} /></section></>}
         {view === "managerDetail" && selectedManager && managerSection.data && <ManagerDetailView section={managerSection.data} currentStages={currentStageRecords} onBack={() => setView("managers")} />}
-        {view === "leadFlow" && leadFlowSection.data && <LeadFlowView flow={leadFlowSection.data.flow} />}
+        {view === "leadFlow" && leadFlowSection.data && <>{leadFlowSection.data.flow.total === 0 && <EmptyCohortNotice />}<LeadFlowView flow={leadFlowSection.data.flow} /></>}
         {view === "quality" && qualitySection.data && <QualityView analytics={qualitySection.data.analytics} onManager={(managerId) => {
           // The drill-down opens the Managers profile, so it needs `managers`.
           if (!canManagers) return;

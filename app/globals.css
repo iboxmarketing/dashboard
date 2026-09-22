@@ -864,6 +864,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible,
 .empty-state strong { font-size: 15px; }
 .empty-state p { margin: 0; max-width: 46ch; font-size: 13px; color: var(--text-muted, #5b6880); }
 .empty-state .button { margin-top: 4px; }
+.empty-cohort { margin: 0 0 14px; padding: 18px 20px; border: 1px dashed var(--line); border-radius: 12px; background: var(--panel); }
 
 /* ============================================================
    Custom Pages builder (Sprint 25)
@@ -1100,3 +1101,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible,
 
 /* Sales section loading placeholder while its endpoint answers. */
 .section-loading { display: grid; gap: 10px; padding: 26px 4px; }
+.section-loading-label { color: var(--muted); font-size: 12px; }
+/* New filters loading while the previous figures are still on screen. */
+.section-refreshing { display: flex; align-items: center; gap: 7px; margin: 0 0 12px; color: var(--muted); font-size: 12px; }
+.page-notice > .notice-action { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; padding: 4px 9px; border: 1px solid currentColor; border-radius: 8px; font-weight: 600; cursor: pointer; }

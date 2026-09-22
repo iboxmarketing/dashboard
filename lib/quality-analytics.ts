@@ -74,7 +74,8 @@ function managerGroups(rows: MetricRecord[]) {
   const grouped = new Map<string, MetricRecord[]>();
   for (const row of rows) {
     const id = salesManagerKey(row);
-    grouped.set(id, [...(grouped.get(id) ?? []), row]);
+    const group = grouped.get(id);
+    if (group) group.push(row); else grouped.set(id, [row]);
   }
   return [...grouped.entries()];
 }

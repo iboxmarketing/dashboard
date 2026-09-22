@@ -104,7 +104,8 @@ export function sourceFunnelRows(cohort: MetricRecord[]): SourceFunnelRow[] {
   const bySource = new Map<string, MetricRecord[]>();
   for (const row of cohort) {
     const key = row.source || "Aniqlanmagan";
-    bySource.set(key, [...(bySource.get(key) ?? []), row]);
+    const rows = bySource.get(key);
+    if (rows) rows.push(row); else bySource.set(key, [row]);
   }
   return [...bySource.entries()].flatMap(([source, rows]) => {
     const metrics = buildDashboardMetrics(rows, []);

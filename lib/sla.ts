@@ -1,4 +1,4 @@
-import { calculateBusinessMinutes } from "./business-time";
+import { businessMinutesExceed, calculateBusinessMinutes } from "./business-time";
 import type { DashboardSettings, ProcessingSource, SlaStatus } from "./types";
 
 /**
@@ -39,7 +39,18 @@ export function resolveSlaState(row: SlaInput, settings: DashboardSettings, now:
   // History is missing and the deal already sits past qualification: it was
   // very likely processed, we simply cannot date it. Never a seller failure.
   if (row.processingSource === "NO_PROCESSING_EVIDENCE") return "UNKNOWN_EVIDENCE";
-  return elapsedSlaMinutes(row, settings, now) > settings.slaMinutes ? "OVERDUE_UNPROCESSED" : "PENDING";
+  return elapsedSlaExceeds(row, settings, now) ? "OVERDUE_UNPROCESSED" : "PENDING";
+}
+
+/**
+ * `elapsedSlaMinutes(row, settings, now) > settings.slaMinutes`, answered
+ * without walking every day since a months-old lead arrived: the walk stops
+ * as soon as the limit is passed.
+ */
+function elapsedSlaExceeds(row: SlaInput, settings: DashboardSettings, now: Date) {
+  const start = row.slaStart ?? row.createdAt;
+  if (!start) return 0 > settings.slaMinutes;
+  return businessMinutesExceed(start, now, settings, settings.slaMinutes);
 }
 
 export type SlaSummary = {

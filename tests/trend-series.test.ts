@@ -214,7 +214,9 @@ test("the selector groups metrics and the chart draws all three layers", () => {
   // Every series is built on the server by the one canonical builder; the
   // chart only picks the metric's precomputed series.
   assert.match(chart, /const \{ points, hasPrevious \} = trend\[metric\]/, "no per-chart formulas");
-  assert.match(client, /buildTrendSeries\(pop\.cohort, pop\.previousCohort, entry\.id, pop\.trendBounds \?\? undefined, pop\.previousTrendBounds \?\? undefined\)/, "the canonical builder, once per metric");
+  // One set of trend days feeds every metric's series; tests/sales-performance.test.ts
+  // proves the set is identical to calling buildTrendSeries once per metric.
+  assert.match(client, /buildTrendSeriesSet\(pop\.cohort, pop\.previousCohort, TREND_METRICS\.map\(\(entry\) => entry\.id\),\s*pop\.trendBounds \?\? undefined, pop\.previousTrendBounds \?\? undefined\)/, "the canonical builder, for every metric");
   assert.match(client, /<TrendChart trend=\{dashboardSection\.data\.trend\} \/>/);
 });
 

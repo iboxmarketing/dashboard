@@ -100,18 +100,43 @@ function addLocalDays(parts: Pick<LocalParts, "year" | "month" | "day">, days: n
   };
 }
 
+/**
+ * One settings object's working period per local day, as epoch milliseconds.
+ * `localToUtc` costs several `Intl` conversions per day, and every lead's
+ * business-time span revisits the same days, so the Sales dataset recomputed
+ * identical periods thousands of times per request. Keyed by the settings
+ * object — settings are rebuilt, never mutated in place — and handed out as
+ * fresh `Date`s so no caller can alter a cached value.
+ */
+const periodCache = new WeakMap<DashboardSettings, Map<string, [number, number] | null>>();
+
 function periodForDay(
   day: Pick<LocalParts, "year" | "month" | "day" | "weekday">,
   settings: DashboardSettings,
 ) {
+  let days = periodCache.get(settings);
+  if (!days) { days = new Map(); periodCache.set(settings, days); }
+  const key = dateKey(day);
+  let span = days.get(key);
+  if (span === undefined) {
+    span = computePeriodForDay(day, settings);
+    days.set(key, span);
+  }
+  return span ? { start: new Date(span[0]), end: new Date(span[1]) } : null;
+}
+
+function computePeriodForDay(
+  day: Pick<LocalParts, "year" | "month" | "day" | "weekday">,
+  settings: DashboardSettings,
+): [number, number] | null {
   const workDay = settings.schedule[day.weekday];
   if (!workDay?.enabled || settings.holidays.includes(dateKey(day))) return null;
   const start = parseClock(workDay.start);
   const end = parseClock(workDay.end);
-  return {
-    start: localToUtc({ ...day, ...start }, settings.timezone),
-    end: localToUtc({ ...day, ...end }, settings.timezone),
-  };
+  return [
+    localToUtc({ ...day, ...start }, settings.timezone).getTime(),
+    localToUtc({ ...day, ...end }, settings.timezone).getTime(),
+  ];
 }
 
 export function isInsideWorkingTime(value: Date | string, settings: DashboardSettings) {
@@ -136,10 +161,17 @@ export function getSlaStart(value: Date | string, settings: DashboardSettings) {
   throw new Error("Ish jadvalidan keyingi ish davri topilmadi");
 }
 
-export function calculateBusinessMinutes(
+/**
+ * Working milliseconds between two instants, walking the local days in order.
+ * `stopAboveMinutes` ends the walk once the floored total exceeds that many
+ * minutes; the running total never decreases, so a caller that only compares
+ * against a limit gets the same answer as the full walk.
+ */
+function businessMilliseconds(
   startValue: Date | string,
   endValue: Date | string,
   settings: DashboardSettings,
+  stopAboveMinutes = Infinity,
 ) {
   const start = startValue instanceof Date ? startValue : new Date(startValue);
   const end = endValue instanceof Date ? endValue : new Date(endValue);
@@ -159,9 +191,32 @@ export function calculateBusinessMinutes(
     const overlapStart = new Date(Math.max(start.getTime(), period.start.getTime()));
     const overlapEnd = new Date(Math.min(end.getTime(), period.end.getTime()));
     if (overlapEnd > overlapStart) milliseconds += overlapEnd.getTime() - overlapStart.getTime();
+    if (Math.floor(milliseconds / 60_000) > stopAboveMinutes) break;
   }
 
-  return Math.max(0, Math.floor(milliseconds / 60_000));
+  return milliseconds;
+}
+
+export function calculateBusinessMinutes(
+  startValue: Date | string,
+  endValue: Date | string,
+  settings: DashboardSettings,
+) {
+  return Math.max(0, Math.floor(businessMilliseconds(startValue, endValue, settings) / 60_000));
+}
+
+/**
+ * `calculateBusinessMinutes(start, end, settings) > limitMinutes`, without
+ * walking the rest of a months-long span once the limit is already passed.
+ * An unprocessed lead's SLA check asks only this question.
+ */
+export function businessMinutesExceed(
+  startValue: Date | string,
+  endValue: Date | string,
+  settings: DashboardSettings,
+  limitMinutes: number,
+) {
+  return Math.max(0, Math.floor(businessMilliseconds(startValue, endValue, settings, limitMinutes) / 60_000)) > limitMinutes;
 }
 
 export const defaultSettings: DashboardSettings = {

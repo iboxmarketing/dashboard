@@ -29,11 +29,15 @@ export const LEAD_FLOW_METRICS: { id: LeadFlowMetricId; label: string; group: st
 ];
 export const DEFAULT_LEAD_FLOW_METRIC: LeadFlowMetricId = "volume";
 
+/** Built once: constructing it per record dominated the heatmap. */
+const tashkentPartsFormatter = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Tashkent", weekday: "short", hour: "2-digit", hourCycle: "h23",
+});
+
 /** Weekday (Mon=0) and hour in Asia/Tashkent — never the browser's zone. */
 export function tashkentParts(value: string) {
-  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Tashkent", weekday: "short", hour: "2-digit", hourCycle: "h23",
-  }).formatToParts(new Date(value)).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  const parts = Object.fromEntries(tashkentPartsFormatter
+    .formatToParts(new Date(value)).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
   const weekdays: Record<string, number> = { Mon: 0, Tue: 1, Wed: 2, Thu: 3, Fri: 4, Sat: 5, Sun: 6 };
   return { weekday: weekdays[parts.weekday] ?? 0, hour: Number(parts.hour) };
 }
@@ -107,12 +111,16 @@ export function buildLeadFlow(records: MetricRecord[]): LeadFlow {
   const byCell = new Map<string, MetricRecord[]>();
   const byWeekday = new Map<number, MetricRecord[]>();
   const byBucket = new Map<number, MetricRecord[]>();
+  const add = <K>(map: Map<K, MetricRecord[]>, key: K, row: MetricRecord) => {
+    const rows = map.get(key);
+    if (rows) rows.push(row); else map.set(key, [row]);
+  };
   for (const row of eligible) {
     const { weekday, hour } = tashkentParts(row.createdAt);
     const bucket = Math.floor(hour / BUCKET_HOURS);
-    byCell.set(`${weekday}:${bucket}`, [...(byCell.get(`${weekday}:${bucket}`) ?? []), row]);
-    byWeekday.set(weekday, [...(byWeekday.get(weekday) ?? []), row]);
-    byBucket.set(bucket, [...(byBucket.get(bucket) ?? []), row]);
+    add(byCell, `${weekday}:${bucket}`, row);
+    add(byWeekday, weekday, row);
+    add(byBucket, bucket, row);
   }
 
   const cells: LeadFlowCell[] = [];

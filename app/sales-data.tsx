@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Loader2, RefreshCw } from "lucide-react";
 
 import { SessionLostError, authFetch } from "@/lib/auth-fetch";
 import { FORBIDDEN_MESSAGE } from "@/lib/auth-adapter";
@@ -12,7 +13,11 @@ import type { FilterOptions } from "@/lib/sales-sections";
  */
 
 export type SectionCommon = { options: FilterOptions; coverageStart: string | null; dataAsOf: string | null };
-export type SectionState<T> = { data: T | null; loading: boolean; notReady: boolean; error: string | null; forbidden: boolean; code: string | null };
+export type SectionState<T> = {
+  data: T | null; loading: boolean; notReady: boolean; error: string | null; forbidden: boolean; code: string | null;
+  /** Fetches the same section again — offered after an error. */
+  retry?: () => void;
+};
 
 type Stored<T> = { key: string; data: T | null; notReady: boolean; error: string | null; forbidden: boolean; code?: string | null };
 
@@ -24,7 +29,8 @@ type Stored<T> = { key: string; data: T | null; notReady: boolean; error: string
  */
 export function useSectionFetch<T>(url: string | null, reloadToken = 0): SectionState<T> {
   const [stored, setStored] = useState<Stored<T> | null>(null);
-  const key = url ? `${url}#${reloadToken}` : "";
+  const [attempt, setAttempt] = useState(0);
+  const key = url ? `${url}#${reloadToken}#${attempt}` : "";
   useEffect(() => {
     if (!url) return;
     let cancelled = false;
@@ -49,17 +55,38 @@ export function useSectionFetch<T>(url: string | null, reloadToken = 0): Section
   if (!url) return { data: null, loading: false, notReady: false, error: null, forbidden: false, code: null };
   const current = stored?.key === key ? stored : null;
   const data = current ? current.data : stored?.key.startsWith(url.split("?")[0]) ? stored.data : null;
-  return { data, loading: !current, notReady: current?.notReady ?? false, error: current?.error ?? null, forbidden: current?.forbidden ?? false, code: current?.code ?? null };
+  return {
+    data, loading: !current, notReady: current?.notReady ?? false, error: current?.error ?? null, forbidden: current?.forbidden ?? false, code: current?.code ?? null,
+    retry: () => setAttempt((value) => value + 1),
+  };
 }
 
 export function useSalesSection<T>(section: string | null, query: string, reloadToken: number) {
   return useSectionFetch<T>(section ? `/api/sales/${section}?${query}` : null, reloadToken);
 }
 
-/** Loading, not-ready, forbidden and error states for a section. */
+/**
+ * Loading, refreshing, not-ready, forbidden and error states for a section.
+ * An error that a second attempt could fix offers one; a permission refusal
+ * does not, since retrying cannot change it.
+ */
 export function SectionStatus({ state }: { state: SectionState<unknown> }) {
   if (state.notReady) return <div className="notice warning page-notice"><span>Sales ma’lumotlari hali tayyor emas. Administrator Sync’ni ishga tushirishi kerak.</span></div>;
-  if (state.error) return <div className={`notice ${state.forbidden ? "warning" : "error"} page-notice`} role="alert"><span>{state.error}</span></div>;
-  if (state.loading && !state.data) return <div className="section-loading" aria-busy="true"><div className="skeleton-line" /><div className="skeleton-line short" /></div>;
+  if (state.error) return <div className={`notice ${state.forbidden ? "warning" : "error"} page-notice`} role="alert"><span>{state.error}</span>
+    {!state.forbidden && state.retry && <button type="button" className="notice-action" onClick={state.retry}><RefreshCw size={14} />Qayta urinish</button>}</div>;
+  if (state.loading && !state.data) return <div className="section-loading" aria-busy="true"><span className="section-loading-label">Ma’lumotlar yuklanmoqda…</span><div className="skeleton-line" /><div className="skeleton-line short" /></div>;
+  // Filters changed while the previous figures are still on screen: say so,
+  // rather than let old numbers pass for the new selection.
+  if (state.loading) return <div className="section-refreshing" role="status" aria-live="polite"><Loader2 size={14} className="spin" />Tanlangan filtrlar bo‘yicha yangilanmoqda…</div>;
   return null;
+}
+
+/**
+ * The selection matched no Leads. The cards then read 0, which is true but
+ * easy to mistake for a fault; Period Sales are dated by payment, so they may
+ * still be non-zero and the note must not claim otherwise.
+ */
+export function EmptyCohortNotice() {
+  return <div className="empty-state empty-cohort" role="status"><strong>Tanlangan davr va filtrlarda yangi Lead yo‘q</strong>
+    <p>Lead ko‘rsatkichlari 0 ko‘rinadi. Davr sotuvlari Oplata sanasi bo‘yicha alohida hisoblanadi. Sana oralig‘ini kengaytiring yoki filtrlarni tozalang.</p></div>;
 }

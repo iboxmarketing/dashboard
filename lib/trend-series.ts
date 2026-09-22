@@ -65,11 +65,14 @@ export function trendBarHeight(value: number | null, max: number) {
   return Math.max(3, (value / Math.max(1, max)) * 100);
 }
 
+/** Built once: constructing an `Intl.DateTimeFormat` per record dominated the trend. */
+const tashkentDayFormatter = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Tashkent", year: "numeric", month: "2-digit", day: "2-digit",
+});
+
 /** Calendar day in Asia/Tashkent — never the UTC date. */
 export function tashkentDayKey(value: string) {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Tashkent", year: "numeric", month: "2-digit", day: "2-digit",
-  }).format(new Date(value));
+  return tashkentDayFormatter.format(new Date(value));
 }
 
 export type TrendBounds = { from: string; to: string };
@@ -131,7 +134,8 @@ export function buildTrendDays(records: MetricRecord[], bounds?: TrendBounds): T
   for (const row of records) {
     if (!row.createdAt) continue;
     const key = tashkentDayKey(row.createdAt);
-    byDay.set(key, [...(byDay.get(key) ?? []), row]);
+    const day = byDay.get(key);
+    if (day) day.push(row); else byDay.set(key, [row]);
   }
   const dates = bounds
     ? calendarSpine(bounds)
@@ -221,8 +225,28 @@ export function buildTrendSeries(
   bounds?: TrendBounds,
   previousBounds?: TrendBounds,
 ): { points: TrendPoint[]; hasPrevious: boolean } {
+  return trendSeriesFromDays(buildTrendDays(records, bounds), buildTrendDays(previousRecords, previousBounds), id);
+}
+
+/**
+ * Every metric's series over one pair of populations. The per-day metrics do
+ * not depend on the metric being charted, so the days are built once and each
+ * series reads its own value from them — the same points `buildTrendSeries`
+ * returns metric by metric.
+ */
+export function buildTrendSeriesSet(
+  records: MetricRecord[],
+  previousRecords: MetricRecord[],
+  ids: readonly TrendMetricId[],
+  bounds?: TrendBounds,
+  previousBounds?: TrendBounds,
+): Record<TrendMetricId, { points: TrendPoint[]; hasPrevious: boolean }> {
   const days = buildTrendDays(records, bounds);
   const previousDays = buildTrendDays(previousRecords, previousBounds);
+  return Object.fromEntries(ids.map((id) => [id, trendSeriesFromDays(days, previousDays, id)])) as Record<TrendMetricId, { points: TrendPoint[]; hasPrevious: boolean }>;
+}
+
+function trendSeriesFromDays(days: TrendDay[], previousDays: TrendDay[], id: TrendMetricId): { points: TrendPoint[]; hasPrevious: boolean } {
   const values = days.map((day) => trendValue(day, id));
   const averages = supportsMovingAverage(id) ? movingAverage(values) : values.map(() => null);
   const needsCoverage = Boolean(trendMetric(id).needsCoverage);
