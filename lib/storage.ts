@@ -406,7 +406,11 @@ export async function saveSyncState(state: {
 
 export async function getSyncState() {
   await ensureSchema();
-  const row = await getD1().prepare("SELECT * FROM sync_state WHERE id = 'main'").first<Record<string, string | null>>();
+  // Independent reads, issued together: one D1 round trip instead of two.
+  const [row, job] = await Promise.all([
+    getD1().prepare("SELECT * FROM sync_state WHERE id = 'main'").first<Record<string, string | null>>(),
+    getSyncJob(),
+  ]);
   const storedStatus = row?.status && ["idle", "running", "paused", "success", "error"].includes(row.status) ? row.status : "idle";
   const base = {
     status: storedStatus as SyncProgressState["status"],
@@ -416,7 +420,6 @@ export async function getSyncState() {
     permissions: row?.permissions ? (JSON.parse(row.permissions) as Record<string, string>) : {},
     safeError: row?.safe_error ?? null,
   };
-  const job = await getSyncJob();
   if (!job) return {
     ...base,
     status: base.status === "running" ? "error" : base.status,

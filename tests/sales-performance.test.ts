@@ -217,6 +217,7 @@ test("the Sales loader re-resolves SLA per request and caches rows only under th
     assert.ok(storage.includes(part), part);
   }
   assert.match(storage, /if \(ensuredDatabases\.has\(db\)\) return;\s*await createSchema\(db\);\s*ensuredDatabases\.add\(db\);/, "schema is ensured once per binding, and only after success");
+  assert.match(storage, /export async function getSyncState\(\) \{\s*await ensureSchema\(\);\s*const \[row, job\] = await Promise\.all\(\[/, "sync state and job are read in one round trip");
 
   const reconciliation = code("../lib/post-sync-reconciliation.ts");
   const lastScopeWrite = reconciliation.lastIndexOf("setAnalyticsCurrentScope(");
