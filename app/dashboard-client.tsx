@@ -1093,6 +1093,10 @@ function DiagnosticsView({ data, reconciliation }: { data: DiagnosticsData; reco
     { label: "Sotuvchi joriy mas’uldan olindi", hint: "Eng zaif atributsiya manbai", count: quality.currentResponsibleFallback },
     { label: "Takroriy lead", hint: "Contact ID, keyin Company ID bo‘yicha", count: quality.duplicateLeads },
     { label: "Ma’lumot mavjud emas", hint: "Activity yoki stage history olinmagan", count: quality.dataUnavailable },
+    { label: "Eski yozuv — yangilash kerak", hint: "Loyiha a’zoligi aniqlanmagan; UNRESOLVED sifatida saqlanadi, Full Sync qayta quradi", count: data.membership.needsRefresh },
+    { label: "Eski yozuv — boshqa loyiha", hint: "Oxirgi ma’lum funnel loyihaga kirmaydi; Lead’ga qo‘shilmaydi", count: data.membership.legacyOtherProject },
+    { label: "Manba: Marketing kanal", hint: data.marketingChannelField ? `${data.marketingChannelField} maydonidan` : "Marketing kanal maydoni sozlanmagan", count: data.sourceAuthority.marketingChannel },
+    { label: "Manba: SOURCE_ID (zaxira)", hint: "Marketing kanal bo‘sh yoki yaroqsiz", count: data.sourceAuthority.sourceId },
   ];
   return <><div className="page-title"><div><p className="eyebrow">ADMIN</p><h1>Diagnostika</h1><p>API ruxsatlari, call provider’lar va data quality nazorati.</p></div></div>
     <section className="dashboard-grid two-one"><article className="panel"><SectionHeader title="Bitrix24 ruxsatlari" /><div className="permission-list">{permissions.map(([label, state]) => <div key={label}><StatusDot state={state ?? "error"} /><span>{label}</span><strong>{state === "ok" ? "Tayyor" : state === "warning" ? "Cheklangan" : "Tekshirish kerak"}</strong></div>)}</div></article>
@@ -1475,7 +1479,7 @@ function SettingsView({ settings, syncing, lastSyncAt, onSave, onFullSync, onDir
             </button></article>;
         })}</div>
       </section>
-      <section className="panel"><SectionHeader title="Qo‘shimcha Bitrix maydonlari" subtitle="Sotuvchi maydoni. Manba doim standart SOURCE_ID’dan olinadi." />
+      <section className="panel"><SectionHeader title="Qo‘shimcha Bitrix maydonlari" subtitle="Sotuvchi va Marketing kanal maydonlari. Kanal bo‘sh bo‘lsa Manba standart SOURCE_ID’dan olinadi." />
         <div className={`field-discovery ${customFieldCount ? "ok" : "warning"}`}>{customFieldCount ? `${customFieldCount} ta maxsus maydon topildi. Nom yoki kod bo‘yicha qidiring.` : "Webhook maxsus maydon nomlarini bermadi. UF_CRM_... kodini qo‘lda kiritish mumkin."}</div>
         <datalist id="crm-field-options">{sellerFieldOptions}</datalist>
         <div className="config-fields">
@@ -1485,6 +1489,12 @@ function SettingsView({ settings, syncing, lastSyncAt, onSave, onFullSync, onDir
             <TextInput list="crm-field-options" value={draft.salesManagerField ?? ""} placeholder="Bo‘sh bo‘lsa avtomatik"
               onChange={(event) => setDraft({ ...draft, salesManagerField: event.target.value.trim() || null })} />
           </FormField>
+          <FormField label="Marketing kanal maydoni"
+            hint="Deal’da shu maydon to‘ldirilgan bo‘lsa Manba shu yerdan olinadi, aks holda standart SOURCE_ID. Nom bo‘yicha taxmin qilinmaydi — faqat shu yerda tanlangan maydon.">
+            <TextInput list="marketing-field-options" value={draft.marketingChannelField ?? ""} placeholder="Bo‘sh bo‘lsa SOURCE_ID"
+              onChange={(event) => setDraft({ ...draft, marketingChannelField: event.target.value.trim() || null })} />
+          </FormField>
+          <datalist id="marketing-field-options">{reasonFieldOptions.map((field) => <option key={field.key} value={field.key}>{field.title}</option>)}</datalist>
         </div>
       </section>
     </>}

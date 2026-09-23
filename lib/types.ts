@@ -183,6 +183,11 @@ export type AnalyticsRecord = {
   /** Canonical Sales-entry + current-project membership; source/reason never decide it. */
   projectLeadMembership?: "INCLUDED" | "EXCLUDED" | "UNRESOLVED";
   /**
+   * Set only on prepared (read-side) records: how membership was established.
+   * Never persisted — see `resolveProjectMembership`.
+   */
+  membershipBasis?: "RECORD" | "LEGACY_OTHER_PROJECT" | "LEGACY_ROUTING" | "LEGACY_NEEDS_REFRESH";
+  /**
    * Where the deal sits *now*, as opposed to which cohort it belongs to.
    * Additive and optional: absent means IN_SCOPE. A definitive move or deletion
    * overrides stored membership; ambiguous lookups leave this field untouched.
@@ -194,8 +199,14 @@ export type AnalyticsRecord = {
   stageAgeHours: number;
   stageLimitHours: number;
   stageOverdue: boolean;
+  /** Standard Bitrix SOURCE_ID, raw. */
   sourceId: string;
+  /** Effective Marketing source — see lib/source-authority.ts. */
   source: string;
+  /** SOURCE_ID resolved through the SOURCE dictionary; optional on records older than version 12. */
+  rawSource?: string;
+  sourceAuthority?: "MARKETING_CHANNEL" | "SOURCE_ID";
+  marketingChannel?: string | null;
   salesStatus: SalesStatus;
   qualified: boolean;
   qualifiedAt: string | null;

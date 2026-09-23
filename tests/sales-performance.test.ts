@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { businessMinutesExceed, calculateBusinessMinutes, defaultSettings, getSlaStart } from "../lib/business-time";
 import { markDuplicates } from "../lib/duplicates";
 import { elapsedSlaMinutes, resolveSlaState } from "../lib/sla";
+import { resolveProjectMembership } from "../lib/sales-logic";
 import {
   TREND_METRICS, buildTrendSeries, buildTrendSeriesSet,
 } from "../lib/trend-series";
@@ -71,12 +72,20 @@ function dataset(size: number, seed: number): DashboardRecord[] {
   });
 }
 
-/** `prepareSalesRecords` exactly as it was before the base/SLA split. */
+/**
+ * `prepareSalesRecords` as one pass, the way it was before the base/SLA split,
+ * plus the read-side membership resolution the canonicalization sprint added
+ * (lib/sales-logic.ts `resolveProjectMembership`).
+ */
 function referencePrepare(rows: DashboardRecord[], settings: DashboardSettings, now: Date) {
   const selectedOrigins = new Set(settings.selectedPipelineIds.map(String));
   const selectedProjectCategories = new Set([...settings.selectedPipelineIds, ...settings.postSalePipelineIds].map(String));
   const project = rows.map(hydrateRecord).filter((row) => !selectedOrigins.size || selectedOrigins.has(String(row.originCategoryId)) || selectedProjectCategories.has(String(row.categoryId)));
-  return markDuplicates(project.map((row) => ({ ...row, slaStatus: referenceSla(row, settings, now) })));
+  const decided = project.map((row) => {
+    const { membership, basis } = resolveProjectMembership(row, selectedProjectCategories);
+    return { ...row, projectLeadMembership: membership, membershipBasis: basis };
+  });
+  return markDuplicates(decided.map((row) => ({ ...row, slaStatus: referenceSla(row, settings, now) })));
 }
 
 /** `resolveSlaState` exactly as it was: the full elapsed walk, then the comparison. */

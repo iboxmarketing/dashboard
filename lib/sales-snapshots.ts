@@ -53,3 +53,15 @@ WHERE excluded.manager_id IS NOT NULL
     )
   )
 `;
+
+/**
+ * Which rebuilt records may create or update a sale snapshot: a sale with a
+ * date, whose Deal belongs to the project. A Deal decided EXCLUDED — one that
+ * sits in another project's funnel — is not this project's sale, so a Full
+ * Sync that rebuilds it must not freeze another project's seller into the
+ * snapshot table. If it later returns to the project it is rebuilt INCLUDED
+ * and snapshotted then, under the normal attribution order.
+ */
+export function isSnapshotCandidate(record: { salesStatus: string; wonAt: string | null; projectLeadMembership?: string | null }) {
+  return record.salesStatus === "WON" && Boolean(record.wonAt) && record.projectLeadMembership !== "EXCLUDED";
+}

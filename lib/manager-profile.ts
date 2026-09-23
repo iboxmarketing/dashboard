@@ -1,6 +1,6 @@
 import { buildDashboardMetrics } from "./dashboard-metrics";
 import type { MetricRecord } from "./dashboard-record";
-import { isSalesLost, MISSING_LOSS_REASON, salesManagerKey } from "./sales-logic";
+import { isEligibleCohortDeal, isSalesLost, MISSING_LOSS_REASON, salesManagerKey } from "./sales-logic";
 
 /**
  * Individual seller profile.
@@ -57,14 +57,20 @@ export function reasonBreakdown(rows: { lossReason?: string | null }[]): ReasonR
     .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
 }
 
-/** Canonical Not Relevant population — marketing rejections only. */
+/**
+ * Canonical Not Relevant population — marketing rejections only, over the
+ * eligible Leads. Eligibility is part of the definition: a Deal that now sits
+ * in another project's funnel is not this project's Not Relevant, and the KPI
+ * card (buildDashboardMetrics) has always counted it that way. Filtering here
+ * too keeps the reason breakdowns equal to the card they sit under.
+ */
 export function notRelevantRecords(cohort: MetricRecord[]) {
-  return cohort.filter((row) => row.lossReasonGroup === "MARKETING");
+  return cohort.filter((row) => isEligibleCohortDeal(row) && row.lossReasonGroup === "MARKETING");
 }
 
-/** Canonical Sales Lost — qualified and lost by sales. Pre-SQL closures excluded. */
+/** Canonical Sales Lost — an eligible, qualified Lead lost by sales. Pre-SQL closures included (diagnostic only). */
 export function salesLostRecords(cohort: MetricRecord[]) {
-  return cohort.filter(isSalesLost);
+  return cohort.filter((row) => isEligibleCohortDeal(row) && isSalesLost(row));
 }
 
 /**

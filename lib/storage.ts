@@ -1,7 +1,7 @@
 import { getD1 } from "@/db";
 import { DASHBOARD_TIMELINE_FIELD, STAGE_FUNNEL_FIELDS, STAGE_HISTORY_COUNT_FIELD, dashboardRemovedPaths } from "./dashboard-record";
 import { defaultSettings } from "./business-time";
-import { SALES_SNAPSHOT_UPSERT } from "./sales-snapshots";
+import { SALES_SNAPSHOT_UPSERT, isSnapshotCandidate } from "./sales-snapshots";
 import { stageIdList } from "./stage-config";
 import { resolveDashboardMetricIds } from "./dashboard-metrics";
 import { normalizeSafeStableSellerField } from "./stable-seller-field";
@@ -339,7 +339,7 @@ export async function getSalesSnapshots(dealIds: string[]) {
 
 export async function saveSalesSnapshots(records: AnalyticsRecord[]) {
   await ensureSchema();
-  const won = records.filter((record) => record.salesStatus === "WON" && record.wonAt);
+  const won = records.filter(isSnapshotCandidate);
   const db = getD1();
   for (let index = 0; index < won.length; index += 40) {
     const statements = won.slice(index, index + 40).map((record) => db.prepare(SALES_SNAPSHOT_UPSERT)
@@ -473,7 +473,7 @@ export type StoredSyncJob = {
   selectedPipelines: { id: string; name: string }[];
   scopePipelineId: string;
   reportingPipelines: { id: string; name: string }[];
-  dealScope: "main" | "paymentHistory" | "currentPayment" | "postSale";
+  dealScope: "main" | "paymentHistory" | "currentPayment" | "postSale" | "refresh";
   counts: Record<string, number>;
   permissions: Record<string, string>;
   safeError: string | null;

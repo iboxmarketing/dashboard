@@ -276,3 +276,31 @@ webhook, but it is still production data — keep it out of the repository.
 - [ ] If persisted analytics semantics changed: ANALYTICS_VERSION bumped, a pre-backfill Time Travel bookmark recorded, and `autoSyncMinutes` set to 0 for the backfill window.
 - [ ] Site deployment reaches `succeeded`.
 - [ ] One Bitrix number is manually reconciled after deploy.
+
+## Full Sync refresh of previously known Deals
+
+A Full Sync clears and re-reads only the scoped funnels, so before this step a
+Deal that had moved to another project's funnel kept whatever analytics row it
+last received — counted through the legacy membership fallback — and a sale
+snapshot with no raw row stayed invisible. The Full Sync now ends with a
+`refresh` scope (`lib/known-deal-refresh.ts`) that re-reads every such Deal by
+ID and rebuilds it at the current analytics version.
+
+Reading the evidence afterwards, read-only:
+
+```bash
+wrangler d1 execute <database> --remote --json --command \
+  "SELECT json_extract(value,'\$.runId') run,
+          (SELECT count(*) FROM json_each(json_extract(value,'\$.entries'))) entries
+     FROM crm_dictionaries WHERE key = 'refreshAudit:3'"
+```
+
+Per-Deal outcomes live in the same row: `REFRESHED` (rebuilt this run, with the
+category Bitrix returned), `NOT_FOUND` (definitively gone — current scope set to
+`UNAVAILABLE`, nothing deleted), `FOUND_NOT_LISTED` (a visibility question for a
+human) and `LOOKUP_ERROR` (no answer; the stored record is untouched).
+
+Diagnostics shows two counts for records older than persisted membership:
+"needs refresh" (kept as unresolved) and "other project" (excluded by their last
+known category). Both should be zero after a Full Sync; a non-zero "needs
+refresh" means Leads are still resting on legacy evidence.

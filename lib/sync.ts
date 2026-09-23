@@ -5,8 +5,13 @@ import { bitrixCall, bitrixList, bitrixPage, getBitrixDomain, SafeBitrixError, s
 import {
   getDictionary, getSettings, getSyncJob,
   getSyncState, getSalesSnapshots, saveDictionary, saveSalesSnapshots, saveSettings, saveSyncJob,
-  saveSyncState, upsertAnalyticsRecords, type StoredSyncJob,
+  saveSyncState, setAnalyticsCurrentScope, upsertAnalyticsRecords, type StoredSyncJob,
 } from "./storage";
+import { getDealsByIds } from "./deal-lookup";
+import {
+  REFRESH_BATCH_SIZE, REFRESH_CANDIDATES_SQL, classifyRefreshStep, currentRefreshAudit, refreshAuditKey, refreshMisses,
+  type RefreshAudit, type RefreshOrigin,
+} from "./known-deal-refresh";
 import type { CrmFieldOption, PipelineOption, PipelineStageOption } from "./types";
 export { normalizePipelineName, resolvePipelineSelection } from "./pipelines";
 import { normalizePipelineName, pairPostSalePipeline, resolvePipelineSelection, resolvePostSalePipelines } from "./pipelines";
@@ -14,6 +19,7 @@ import { resolveSyncWindow } from "./sync-window";
 import { canonicalDealFieldKey, canonicalizeFieldOptions } from "./crm-fields";
 import { normalizeSafeStableSellerField } from "./stable-seller-field";
 import { runPostSyncReconciliation } from "./post-sync-reconciliation";
+import { validMarketingChannelField } from "./source-authority";
 import {
   persistStageHistoryRows,
   stageHistoryRowKey,
@@ -248,12 +254,14 @@ function advanceDealDiscovery(job: StoredSyncJob, paymentStageIds: string[]) {
   const next = nextDealDiscoveryScope(job.dealScope, {
     hasPaymentStages: paymentStageIds.length > 0,
     hasPostSale: job.reportingPipelines.length > 0,
+    refreshKnown: job.mode === "full",
   });
   if (!next) return move(job, "stageHistory", "Deal stage history ma’lumotlari yuklanmoqda…", job.counts.deals ?? 0);
   const messages = {
     paymentHistory: "Tanlangan davrdagi payment-stage kirishlari tekshirilmoqda…",
     currentPayment: "Joriy payment stage Deal’lari MOVED_TIME bo‘yicha tekshirilmoqda…",
     postSale: "Tanlangan davrdagi post-sale kirishlari tekshirilmoqda…",
+    refresh: "Bazadagi boshqa Deal’lar joriy holati bo‘yicha yangilanmoqda…",
   } as const;
   return { ...job, dealScope: next, cursor: 0, processed: 0, total: 0, message: messages[next] };
 }
@@ -281,7 +289,9 @@ export async function startSync(options: { days?: number; full?: boolean; pipeli
     failureReasonField: settings.failureReasonField && knownFieldKeys.has(settings.failureReasonField)
       ? settings.failureReasonField
       : detectFailureReasonField(crmFields),
-    marketingChannelField: settings.marketingChannelField ?? detectField(crmFields, /маркет.*канал|marketing.*kanal|marketing.*channel/),
+    // Configured only — never detected by name — and kept only while Bitrix
+    // still lists the field (lib/source-authority.ts).
+    marketingChannelField: validMarketingChannelField(settings.marketingChannelField, knownFieldKeys),
     salesManagerField: normalizeSafeStableSellerField(settings.salesManagerField)
       ?? normalizeSafeStableSellerField(detectField(
         crmFields.filter((field) => normalizeSafeStableSellerField(field.key)),
@@ -325,17 +335,21 @@ async function dealStep(job: StoredSyncJob) {
   const salesCategoryIds = job.selectedPipelines.map((item) => item.id);
   const postSaleCategoryIds = job.reportingPipelines.map((item) => item.id);
   const paymentStageIds = [...new Set(settings.paymentStageIds.map(String).filter(Boolean))];
-  // Source comes from SOURCE_ID; the legacy marketing-channel field is no longer read.
+  // Source authority reads the configured Marketing channel field, with
+  // SOURCE_ID (always selected below) as its fallback.
   const customFields = [...new Set([
     settings.failureReasonField,
     ...Object.values(settings.failureReasonFieldByPipeline ?? {}),
     normalizeSafeStableSellerField(settings.salesManagerField),
+    settings.marketingChannelField,
   ])]
     .filter((field): field is string => Boolean(field)).map(canonicalDealFieldKey);
   // CLOSED is current-state evidence for reconciliation only. Won/lost
   // classification stays with the canonical stage and stage-history rules;
   // nothing derives salesStatus from this flag.
   const select = ["ID", "TITLE", "DATE_CREATE", "DATE_MODIFY", "CLOSED", "CLOSEDATE", "MOVED_TIME", "MOVED_BY_ID", "ASSIGNED_BY_ID", "CATEGORY_ID", "STAGE_ID", "SOURCE_ID", "CONTACT_ID", "CONTACT_IDS", "COMPANY_ID", "OPPORTUNITY", "CURRENCY_ID", ...customFields];
+
+  if (job.dealScope === "refresh") return await refreshKnownStep(job, select, postSaleCategoryIds, paymentStageIds);
 
   if (job.dealScope !== "main") {
     const request = buildPeriodSalesDiscoveryRequest({
@@ -406,6 +420,55 @@ async function dealStep(job: StoredSyncJob) {
   }
   const total = page.total ?? Math.max(counts.deals, page.next + 50);
   return { ...job, cursor: page.next, processed: counts.deals, total, counts, progress: phaseProgress("deals", counts.deals, total), message: `${counts.deals} / ${total} ta Deal yuklandi` };
+}
+
+/**
+ * One Full Sync refresh step (lib/known-deal-refresh.ts): re-read up to
+ * REFRESH_BATCH_SIZE known Deals by ID into this run, and classify every miss
+ * with a by-ID lookup. A refreshed Deal then takes the ordinary stage-history
+ * and analytics path; only a definitive NOT_FOUND changes a stored record,
+ * and only its current scope. Each outcome is recorded for the audit.
+ */
+async function refreshKnownStep(job: StoredSyncJob, select: string[], postSaleCategoryIds: string[], paymentStageIds: string[]) {
+  const pending = await getD1().prepare(REFRESH_CANDIDATES_SQL).bind(job.runId, REFRESH_BATCH_SIZE, job.cursor)
+    .all<{ deal_id: string; origin: RefreshOrigin }>();
+  const candidates = (pending.results ?? []).map((row) => ({ dealId: String(row.deal_id), origin: row.origin }));
+  if (!candidates.length) return advanceDealDiscovery(job, paymentStageIds);
+
+  const page = await bitrixPage<RawDeal>("crm.deal.list", {
+    order: { ID: "ASC" }, filter: { "@ID": candidates.map((row) => row.dealId) }, select,
+  }, 0);
+  const wanted = new Set(candidates.map((row) => row.dealId));
+  const deals = await enrichPostSaleObservers(page.items.filter((deal) => wanted.has(value(deal, "ID"))), postSaleCategoryIds);
+  await upsertRaw("raw_deals", deals.map((deal) => [value(deal, "ID"), value(deal, "CATEGORY_ID") || "0", value(deal, "DATE_CREATE"), JSON.stringify(deal), job.runId]));
+
+  const listed = new Map(deals.map((deal) => [value(deal, "ID"), { categoryId: value(deal, "CATEGORY_ID"), stageId: value(deal, "STAGE_ID") }]));
+  const missed = candidates.filter((row) => !listed.has(row.dealId)).map((row) => row.dealId);
+  const lookups = missed.length ? await getDealsByIds(missed) : new Map();
+  const entries = classifyRefreshStep({ candidates, listed, lookups });
+  // Only Bitrix's definitive answer may retire a stored record, and only by
+  // scope — the row, its history and any sale snapshot all stay.
+  for (const entry of entries) if (entry.outcome === "NOT_FOUND") await setAnalyticsCurrentScope(entry.dealId, "UNAVAILABLE");
+
+  const key = refreshAuditKey(job.scopePipelineId);
+  const audit = currentRefreshAudit(await getDictionary<RefreshAudit | null>(key, null), job.runId);
+  await saveDictionary(key, { runId: job.runId, entries: [...audit.entries, ...entries] } satisfies RefreshAudit);
+
+  const misses = refreshMisses(entries);
+  const counts = {
+    ...job.counts,
+    deals: (job.counts.deals ?? 0) + deals.length,
+    refreshDeals: (job.counts.refreshDeals ?? 0) + deals.length,
+    refreshMissing: (job.counts.refreshMissing ?? 0) + misses,
+  };
+  return {
+    ...job,
+    cursor: job.cursor + misses,
+    processed: job.processed + candidates.length,
+    total: Math.max(job.total, job.processed + candidates.length),
+    counts,
+    message: `${counts.refreshDeals} ta mavjud Deal yangilandi; ${counts.refreshMissing} tasi Bitrix’da topilmadi yoki tekshirildi…`,
+  };
 }
 
 async function stageStep(job: StoredSyncJob) {

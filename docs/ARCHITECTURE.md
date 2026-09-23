@@ -47,13 +47,22 @@ This separation prevents historical import limits from understating current work
 
 ## Sync phases
 
-1. `deals` — selected Sales Lead scope, plus bounded sale-event discovery:
+1. `deals` — selected Sales Lead scope, plus bounded sale-event discovery, and
+   in a Full Sync a final `refresh` scope:
    configured payment-stage history, current payment-stage `MOVED_TIME`, and
    matching post-sale transitions. The event streams are independent of a
    Deal's `DATE_CREATE` and converge on the same `raw_deals` row by Deal ID.
    Current post-sale Deals are enriched through `crm.item.list` (`entityTypeId:
    2`, `select: ["id", "observers"]`) because `observers` is the documented
    universal `user[]` field and is not guessed from a legacy Deal field name.
+   The Full Sync `refresh` scope (`lib/known-deal-refresh.ts`) then re-reads by
+   ID every Deal D1 already knows but those queries did not return — a Deal that
+   moved to another project's funnel, or a sale snapshot with no raw row — so it
+   is rebuilt from current evidence by the current analytics version instead of
+   surviving as a stale row. A Deal Bitrix does not list is asked for with
+   `crm.deal.get`: only a definitive NOT_FOUND marks it unavailable, and each
+   outcome is recorded in `crm_dictionaries` under `refreshAudit:<pipelineId>`.
+   Nothing is deleted, and a Deal decided EXCLUDED writes no sale snapshot.
 2. `activities` — activity data in bounded deal batches.
 3. `stageHistory` — stage movement per deal.
 4. `telephony` — call-result enrichment.

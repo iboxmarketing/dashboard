@@ -1,5 +1,5 @@
 import { listProjectUpdates, listProjects } from "@/lib/projects-storage";
-import { listAnalyticsRecords } from "@/lib/storage";
+import { loadSalesRecords } from "@/lib/sales-http";
 import { buildSharePayload, shareDataNeeds } from "@/lib/share-model";
 import { renderSharePage } from "@/lib/share-render";
 import { sharePageResponse, shareUnavailableResponse } from "@/lib/share-http";
@@ -34,7 +34,9 @@ export async function GET(_request: Request, context: { params: Promise<{ token:
     // Only the datasets the allowed widgets actually need are ever loaded.
     const needs = shareDataNeeds(resolved.widgets, allowedWidgetIds);
     const [records, projects, updates] = await Promise.all([
-      needs.analytics ? listAnalyticsRecords() : Promise.resolve([]),
+      // The same prepared project records the signed-in Pages view reads: one
+      // membership rule, one cache, no raw-table path of its own.
+      needs.analytics ? loadSalesRecords().then((loaded) => loaded.records) : Promise.resolve([]),
       needs.projects ? listProjects() : Promise.resolve([]),
       needs.projects ? listProjectUpdates() : Promise.resolve([]),
     ]);

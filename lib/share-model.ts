@@ -7,7 +7,7 @@ import {
   buildDashboardMetrics, resolveDashboardMetric, selectPeriodPopulations, type DashboardMetricId,
 } from "./dashboard-metrics";
 import { isOverdue, latestUpdate, statusBreakdown, summarizeProjects, type Project, type ProjectUpdate } from "./projects";
-import type { AnalyticsRecord } from "./types";
+import type { MetricRecord } from "./dashboard-record";
 
 /**
  * The public payload boundary for shared pages.
@@ -39,7 +39,8 @@ export type ShareModelInput = {
   widgets: PageWidget[];
   /** Widget ids this particular share exposes. Everything else is dropped. */
   allowedWidgetIds: string[];
-  records: AnalyticsRecord[];
+  /** Prepared project records (`loadSalesRecords`), never the raw table. */
+  records: MetricRecord[];
   projects: Project[];
   updates: ProjectUpdate[];
   now?: Date;

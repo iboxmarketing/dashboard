@@ -7,10 +7,15 @@
  * changing cohort membership.
  */
 
-export type DealDiscoveryScope = "main" | "paymentHistory" | "currentPayment" | "postSale";
+/**
+ * `refresh` is not an event stream: it runs last, in a Full Sync only, and
+ * re-reads every Deal D1 already knows but the scoped queries did not return
+ * (see lib/known-deal-refresh.ts).
+ */
+export type DealDiscoveryScope = "main" | "paymentHistory" | "currentPayment" | "postSale" | "refresh";
 
 type DiscoveryInput = {
-  scope: Exclude<DealDiscoveryScope, "main">;
+  scope: Exclude<DealDiscoveryScope, "main" | "refresh">;
   salesCategoryIds: string[];
   postSaleCategoryIds: string[];
   paymentStageIds: string[];
@@ -32,8 +37,18 @@ function exactOrIn(field: string, values: string[]) {
 
 export function nextDealDiscoveryScope(
   current: DealDiscoveryScope,
-  input: { hasPaymentStages: boolean; hasPostSale: boolean },
+  input: { hasPaymentStages: boolean; hasPostSale: boolean; refreshKnown?: boolean },
 ): Exclude<DealDiscoveryScope, "main"> | null {
+  const event = nextEventScope(current, input);
+  if (event) return event;
+  // After the last event stream, a Full Sync refreshes the Deals it did not reach.
+  return input.refreshKnown && current !== "refresh" ? "refresh" : null;
+}
+
+function nextEventScope(
+  current: DealDiscoveryScope,
+  input: { hasPaymentStages: boolean; hasPostSale: boolean },
+): Exclude<DealDiscoveryScope, "main" | "refresh"> | null {
   if (current === "main") {
     if (input.hasPaymentStages) return "paymentHistory";
     return input.hasPostSale ? "postSale" : null;

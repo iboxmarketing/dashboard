@@ -515,7 +515,9 @@ test("AO: the stage-funnel projection stays lazy and the dashboard payload carri
   assert.ok(STAGE_FUNNEL_FIELDS.includes("salesManagerId"), "historical manager filter uses seller");
   assert.ok(STAGE_FUNNEL_FIELDS.includes("source"), "historical Source filter has its field");
   assert.equal((STAGE_FUNNEL_FIELDS as readonly string[]).includes("assignedManagerId"), false, "current assignee is not historical funnel identity");
-  assert.equal(STAGE_FUNNEL_FIELDS.length, 12, "still a projection, not the full record");
+  // categoryId lets the route resolve an older record's membership server-side.
+  assert.ok(STAGE_FUNNEL_FIELDS.includes("categoryId"));
+  assert.equal(STAGE_FUNNEL_FIELDS.length, 13, "still a projection, not the full record");
   assert.ok(Object.keys(funnel()).length < 20);
 });
 

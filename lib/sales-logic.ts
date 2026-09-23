@@ -245,7 +245,9 @@ export function isSqlOrDownstreamStage(input: {
  * Canonical project Lead membership. New records carry the shared audit
  * decision; currentScope applies later live reconciliation (a confirmed move or
  * deletion). UNRESOLVED is retained rather than silently excluded. The legacy
- * reason fallback exists only for pre-version-8 records until they are rebuilt.
+ * reason fallback exists only for pre-version-8 records until they are rebuilt;
+ * every runtime path first resolves such records with `resolveProjectMembership`
+ * (see `prepareSalesBase`), so the fallback never decides a stored record there.
  */
 export function isEligibleCohortDeal(row: {
   projectLeadMembership?: "INCLUDED" | "EXCLUDED" | "UNRESOLVED" | null;
@@ -255,6 +257,38 @@ export function isEligibleCohortDeal(row: {
   if (row.currentScope === "OUT_OF_SCOPE" || row.currentScope === "UNAVAILABLE") return false;
   if (row.projectLeadMembership) return row.projectLeadMembership !== "EXCLUDED";
   return row.lossReasonGroup !== "ROUTING";
+}
+
+/**
+ * How a record's project membership was established.
+ *
+ *   RECORD                 decided by the analytics builder from raw funnel
+ *                          evidence (version 8 and later).
+ *   LEGACY_OTHER_PROJECT   an older record whose last known current category
+ *                          belongs to no project funnel: EXCLUDED until the
+ *                          Deal returns to one and is rebuilt.
+ *   LEGACY_ROUTING         an older in-project record with transfer evidence:
+ *                          EXCLUDED, as the legacy rule always did.
+ *   LEGACY_NEEDS_REFRESH   an older in-project record with no decision at all:
+ *                          UNRESOLVED — kept, never silently excluded, and
+ *                          counted in Diagnostics until a Full Sync rebuilds it.
+ */
+export type MembershipBasis = "RECORD" | "LEGACY_OTHER_PROJECT" | "LEGACY_ROUTING" | "LEGACY_NEEDS_REFRESH";
+
+/**
+ * Canonical membership for any stored record, old or new. A record the
+ * builder never decided must not borrow the legacy "everything except routing"
+ * fallback when its own current category already says it sits in another
+ * project; that fallback is what let stale other-project rows count as Leads.
+ */
+export function resolveProjectMembership(
+  row: { projectLeadMembership?: "INCLUDED" | "EXCLUDED" | "UNRESOLVED" | null; categoryId?: string | null; lossReasonGroup?: LossReasonGroup | null },
+  projectCategoryIds: ReadonlySet<string>,
+): { membership: "INCLUDED" | "EXCLUDED" | "UNRESOLVED"; basis: MembershipBasis } {
+  if (row.projectLeadMembership) return { membership: row.projectLeadMembership, basis: "RECORD" };
+  if (!projectCategoryIds.has(String(row.categoryId ?? ""))) return { membership: "EXCLUDED", basis: "LEGACY_OTHER_PROJECT" };
+  if (row.lossReasonGroup === "ROUTING") return { membership: "EXCLUDED", basis: "LEGACY_ROUTING" };
+  return { membership: "UNRESOLVED", basis: "LEGACY_NEEDS_REFRESH" };
 }
 
 /**

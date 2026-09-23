@@ -70,7 +70,22 @@ A Deal created outside IBOX and later entering IBOX Sales is included.
 
 A Deal confirmed deleted from Bitrix is excluded. Access-denied, unreadable or
 otherwise ambiguous lookups are unresolved evidence and must never be treated
-as deletion. This canonical ID set is the future base population for downstream
+as deletion.
+
+A stored analytics record older than persisted membership (before analytics
+version 8) carries no membership decision of its own. Such a record is resolved
+on read (`resolveProjectMembership`):
+
+- its last known current category is outside the project funnels — excluded,
+  exactly as the canonical rule requires, until the Deal returns and is rebuilt;
+- inside the project with legacy transfer evidence — excluded, as before;
+- inside the project with no decision at all — unresolved: kept in the
+  population, never silently dropped, and counted in Diagnostics as "needs
+  refresh" until a Full Sync rebuilds it.
+
+The legacy "everything except a routing reason" fallback may never override a
+known current category. Every reader of stored records — the Sales sections, a
+public shared page, the Stage funnel — applies this one rule. This canonical ID set is the future base population for downstream
 IBOX metrics; those metric formulas are approved separately.
 
 ## 2. Lead quality
@@ -267,8 +282,18 @@ inventory.
 
 ## 9. Source and failure reason
 
-- Marketing source uses the configured custom Marketing channel field when available.
-- Fallback source is standard Bitrix `SOURCE_ID`.
+- Marketing source uses the configured custom Marketing channel field when the
+  Deal carries a valid value for it. On production that field is
+  `UF_CRM_1784823646` ("Marketing Kanali", a 9-option enumeration discovered
+  through `crm.deal.userfield.list`). The field is configured in Settings and is
+  never detected by name; a configured field Bitrix no longer lists is dropped.
+- Fallback source is standard Bitrix `SOURCE_ID`. An enumeration value whose
+  option Bitrix no longer lists is not a label anyone chose, so it falls back to
+  `SOURCE_ID` rather than showing a bare option ID.
+- Labels are Bitrix's own, verbatim, from the channel's option list or the
+  SOURCE dictionary. The two vocabularies are never mapped onto each other.
+- `rawSource` always keeps the `SOURCE_ID` label, and `sourceAuthority` records
+  which authority decided, so the two can be compared per Deal.
 - Failure reason uses the configured Bitrix custom field and must resolve enum IDs to readable labels.
 - Missing failure reason on a terminal lead is a data-quality issue and must be visible in Diagnostics.
 

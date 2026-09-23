@@ -4,6 +4,7 @@ import { resolveSlaState } from "./sla";
 import { classifyLossReasonGroup, MISSING_LOSS_REASON, classifySalesStatus, fieldDisplayValue, isLowQualityStage, isPaymentStage, isSqlOrDownstreamStage } from "./sales-logic";
 import { sqlThresholdsByCategory, type StageMeta, type StageSemantics } from "./stage-config";
 import { canonicalDealFieldKey } from "./crm-fields";
+import { resolveDealSource } from "./source-authority";
 import { decideCanonicalLeadMembership } from "./canonical-lead-membership.js";
 import { normalizeSafeStableSellerField } from "./stable-seller-field";
 import { DEAL_OBSERVERS_FIELD, singlePostSaleObserverId } from "./deal-observers";
@@ -52,8 +53,13 @@ import type { AnalyticsRecord, DashboardSettings, ProcessingSource, SalesManager
  *      but only when it contains exactly one valid user distinct from the
  *      current operational assignee. Observer evidence is explicit and never
  *      masquerades as a custom field.
+ * 12 — Source authority: `source` is the configured Marketing channel field's
+ *      label when the Deal carries a valid value, else the SOURCE_ID label;
+ *      `rawSource` always keeps the SOURCE_ID label and `sourceAuthority`
+ *      says which one decided. Lead, SQL, Sales and seller rules are
+ *      unchanged; only the Source dimension differs from version 11.
  */
-export const ANALYTICS_VERSION = 11;
+export const ANALYTICS_VERSION = 12;
 
 export type RawDeal = Record<string, unknown>;
 export type RawActivity = Record<string, unknown>;
@@ -321,11 +327,14 @@ export function buildAnalyticsRecords(input: {
     }
     if (!salesManager && salesManagerId) salesManager = managerName(salesManagerId, input.users);
 
-    // Source is the standard Bitrix SOURCE_ID resolved through the live SOURCE
-    // dictionary. Custom "how did you hear" fields and UTM are separate
-    // dimensions and must not stand in for it.
+    // Source authority (lib/source-authority.ts): the configured Marketing
+    // channel field when the Deal carries a valid value, else SOURCE_ID. The
+    // SOURCE_ID label is kept alongside as rawSource. UTM and other "how did
+    // you hear" fields are separate dimensions and never stand in for either.
     const sourceId = string(deal.SOURCE_ID);
-    const source = input.sources.get(sourceId) || sourceId || "Aniqlanmagan";
+    const { source, sourceAuthority, marketingChannel, rawSource } = resolveDealSource({
+      deal, marketingChannelField: input.settings.marketingChannelField, fieldOptions, sources: input.sources,
+    });
     const opportunity = Number(deal.OPPORTUNITY ?? 0);
     const effectiveWonAt = snapshot?.wonAt ?? wonAt;
     const salesCycleHours = effectiveWonAt ? Math.max(0, (new Date(effectiveWonAt).getTime() - created.getTime()) / 3_600_000) : null;
@@ -337,7 +346,7 @@ export function buildAnalyticsRecords(input: {
       assignedManagerId, assignedManager: managerName(assignedManagerId, input.users), categoryId: currentCategoryId, pipeline: input.pipelines.get(currentCategoryId) ?? `Pipeline #${currentCategoryId}`,
       originCategoryId, originPipeline: input.pipelines.get(originCategoryId) ?? `Pipeline #${originCategoryId}`, operationalPipeline: mainIds.has(currentCategoryId), projectLeadMembership,
       stageId: currentStageId, stage: currentStage, stageEnteredAt: stageEntered.toISOString(), stageAgeHours, stageLimitHours, stageOverdue: salesStatus === "ACTIVE" && stageAgeHours > stageLimitHours,
-      sourceId, source, salesStatus, qualified, qualifiedAt, qualifiedStageId: effectiveQualifiedEvent?.stageId ?? null, qualifiedStage: effectiveQualifiedEvent?.stage ?? null,
+      sourceId, source, rawSource, sourceAuthority, marketingChannel, salesStatus, qualified, qualifiedAt, qualifiedStageId: effectiveQualifiedEvent?.stageId ?? null, qualifiedStage: effectiveQualifiedEvent?.stage ?? null,
       wonAt: effectiveWonAt, salesCycleHours, opportunity: Number.isFinite(opportunity) ? opportunity : 0, currencyId: string(deal.CURRENCY_ID), lossReason: effectiveLossReason, lossReasonGroup,
       contactId: contactId || null, companyId: companyId || null, customerKey: contactId ? `contact:${contactId}` : companyId ? `company:${companyId}` : null, duplicateOfDealId: null, stageTimeline,
       salesManagerId: salesManagerId || null, salesManager: salesManager || null, salesManagerAttribution,

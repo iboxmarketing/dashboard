@@ -27,11 +27,12 @@ test("1: analyticsVersion 4 yozuvi eskirgan deb hisoblanadi", () => {
   assert.equal(isStale(3), true);
 });
 
-test("2: analyticsVersion 11 joriy, 10 esa observer dalilisiz eskirgan", () => {
-  assert.equal(ANALYTICS_VERSION, 11);
+test("2: analyticsVersion 12 joriy, 11 esa Marketing kanal manbasisiz eskirgan", () => {
+  assert.equal(ANALYTICS_VERSION, 12);
+  assert.equal(isStale(11), true, "version 11 Source’ni faqat SOURCE_ID’dan olgan");
   assert.equal(isStale(10), true, "version 10 raw Deal observer evidence’ini ishlatmagan");
   assert.equal(isStale(9), true, "version 9 could read ASSIGNED_BY_ID as a CUSTOM_FIELD seller");
-  assert.equal(isStale(11), false);
+  assert.equal(isStale(12), false);
   assert.equal(isStale(8), true, "version 8 could freeze a post-sale assignee as seller");
   assert.equal(isStale(7), true, "version 7 has no persisted canonical Lead membership");
   // Version 6 was written under the old pre-SQL exclusion — a direct close
@@ -41,8 +42,8 @@ test("2: analyticsVersion 11 joriy, 10 esa observer dalilisiz eskirgan", () => {
   assert.equal(isStale(5), true);
 });
 
-test("3: yangi qurilgan yozuvlar 11-versiya bilan saqlanadi", () => {
-  assert.equal(record().analyticsVersion, 11);
+test("3: yangi qurilgan yozuvlar 12-versiya bilan saqlanadi", () => {
+  assert.equal(record().analyticsVersion, 12);
   assert.equal(record().analyticsVersion, ANALYTICS_VERSION);
   assert.equal(record().projectLeadMembership, "INCLUDED");
 });

@@ -8,7 +8,7 @@ import { buildManagerProfile, notRelevantRecords, reasonBreakdown, salesLostReco
 import { boundsFromKeys, dateKey } from "./period";
 import { buildQualityAnalytics, type QualityAnalytics } from "./quality-analytics";
 import { dedupeByDealId, filterHistoricalRecords, historicalManagerOptions, type SalesFilterSelection } from "./record-filters";
-import { countClassificationConflicts, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isUnclassifiedLead, salesManagerKey } from "./sales-logic";
+import { countClassificationConflicts, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isUnclassifiedLead, resolveProjectMembership, salesManagerKey } from "./sales-logic";
 import { SLA_LABELS, resolveSlaState } from "./sla";
 import { TREND_METRICS, buildTrendSeriesSet, type TrendMetricId, type TrendPoint } from "./trend-series";
 import type { DashboardSettings, SyncProgressState } from "./types";
@@ -156,10 +156,30 @@ export function prepareSalesRecords(rows: DashboardRecord[], settings: Dashboard
  * in the same order.
  */
 export function prepareSalesBase(rows: DashboardRecord[], settings: Pick<DashboardSettings, "selectedPipelineIds" | "postSalePipelineIds">): DashboardRecord[] {
+  return markDuplicates(projectScopedRecords(rows.map(hydrateRecord), settings));
+}
+
+/**
+ * The selected project's records, each carrying a decided membership. Every
+ * reader of stored records — the Sales sections, a public share, the Stage
+ * funnel — goes through here, so no path can count a record the others would
+ * not.
+ *
+ * Kept: a record that started in a selected Sales funnel or sits in a project
+ * funnel now. Membership: the builder's decision, or for an older record that
+ * has none, `resolveProjectMembership` — never the bare legacy fallback.
+ */
+export function projectScopedRecords<T extends Pick<DashboardRecord, "originCategoryId" | "categoryId" | "projectLeadMembership" | "lossReasonGroup" | "membershipBasis">>(
+  rows: T[], settings: Pick<DashboardSettings, "selectedPipelineIds" | "postSalePipelineIds">,
+): T[] {
   const selectedOrigins = new Set(settings.selectedPipelineIds.map(String));
-  const selectedProjectCategories = new Set([...settings.selectedPipelineIds, ...settings.postSalePipelineIds].map(String));
-  const project = rows.map(hydrateRecord).filter((row) => !selectedOrigins.size || selectedOrigins.has(String(row.originCategoryId)) || selectedProjectCategories.has(String(row.categoryId)));
-  return markDuplicates(project);
+  const projectCategories = new Set([...settings.selectedPipelineIds, ...settings.postSalePipelineIds].map(String));
+  return rows
+    .filter((row) => !selectedOrigins.size || selectedOrigins.has(String(row.originCategoryId ?? row.categoryId)) || projectCategories.has(String(row.categoryId)))
+    .map((row) => {
+      const { membership, basis } = resolveProjectMembership(row, projectCategories);
+      return { ...row, projectLeadMembership: membership, membershipBasis: basis };
+    });
 }
 
 /** The per-request part: SLA re-resolved against the clock, on fresh row objects. */
@@ -486,8 +506,30 @@ export function classificationDiagnostics(records: DashboardRecord[]) {
   };
 }
 
+/**
+ * Records older than project membership (pre-version 8), by how the read side
+ * resolved them. All three are zero once a Full Sync has rebuilt every known
+ * Deal; a non-zero `needsRefresh` means Leads are being kept on legacy evidence.
+ */
+export function membershipDiagnostics(records: Pick<DashboardRecord, "membershipBasis">[]) {
+  const count = (basis: DashboardRecord["membershipBasis"]) => records.filter((row) => row.membershipBasis === basis).length;
+  return { needsRefresh: count("LEGACY_NEEDS_REFRESH"), legacyOtherProject: count("LEGACY_OTHER_PROJECT"), legacyRouting: count("LEGACY_ROUTING") };
+}
+
+/** Which authority decided each record's Source (lib/source-authority.ts); `legacy` predates version 12. */
+export function sourceAuthorityDiagnostics(records: Pick<DashboardRecord, "sourceAuthority">[]) {
+  return {
+    marketingChannel: records.filter((row) => row.sourceAuthority === "MARKETING_CHANNEL").length,
+    sourceId: records.filter((row) => row.sourceAuthority === "SOURCE_ID").length,
+    legacy: records.filter((row) => !row.sourceAuthority).length,
+  };
+}
+
 export function diagnosticsDataSection(records: DashboardRecord[]) {
-  return { recordCount: records.length, dataQuality: summarizeDataQuality(records), classification: classificationDiagnostics(records) };
+  return {
+    recordCount: records.length, dataQuality: summarizeDataQuality(records), classification: classificationDiagnostics(records),
+    membership: membershipDiagnostics(records), sourceAuthority: sourceAuthorityDiagnostics(records),
+  };
 }
 
 /* ------------------------------------------------------------------ pages */
@@ -510,6 +552,7 @@ export function diagnosticsPayload(records: DashboardRecord[], settings: Dashboa
     ...diagnosticsDataSection(records),
     readiness: stageConfigReadiness(settings),
     conflicts: stageConfigConflicts(settings),
+    marketingChannelField: settings.marketingChannelField ?? null,
   };
 }
 export type DiagnosticsData = ReturnType<typeof diagnosticsPayload>;
