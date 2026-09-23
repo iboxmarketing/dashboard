@@ -32,7 +32,7 @@ import { buildFieldOptionMap, buildStatusMaps, buildUserMap } from "../lib/analy
 import { defaultSettings } from "../lib/business-time";
 import { buildDashboardMetrics } from "../lib/dashboard-metrics";
 import { boundsFromKeys } from "../lib/period";
-import { isEligibleCohortDeal, isPreSqlClosed, isSalesLost } from "../lib/sales-logic";
+import { isEligibleCohortDeal, isSalesLost } from "../lib/sales-logic";
 import { normalizeSettings } from "../lib/settings-safety";
 import { stageIdList } from "../lib/stage-config";
 import { resolveDashboardMetricIds } from "../lib/dashboard-metrics";
