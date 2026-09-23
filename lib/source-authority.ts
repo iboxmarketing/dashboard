@@ -1,33 +1,26 @@
 import { canonicalDealFieldKey } from "./crm-fields";
 
 /**
- * Marketing source authority (docs/BUSINESS_RULES.md §9).
+ * Marketing source (docs/BUSINESS_RULES.md §9).
  *
- * The configured Marketing channel field decides a Deal's source when the Deal
- * carries a valid value for it; otherwise the standard Bitrix SOURCE_ID does.
- * The SOURCE_ID label is always kept as `rawSource`, so the two can be
- * compared and nothing is lost when the channel is empty.
+ * Source is the standard Bitrix `SOURCE_ID`, resolved through the live SOURCE
+ * dictionary, and nothing else. Owner decision: a custom Marketing channel
+ * field, a Meta/Google Ads value, UTM source/medium/campaign — none of them is
+ * Source. They belong to a separate marketing-attribution dimension, which is
+ * why the configured channel is still read and kept on the record as
+ * `marketingChannel`, never substituted for `source`.
  *
- * Labels are Bitrix's own, verbatim: the channel's enumeration option text or
- * the SOURCE dictionary name. No mapping between the two vocabularies exists
- * here and none may be invented.
- *
- * A "valid" channel value is a non-empty value that, for an enumeration field,
- * names one of the field's options. An option ID Bitrix no longer lists is not
- * a label anyone chose, so it falls back to SOURCE_ID rather than surfacing a
- * bare number as a source.
+ * A Deal with no `SOURCE_ID` is unknown, not invented: the SOURCE dictionary's
+ * own label is used when there is one, else the raw id, else "Aniqlanmagan".
  */
 
-export type SourceAuthority = "MARKETING_CHANNEL" | "SOURCE_ID";
-
 export type ResolvedSource = {
-  /** The effective source every Sales view groups and filters by. */
+  /** The effective Source every Sales view groups and filters by: SOURCE_ID's label. */
   source: string;
-  sourceAuthority: SourceAuthority;
-  /** The channel label when it decided the source, else null. */
-  marketingChannel: string | null;
-  /** Standard SOURCE_ID, resolved through the SOURCE dictionary. */
+  /** Same value, named for the places that compare Source against its raw origin. */
   rawSource: string;
+  /** The configured Marketing channel's label, as a separate dimension. Null when empty or unconfigured. */
+  marketingChannel: string | null;
 };
 
 const text = (value: unknown) => (value === null || value === undefined ? "" : String(value).trim());
@@ -35,7 +28,8 @@ const text = (value: unknown) => (value === null || value === undefined ? "" : S
 function channelLabel(raw: unknown, options: Map<string, string> | undefined) {
   const values = (Array.isArray(raw) ? raw : [raw]).map(text).filter(Boolean);
   if (!values.length) return "";
-  // A field with an option list only accepts its own options.
+  // A field with an option list only accepts its own options; an option Bitrix
+  // no longer lists is not a label anyone chose.
   if (options && options.size) {
     const labels = values.map((value) => options.get(value) ?? "");
     return labels.every(Boolean) ? labels.join(", ") : "";
@@ -50,22 +44,20 @@ export function resolveDealSource(input: {
   sources: Map<string, string>;
 }): ResolvedSource {
   const sourceId = text(input.deal.SOURCE_ID);
-  const rawSource = input.sources.get(sourceId) || sourceId || "Aniqlanmagan";
+  const source = input.sources.get(sourceId) || sourceId || "Aniqlanmagan";
   const field = text(input.marketingChannelField);
   const key = field ? canonicalDealFieldKey(field) : "";
   const channel = key
     ? channelLabel(input.deal[key] ?? input.deal[field], input.fieldOptions.get(key) ?? input.fieldOptions.get(field))
     : "";
-  return channel
-    ? { source: channel, sourceAuthority: "MARKETING_CHANNEL", marketingChannel: channel, rawSource }
-    : { source: rawSource, sourceAuthority: "SOURCE_ID", marketingChannel: null, rawSource };
+  return { source, rawSource: source, marketingChannel: channel || null };
 }
 
 /**
- * The configured field if it is a Deal field Bitrix currently lists, else
+ * The configured Marketing channel field if Bitrix currently lists it, else
  * null. When the field list could not be read at all, the configured value is
- * kept rather than dropped on a transient failure. Nothing is ever detected
- * by name: a field is used only because it was configured.
+ * kept rather than dropped on a transient failure. Nothing is ever detected by
+ * name: a field is used only because it was configured.
  */
 export function validMarketingChannelField(configured: string | null | undefined, knownFieldKeys: ReadonlySet<string>) {
   const field = text(configured);

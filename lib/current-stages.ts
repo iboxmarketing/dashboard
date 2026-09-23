@@ -1,8 +1,20 @@
 import { countsAsOperational } from "./stale-resolution";
+import { isClosedLostStage, isLowQualityStage, isPaymentStage } from "./sales-logic";
 import { resolveSyncWindow } from "./sync-window";
 import type { AnalyticsRecord, CurrentStageRecord, DashboardSettings, StageReconciliation } from "./types";
 
 export type RawCurrentStageDeal = Record<string, unknown>;
+
+/** Why a live Deal is not part of the workload. Reported, never hidden. */
+export type CurrentStageExclusion = "OTHER_CATEGORY" | "NOT_RELEVANT" | "SALES_LOST" | "WON" | "DUPLICATE";
+
+export const CURRENT_STAGE_EXCLUSION_LABELS: Record<CurrentStageExclusion, string> = {
+  OTHER_CATEGORY: "Boshqa funnel",
+  NOT_RELEVANT: "Not Relevant",
+  SALES_LOST: "Sotilmadi",
+  WON: "Sotilgan / to‘lov",
+  DUPLICATE: "Takroriy ID",
+};
 
 function shown(value: unknown) {
   return value === null || value === undefined ? "" : String(value);
@@ -16,19 +28,45 @@ function validDate(...values: unknown[]) {
   return new Date(0);
 }
 
+/**
+ * The canonical live workload population.
+ *
+ * `CLOSED = N` is not enough: Bitrix keeps a Not Relevant or a closed-lost card
+ * non-closed in some configurations, and a paid card can sit in the payment
+ * stage before it moves on. A Deal belongs to the live workload only while it is
+ * in a selected Sales funnel AND its current stage is still work — not Not
+ * Relevant, not closed-lost, not payment. Everything excluded is counted and
+ * reported rather than silently dropped, and each Deal ID appears once.
+ */
 export function buildCurrentStageRecords(input: {
   deals: RawCurrentStageDeal[];
   settings: DashboardSettings;
   pipelines: Map<string, string>;
   stages: Map<string, string>;
   users: Map<string, string>;
+  sources?: Map<string, string>;
   domain: string | null;
   now?: Date;
+  /** Receives why each Deal was left out, for the Stage Control reconciliation. */
+  onExcluded?: (reason: CurrentStageExclusion, dealId: string) => void;
 }): CurrentStageRecord[] {
   const now = input.now ?? new Date();
+  const semantics = {
+    lowQualityStageIds: input.settings.lowQualityStageIds, paymentStageIds: input.settings.paymentStageIds,
+    closedLostStageIds: input.settings.closedLostStageIds, qualifiedStageIds: input.settings.qualifiedStageIds,
+  };
+  const salesCategories = new Set(input.settings.selectedPipelineIds.map(String));
+  const seen = new Set<string>();
   return input.deals.flatMap((deal) => {
     const dealId = shown(deal.ID); const categoryId = shown(deal.CATEGORY_ID || "0"); const stageId = shown(deal.STAGE_ID);
     if (!dealId || !stageId) return [];
+    if (seen.has(dealId)) { input.onExcluded?.("DUPLICATE", dealId); return []; }
+    seen.add(dealId);
+    if (salesCategories.size && !salesCategories.has(categoryId)) { input.onExcluded?.("OTHER_CATEGORY", dealId); return []; }
+    const stageName = input.stages.get(`${categoryId}:${stageId}`) ?? input.stages.get(stageId) ?? stageId;
+    if (isLowQualityStage(stageName, stageId, semantics)) { input.onExcluded?.("NOT_RELEVANT", dealId); return []; }
+    if (isClosedLostStage(stageName, shown(deal.STAGE_SEMANTIC_ID), stageId, semantics)) { input.onExcluded?.("SALES_LOST", dealId); return []; }
+    if (isPaymentStage(stageName, stageId, semantics)) { input.onExcluded?.("WON", dealId); return []; }
     const createdAt = validDate(deal.DATE_CREATE, deal.DATE_MODIFY);
     const stageEnteredAt = validDate(deal.MOVED_TIME, deal.DATE_MODIFY, deal.DATE_CREATE);
     const assignedManagerId = shown(deal.ASSIGNED_BY_ID);
@@ -43,7 +81,12 @@ export function buildCurrentStageRecords(input: {
       categoryId,
       pipeline: input.pipelines.get(categoryId) ?? `Pipeline #${categoryId}`,
       stageId,
-      stage: input.stages.get(`${categoryId}:${stageId}`) ?? input.stages.get(stageId) ?? stageId,
+      stage: stageName,
+      // Canonical Source: SOURCE_ID through the live SOURCE dictionary, the same
+      // value every other Sales view groups by, so the Source filter really
+      // filters this list instead of quietly applying somewhere else.
+      sourceId: shown(deal.SOURCE_ID),
+      source: input.sources?.get(shown(deal.SOURCE_ID)) || shown(deal.SOURCE_ID) || "Aniqlanmagan",
       stageEnteredAt: stageEnteredAt.toISOString(),
       stageAgeHours,
       stageLimitHours,

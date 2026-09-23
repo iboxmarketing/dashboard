@@ -1,5 +1,6 @@
 import { bitrixList, getBitrixDomain, safeBitrixMessage } from "@/lib/bitrix";
 import { buildCurrentStageRecords, reconcileCurrentStages, type RawCurrentStageDeal } from "@/lib/current-stages";
+import { buildStatusMaps } from "@/lib/analytics-dictionaries";
 import { getDictionary, getSettings, listAnalyticsRecords } from "@/lib/storage";
 import { listPipelineStages } from "@/lib/sync";
 import { authorizePermission } from "@/lib/auth/http";
@@ -32,14 +33,14 @@ export async function GET(request: Request) {
     const categoryIds = [...new Set(settings.selectedPipelineIds.map(String).filter(Boolean))];
     if (!categoryIds.length) return Response.json({ records: [], reconciliation: null, stageCatalog: [], truncated: false, stageSettings: stageSettings(settings) });
 
-    const [deals, stageOptions, userRows, cachedRecords] = await Promise.all([
+    const [deals, stageOptions, userRows, statusRows, cachedRecords] = await Promise.all([
       bitrixList<RawCurrentStageDeal>("crm.deal.list", {
         order: { ID: "ASC" },
         filter: {
           ...(categoryIds.length === 1 ? { CATEGORY_ID: categoryIds[0] } : { "@CATEGORY_ID": categoryIds }),
           CLOSED: "N",
         },
-        select: ["ID", "TITLE", "DATE_CREATE", "DATE_MODIFY", "MOVED_TIME", "ASSIGNED_BY_ID", "CATEGORY_ID", "STAGE_ID", "CLOSED"],
+        select: ["ID", "TITLE", "DATE_CREATE", "DATE_MODIFY", "MOVED_TIME", "ASSIGNED_BY_ID", "CATEGORY_ID", "STAGE_ID", "STAGE_SEMANTIC_ID", "SOURCE_ID", "CLOSED"],
       }, {
         maxPages: 100,
         onTruncated: (info) => {
@@ -49,6 +50,7 @@ export async function GET(request: Request) {
       }),
       listPipelineStages(categoryIds),
       getDictionary<Record<string, unknown>[]>("users", []),
+      getDictionary<Record<string, unknown>[]>("statuses", []),
       listAnalyticsRecords(),
     ]);
 
@@ -59,7 +61,16 @@ export async function GET(request: Request) {
       if (!stages.has(stage.id)) stages.set(stage.id, stage.name);
     }
     const users = new Map(userRows.map((row) => [value(row, "ID"), [value(row, "NAME"), value(row, "LAST_NAME")].filter(Boolean).join(" ") || `Menejer #${value(row, "ID")}`]));
-    const records = buildCurrentStageRecords({ deals, settings, pipelines, stages, users, domain: getBitrixDomain() });
+    const { sources } = buildStatusMaps(statusRows);
+    // Live Bitrix returns every non-closed Deal in the funnel; the canonical
+    // workload is narrower (lib/current-stages.ts). Whatever is left out is
+    // counted by reason and reported, so the number on screen can be explained.
+    const excluded: Record<string, string[]> = {};
+    const records = buildCurrentStageRecords({
+      deals, settings, pipelines, stages, users, sources, domain: getBitrixDomain(),
+      onExcluded: (reason, dealId) => { (excluded[reason] ??= []).push(dealId); },
+    });
+    const excludedCounts = Object.fromEntries(Object.entries(excluded).map(([reason, ids]) => [reason, ids.length]));
     // The full cache is handed over scoped by funnel only. Sales status must not
     // gate membership, otherwise an open deal that reached payment (cached as
     // WON, still CLOSED=N in Bitrix) is falsely reported as missing.
@@ -72,7 +83,10 @@ export async function GET(request: Request) {
     const stageCatalog = stageOptions.map((stage) => ({
       id: stage.id, name: stage.name, categoryId: stage.categoryId, sort: stage.sort, semantics: stage.semantics,
     }));
-    return Response.json({ records, reconciliation, stageCatalog, truncated, stageSettings: stageSettings(settings) });
+    return Response.json({
+      records, reconciliation, stageCatalog, truncated, stageSettings: stageSettings(settings),
+      liveCandidates: deals.length, excludedCounts, excludedDealIds: excluded,
+    });
   } catch (error) {
     return Response.json({ error: safeBitrixMessage(error) }, { status: 500 });
   }

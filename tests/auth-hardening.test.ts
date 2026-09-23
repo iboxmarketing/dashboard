@@ -58,7 +58,8 @@ function deal(index: number): DashboardRecord {
     salesCycleHours: kind === 4 ? 48 : null, opportunity: kind === 4 ? 1_000_000 + index : 0, currencyId: "UZS",
     lossReason: kind === 3 || kind === 2 ? REASONS[index % REASONS.length] : "", lossReasonGroup: kind === 3 ? "SALES" : kind === 2 ? "MARKETING" : "NONE",
     contactId: `c${index}`, companyId: null, customerKey: `c${index}`, duplicateOfDealId: null,
-    salesManagerId: managerId, salesManager: manager, salesManagerAttribution: "CUSTOM_FIELD",
+    // A proven attribution: this suite is about permissions, not evidence.
+    salesManagerId: managerId, salesManager: manager, salesManagerAttribution: "CUSTOM_FIELD", sellerCertification: "CERTIFIED",
     processingSource: "QUALIFICATION_STAGE", processingAt: created, processingBusinessMinutes: 30 + index, slaStatus: "ON_TIME",
     dataUnavailable: false, bitrixUrl: `https://ibox.bitrix24.test/crm/deal/details/90${1000 + index}/`, stageHistoryCount: 2,
   } as DashboardRecord;
@@ -152,8 +153,15 @@ test("HIGH 1: every non-Deal section is minimized, and only `deals` carries Deal
   // Deals is the Deal-level section by definition — and still a projection.
   const deals = buildSalesSection("deals", RECORDS, QUERY, context) as { deals: Record<string, unknown>[] };
   assert.ok(deals.deals.length > 0);
-  for (const field of ["contactId", "companyId", "customerKey", "stageHistoryCount", "slaStart", "assignedManagerId"]) {
+  for (const field of ["contactId", "companyId", "customerKey", "stageHistoryCount", "slaStart"]) {
     assert.equal(field in deals.deals[0], false, `${field} is not rendered by the Deal report`);
+  }
+  // The attribution audit trail IS part of the Deal report: an employee review
+  // has to be able to see who is responsible now, who moved the stage and who
+  // was observing, beside the certification that decides whether it counts
+  // (docs/BUSINESS_RULES.md §5). It stays an explicit projection, not a dump.
+  for (const field of ["assignedManagerId", "movedById", "observerIds", "sellerCertification", "sellerEvidenceReason", "lifecycle"]) {
+    assert.ok(field in deals.deals[0], `${field} belongs to the attribution audit trail`);
   }
 });
 

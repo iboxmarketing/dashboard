@@ -24,7 +24,8 @@ export type StaleResolution =
  * the sync passes actually cover. Anything else can never be refreshed again
  * by the incremental query, which filters on the selected category ids.
  */
-export type CurrentScope = "IN_SCOPE" | "OUT_OF_SCOPE" | "UNAVAILABLE";
+/** DELETED is Bitrix's definitive "this Deal is gone" (lib/deal-lifecycle.ts). */
+export type CurrentScope = "IN_SCOPE" | "OUT_OF_SCOPE" | "UNAVAILABLE" | "DELETED";
 
 export type ScopeConfig = {
   selectedPipelineIds: string[];
@@ -47,7 +48,9 @@ export function resolveStaleDeal(lookup: DealLookup, config: ScopeConfig): Stale
 /** `null` means "make no change" — the only safe answer to an unanswered lookup. */
 export function currentScopeFor(resolution: StaleResolution): CurrentScope | null {
   if (resolution === "LOOKUP_ERROR") return null;
-  if (resolution === "UNAVAILABLE") return "UNAVAILABLE";
+  // UNAVAILABLE is only ever produced by a definitive NOT_FOUND, which is
+  // Bitrix saying the Deal is gone (lib/deal-lifecycle.ts).
+  if (resolution === "UNAVAILABLE") return "DELETED";
   if (resolution === "MOVED_OUT_OF_SCOPE") return "OUT_OF_SCOPE";
   return "IN_SCOPE";
 }

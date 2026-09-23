@@ -25,6 +25,12 @@ export type DashboardSettings = {
   paymentStageIds: string[];
   closedLostStageIds: string[];
   routingReasonPatterns: string[];
+  /**
+   * Approved Sales staff, for validation only: an attribution naming somebody
+   * outside this roster is flagged for review. It never decides who sold, and a
+   * seller who later leaves the company keeps their historical sales.
+   */
+  salesStaffIds?: string[];
   autoSyncMinutes: number;
   dashboardMetricIds: string[];
 };
@@ -50,6 +56,9 @@ export type CurrentStageRecord = {
   pipeline: string;
   stageId: string;
   stage: string;
+  /** Canonical Source (SOURCE_ID), so the live Source filter filters this list. */
+  sourceId: string;
+  source: string;
   stageEnteredAt: string;
   stageAgeHours: number;
   stageLimitHours: number;
@@ -192,7 +201,7 @@ export type AnalyticsRecord = {
    * Additive and optional: absent means IN_SCOPE. A definitive move or deletion
    * overrides stored membership; ambiguous lookups leave this field untouched.
    */
-  currentScope?: "IN_SCOPE" | "OUT_OF_SCOPE" | "UNAVAILABLE";
+  currentScope?: "IN_SCOPE" | "OUT_OF_SCOPE" | "UNAVAILABLE" | "DELETED";
   stageId: string;
   stage: string;
   stageEnteredAt: string;
@@ -226,6 +235,19 @@ export type AnalyticsRecord = {
   salesManagerId: string | null;
   salesManager: string | null;
   salesManagerAttribution: SalesManagerAttribution;
+  /** Whether this attribution may appear on an employee scorecard — see lib/seller-evidence.ts. */
+  sellerCertification?: "OWNER_CONFIRMED" | "CERTIFIED" | "REVIEW_REQUIRED" | "UNKNOWN";
+  sellerEvidenceReason?: string;
+  sellerOutsideRoster?: boolean;
+  /** Ordinary Sales loss ownership, under the same evidence rules. */
+  lostOwnerId?: string | null;
+  lostOwnerName?: string | null;
+  lostOwnerCertification?: "OWNER_CONFIRMED" | "CERTIFIED" | "REVIEW_REQUIRED" | "UNKNOWN" | null;
+  lostOwnerEvidenceReason?: string | null;
+  /** Audit trail: the raw actors behind every attribution decision. */
+  movedById?: string | null;
+  observerIds?: string[];
+  postSaleObserverId?: string | null;
   firstCallAt: string | null;
   firstCallActivityId: string | null;
   firstCallManagerId: string | null;

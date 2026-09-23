@@ -1,6 +1,7 @@
 import { buildDashboardMetrics } from "./dashboard-metrics";
 import type { MetricRecord } from "./dashboard-record";
-import { isEligibleCohortDeal, isSalesLost, MISSING_LOSS_REASON, salesManagerKey } from "./sales-logic";
+import { isEligibleCohortDeal, isSalesLost, MISSING_LOSS_REASON } from "./sales-logic";
+import { scorecardSellerKey } from "./seller-evidence";
 
 /**
  * Individual seller profile.
@@ -13,8 +14,13 @@ import { isEligibleCohortDeal, isSalesLost, MISSING_LOSS_REASON, salesManagerKey
 
 export type ManagerProfile = ReturnType<typeof buildManagerProfile>;
 
+/**
+ * One person's records for their profile. Employee-sensitive, so it uses the
+ * scorecard key: a sale whose attribution is not proven belongs to the review
+ * bucket, never to the person whose name happens to sit on the card.
+ */
 export function managerRecords(records: MetricRecord[], managerId: string) {
-  return records.filter((row) => salesManagerKey(row) === managerId);
+  return records.filter((row) => scorecardSellerKey(row) === managerId);
 }
 
 export function buildManagerProfile(cohortRecords: MetricRecord[], salesRecords: MetricRecord[], managerId: string) {

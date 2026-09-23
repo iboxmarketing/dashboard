@@ -309,7 +309,12 @@ test("11. core KPIs, wonAt, OPPORTUNITY, revenue, source and stage history are e
   const without = build(deals, histories, { snapshots, ownerOverrides: new Map() });
   assert.equal(withRules.length, without.length);
 
-  const sellerFields = new Set(["salesManagerId", "salesManager", "salesManagerAttribution"]);
+  // The seller fields, plus the certification that describes that same
+  // attribution (an owner confirmation is countable; the value it replaced was not).
+  const sellerFields = new Set([
+    "salesManagerId", "salesManager", "salesManagerAttribution",
+    "sellerCertification", "sellerEvidenceReason", "sellerOutsideRoster",
+  ]);
   for (let index = 0; index < withRules.length; index += 1) {
     for (const key of Object.keys(without[index]) as (keyof AnalyticsRecord)[]) {
       if (sellerFields.has(key)) continue;

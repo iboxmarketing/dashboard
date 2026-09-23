@@ -5,9 +5,10 @@ import { classifyLossReasonGroup, MISSING_LOSS_REASON, classifySalesStatus, fiel
 import { sqlThresholdsByCategory, type StageMeta, type StageSemantics } from "./stage-config";
 import { canonicalDealFieldKey } from "./crm-fields";
 import { resolveDealSource } from "./source-authority";
+import { certifySeller } from "./seller-evidence";
 import { decideCanonicalLeadMembership } from "./canonical-lead-membership.js";
 import { normalizeSafeStableSellerField } from "./stable-seller-field";
-import { DEAL_OBSERVERS_FIELD, singlePostSaleObserverId } from "./deal-observers";
+import { DEAL_OBSERVERS_FIELD, observerIdList, singlePostSaleObserverId } from "./deal-observers";
 import type { SalesSnapshot } from "./storage";
 import type { AnalyticsRecord, DashboardSettings, ProcessingSource, SalesManagerAttribution } from "./types";
 
@@ -58,8 +59,17 @@ import type { AnalyticsRecord, DashboardSettings, ProcessingSource, SalesManager
  *      `rawSource` always keeps the SOURCE_ID label and `sourceAuthority`
  *      says which one decided. Lead, SQL, Sales and seller rules are
  *      unchanged; only the Source dimension differs from version 11.
+ * 13 — Employee-evaluation accuracy. `source` is SOURCE_ID only again (owner
+ *      decision); the Marketing channel stays on the record as its own
+ *      dimension, never as Source. Every attribution now carries
+ *      `sellerCertification` (OWNER_CONFIRMED / CERTIFIED / REVIEW_REQUIRED /
+ *      UNKNOWN) with the reason that produced it, so only proven sales reach an
+ *      employee scorecard; an ordinary Sales loss carries `lostOwner*` under
+ *      the same rules; and the actors behind each decision (MOVED_BY_ID,
+ *      observers, current assignee) are persisted for the audit trail. Lead,
+ *      SQL, Not Relevant, Sales and Revenue membership are unchanged.
  */
-export const ANALYTICS_VERSION = 12;
+export const ANALYTICS_VERSION = 13;
 
 export type RawDeal = Record<string, unknown>;
 export type RawActivity = Record<string, unknown>;
@@ -142,6 +152,8 @@ export function buildAnalyticsRecords(input: {
   const historiesByDeal = new Map<string, RawStageHistory[]>();
   for (const history of input.stageHistories) { const id = string(history.OWNER_ID); if (id) historiesByDeal.set(id, [...(historiesByDeal.get(id) ?? []), history]); }
   const mainIds = new Set(input.settings.selectedPipelineIds); const postSaleIds = new Set(input.settings.postSalePipelineIds);
+  // Validation only: the roster can flag an attribution for review, never decide it.
+  const salesRoster = new Set((input.settings.salesStaffIds ?? []).map(String).filter(Boolean));
   const stageThresholds = sqlThresholdsByCategory(input.settings.qualifiedStageIds, input.stageMeta);
   const stageSemantics: StageSemantics = {
     lowQualityStageIds: input.settings.lowQualityStageIds, paymentStageIds: input.settings.paymentStageIds,
@@ -327,12 +339,44 @@ export function buildAnalyticsRecords(input: {
     }
     if (!salesManager && salesManagerId) salesManager = managerName(salesManagerId, input.users);
 
-    // Source authority (lib/source-authority.ts): the configured Marketing
-    // channel field when the Deal carries a valid value, else SOURCE_ID. The
-    // SOURCE_ID label is kept alongside as rawSource. UTM and other "how did
-    // you hear" fields are separate dimensions and never stand in for either.
+    // Can this attribution be shown on an employee's scorecard? Decided here,
+    // where the evidence that produced it is still in hand (lib/seller-evidence.ts).
+    const sellerEvidence = certifySeller({
+      attribution: salesManagerAttribution,
+      sellerId: salesManagerId,
+      fromSnapshot: Boolean(snapshotManagerId) && salesManagerId === snapshotManagerId && !ownerOverride,
+      hasConfiguredSellerField: Boolean(salesManagerField),
+      fieldSellerId: customManagerId,
+      knownUser: Boolean(salesManagerId) && input.users.has(salesManagerId),
+      salesRoster: salesRoster,
+    });
+
+    // Who owns an ordinary Sales loss. The same evidence problem applies: the
+    // current owner and the mover are not proof of who was responsible when the
+    // Deal was closed, so without a configured seller field or an owner
+    // confirmation this stays UNKNOWN rather than blaming whoever is on the card
+    // now. MOVED_BY_ID is recorded as audit evidence only.
+    const lostOwnerId = lossReasonGroup === "SALES" && salesStatus === "LOST"
+      ? ownerOverride ? ownerOverride.sellerId : customManagerId || ""
+      : "";
+    const lostOwnerEvidence = lossReasonGroup === "SALES" && salesStatus === "LOST"
+      ? certifySeller({
+        attribution: ownerOverride ? "OWNER_CONFIRMED" : lostOwnerId ? "CUSTOM_FIELD" : "UNKNOWN",
+        sellerId: lostOwnerId,
+        fromSnapshot: false,
+        hasConfiguredSellerField: Boolean(salesManagerField),
+        fieldSellerId: customManagerId,
+        knownUser: Boolean(lostOwnerId) && input.users.has(lostOwnerId),
+        salesRoster: salesRoster,
+      })
+      : null;
+
+    // Source is the standard Bitrix SOURCE_ID, resolved through the live SOURCE
+    // dictionary, and nothing else (owner decision, docs/BUSINESS_RULES.md §9).
+    // The configured Marketing channel is still read, but as its own marketing
+    // dimension — it never stands in for Source, and neither do UTM fields.
     const sourceId = string(deal.SOURCE_ID);
-    const { source, sourceAuthority, marketingChannel, rawSource } = resolveDealSource({
+    const { source, marketingChannel, rawSource } = resolveDealSource({
       deal, marketingChannelField: input.settings.marketingChannelField, fieldOptions, sources: input.sources,
     });
     const opportunity = Number(deal.OPPORTUNITY ?? 0);
@@ -346,10 +390,19 @@ export function buildAnalyticsRecords(input: {
       assignedManagerId, assignedManager: managerName(assignedManagerId, input.users), categoryId: currentCategoryId, pipeline: input.pipelines.get(currentCategoryId) ?? `Pipeline #${currentCategoryId}`,
       originCategoryId, originPipeline: input.pipelines.get(originCategoryId) ?? `Pipeline #${originCategoryId}`, operationalPipeline: mainIds.has(currentCategoryId), projectLeadMembership,
       stageId: currentStageId, stage: currentStage, stageEnteredAt: stageEntered.toISOString(), stageAgeHours, stageLimitHours, stageOverdue: salesStatus === "ACTIVE" && stageAgeHours > stageLimitHours,
-      sourceId, source, rawSource, sourceAuthority, marketingChannel, salesStatus, qualified, qualifiedAt, qualifiedStageId: effectiveQualifiedEvent?.stageId ?? null, qualifiedStage: effectiveQualifiedEvent?.stage ?? null,
+      sourceId, source, rawSource, marketingChannel, salesStatus, qualified, qualifiedAt, qualifiedStageId: effectiveQualifiedEvent?.stageId ?? null, qualifiedStage: effectiveQualifiedEvent?.stage ?? null,
       wonAt: effectiveWonAt, salesCycleHours, opportunity: Number.isFinite(opportunity) ? opportunity : 0, currencyId: string(deal.CURRENCY_ID), lossReason: effectiveLossReason, lossReasonGroup,
       contactId: contactId || null, companyId: companyId || null, customerKey: contactId ? `contact:${contactId}` : companyId ? `company:${companyId}` : null, duplicateOfDealId: null, stageTimeline,
       salesManagerId: salesManagerId || null, salesManager: salesManager || null, salesManagerAttribution,
+      sellerCertification: sellerEvidence.status, sellerEvidenceReason: sellerEvidence.reason, sellerOutsideRoster: sellerEvidence.outsideRoster,
+      lostOwnerId: lostOwnerId || null,
+      lostOwnerName: lostOwnerId ? managerName(lostOwnerId, input.users) : null,
+      lostOwnerCertification: lostOwnerEvidence?.status ?? null,
+      lostOwnerEvidenceReason: lostOwnerEvidence?.reason ?? null,
+      // Audit trail: the raw actors behind every attribution decision.
+      movedById: moverId || null,
+      observerIds: observerIdList(deal[DEAL_OBSERVERS_FIELD]),
+      postSaleObserverId: postSaleObserverId || null,
       // Retained as inert columns so no destructive migration is needed.
       firstCallAt: null, firstCallActivityId: null, firstCallManagerId: null, firstCallManager: null,
       firstCallBusinessMinutes: null, firstCallOutcome: "Noma’lum", firstCallDuration: null, outcomeInferred: false,

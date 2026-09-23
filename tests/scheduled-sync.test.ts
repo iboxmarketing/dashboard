@@ -118,10 +118,13 @@ test("a deal moved to an unrelated category leaves sync scope and is NOT routing
   assert.equal(countsAsOperational("OUT_OF_SCOPE"), false, "no longer inflates operational ACTIVE");
 });
 
-test("a definitively deleted Deal is marked unavailable but never deleted from history", () => {
+test("a definitively deleted Deal is marked DELETED but never removed from history", () => {
   const gone = { found: false as const, reason: "NOT_FOUND" as const, code: "NOT_FOUND" };
   assert.equal(resolveStaleDeal(gone, scope), "UNAVAILABLE");
-  assert.equal(currentScopeFor("UNAVAILABLE"), "UNAVAILABLE");
+  // Bitrix's definitive answer is recorded as the DELETED lifecycle, which no
+  // current KPI, employee score or live workload may count.
+  assert.equal(currentScopeFor("UNAVAILABLE"), "DELETED");
+  assert.equal(countsAsOperational("DELETED"), false);
   assert.equal(countsAsOperational("UNAVAILABLE"), false);
   const route = readFileSync(new URL("../app/api/reconcile/route.ts", import.meta.url), "utf8");
   assert.doesNotMatch(route, /DELETE FROM|deleteAnalytics/, "history is never deleted by reconciliation");

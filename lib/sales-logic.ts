@@ -251,10 +251,12 @@ export function isSqlOrDownstreamStage(input: {
  */
 export function isEligibleCohortDeal(row: {
   projectLeadMembership?: "INCLUDED" | "EXCLUDED" | "UNRESOLVED" | null;
-  currentScope?: "IN_SCOPE" | "OUT_OF_SCOPE" | "UNAVAILABLE" | null;
+  currentScope?: "IN_SCOPE" | "OUT_OF_SCOPE" | "UNAVAILABLE" | "DELETED" | null;
   lossReasonGroup?: LossReasonGroup | null;
 }) {
-  if (row.currentScope === "OUT_OF_SCOPE" || row.currentScope === "UNAVAILABLE") return false;
+  // A Deal Bitrix no longer has, or could not read, is never in a current
+  // population — see lib/deal-lifecycle.ts. Its record is kept as evidence.
+  if (row.currentScope === "OUT_OF_SCOPE" || row.currentScope === "UNAVAILABLE" || row.currentScope === "DELETED") return false;
   if (row.projectLeadMembership) return row.projectLeadMembership !== "EXCLUDED";
   return row.lossReasonGroup !== "ROUTING";
 }
@@ -282,7 +284,7 @@ export type MembershipBasis = "RECORD" | "LEGACY_OTHER_PROJECT" | "LEGACY_ROUTIN
  * project; that fallback is what let stale other-project rows count as Leads.
  */
 export function resolveProjectMembership(
-  row: { projectLeadMembership?: "INCLUDED" | "EXCLUDED" | "UNRESOLVED" | null; categoryId?: string | null; lossReasonGroup?: LossReasonGroup | null },
+  row: { projectLeadMembership?: "INCLUDED" | "EXCLUDED" | "UNRESOLVED" | null; categoryId?: string | null; lossReasonGroup?: LossReasonGroup | null; currentScope?: "IN_SCOPE" | "OUT_OF_SCOPE" | "UNAVAILABLE" | "DELETED" | null },
   projectCategoryIds: ReadonlySet<string>,
 ): { membership: "INCLUDED" | "EXCLUDED" | "UNRESOLVED"; basis: MembershipBasis } {
   if (row.projectLeadMembership) return { membership: row.projectLeadMembership, basis: "RECORD" };

@@ -25,7 +25,9 @@ test("only a definitive Bitrix answer may conclude a deal is gone", () => {
     if (lookup.found) continue;
     assert.equal(lookup.reason, "NOT_FOUND", `${code} is definitive`);
     assert.equal(resolveStaleDeal(lookup, scope), "UNAVAILABLE");
-    assert.equal(currentScopeFor("UNAVAILABLE"), "UNAVAILABLE");
+    // A definitive answer means the Deal is gone: the lifecycle calls that
+    // DELETED (lib/deal-lifecycle.ts). The record itself is never erased.
+    assert.equal(currentScopeFor("UNAVAILABLE"), "DELETED");
   }
 });
 
@@ -161,7 +163,7 @@ test("the scope write touches one field and nothing else", () => {
   assert.match(fn, /record\.currentScope = scope;/);
   assert.match(fn, /if \(record\.currentScope === scope\) return true;/, "idempotent");
   assert.match(fn, /UPDATE analytics_records SET payload = \? WHERE deal_id = \?/, "updates in place — no duplicate row");
-  assert.doesNotMatch(fn, /INSERT|DELETE/, "never inserts or deletes");
+  assert.doesNotMatch(fn, /INSERT\b|DELETE\s+FROM/, "never inserts or deletes — the scope value may be DELETED, the row is not");
   for (const field of ["createdAt", "qualified", "lossReasonGroup", "salesStatus", "wonAt", "originCategoryId"]) {
     assert.doesNotMatch(fn, new RegExp(`record\\.${field}\\s*=`), `${field} is never rewritten`);
   }

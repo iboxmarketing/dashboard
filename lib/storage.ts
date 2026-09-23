@@ -76,6 +76,8 @@ export async function getSettings(): Promise<DashboardSettings> {
       paymentStageIds: stageIdList(parsed.paymentStageIds),
       closedLostStageIds: stageIdList(parsed.closedLostStageIds),
       routingReasonPatterns: Array.isArray(parsed.routingReasonPatterns) ? parsed.routingReasonPatterns.map(String).filter(Boolean) : defaultSettings.routingReasonPatterns,
+      // Validation roster only: it flags attributions, never decides them.
+      salesStaffIds: Array.isArray(parsed.salesStaffIds) ? [...new Set(parsed.salesStaffIds.map(String).filter(Boolean))] : [],
       autoSyncMinutes: Number.isFinite(Number(parsed.autoSyncMinutes)) ? Number(parsed.autoSyncMinutes) : defaultSettings.autoSyncMinutes,
       dashboardMetricIds: resolveDashboardMetricIds(parsed.dashboardMetricIds),
     };
@@ -136,7 +138,7 @@ export async function listReconcileCandidates(categoryIds: string[]) {
   }));
 }
 
-export async function setAnalyticsCurrentScope(dealId: string, scope: "IN_SCOPE" | "OUT_OF_SCOPE" | "UNAVAILABLE") {
+export async function setAnalyticsCurrentScope(dealId: string, scope: "IN_SCOPE" | "OUT_OF_SCOPE" | "UNAVAILABLE" | "DELETED") {
   await ensureSchema();
   const row = await getD1().prepare("SELECT payload FROM analytics_records WHERE deal_id = ?").bind(dealId).first<{ payload: string }>();
   if (!row) return false;

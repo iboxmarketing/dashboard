@@ -112,17 +112,25 @@ export function filterHistoricalRecords<T extends HistoricalFilterRow>(rows: rea
  * Live open-stage rows. Keyed on the current assignee by design — this view
  * answers "who is holding this card right now", not "who sold it".
  */
+/**
+ * Live workload filters. Every filter offered on that view is applied here —
+ * seller (current assignee), Source (canonical SOURCE_ID), pipeline, stage and
+ * search. The date range is deliberately absent: live inventory is a snapshot of
+ * now, not a cohort, and the view says so instead of showing a control that
+ * quietly does nothing.
+ */
 export function matchesCurrentStageFilters(
-  row: { dealId: string; title?: string; assignedManagerId?: string | null; pipeline?: string; stage?: string },
+  row: { dealId: string; title?: string; assignedManagerId?: string | null; pipeline?: string; stage?: string; source?: string },
   filters: SalesFilterSelection,
 ) {
   if (!matchesSelection(filters.managers ?? [], liveManagerKey(row))) return false;
+  if (!matchesSelection(filters.sources ?? [], row.source)) return false;
   if (filters.pipeline && row.pipeline !== filters.pipeline) return false;
   if (filters.stage && row.stage !== filters.stage) return false;
   return matchesSearch(row, filters.search);
 }
 
-export function filterCurrentStageRecords<T extends { dealId: string; title?: string; assignedManagerId?: string | null; pipeline?: string; stage?: string }>(
+export function filterCurrentStageRecords<T extends { dealId: string; title?: string; assignedManagerId?: string | null; pipeline?: string; stage?: string; source?: string }>(
   rows: readonly T[],
   filters: SalesFilterSelection,
 ) {

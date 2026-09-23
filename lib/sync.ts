@@ -447,8 +447,9 @@ async function refreshKnownStep(job: StoredSyncJob, select: string[], postSaleCa
   const lookups = missed.length ? await getDealsByIds(missed) : new Map();
   const entries = classifyRefreshStep({ candidates, listed, lookups });
   // Only Bitrix's definitive answer may retire a stored record, and only by
-  // scope — the row, its history and any sale snapshot all stay.
-  for (const entry of entries) if (entry.outcome === "NOT_FOUND") await setAnalyticsCurrentScope(entry.dealId, "UNAVAILABLE");
+  // scope — the row, its history and any sale snapshot all stay as evidence.
+  // DELETED is that definitive answer; an unanswered lookup changes nothing.
+  for (const entry of entries) if (entry.outcome === "NOT_FOUND") await setAnalyticsCurrentScope(entry.dealId, "DELETED");
 
   const key = refreshAuditKey(job.scopePipelineId);
   const audit = currentRefreshAudit(await getDictionary<RefreshAudit | null>(key, null), job.runId);

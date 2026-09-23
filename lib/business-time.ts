@@ -248,6 +248,7 @@ export const defaultSettings: DashboardSettings = {
   paymentStageIds: [],
   closedLostStageIds: [],
   routingReasonPatterns: ["idoko", "sd", "передан", "перевод", "routing", "yo'naltir", "yo‘naltir", "o'tkaz", "o‘tkaz"],
+  salesStaffIds: [],
   autoSyncMinutes: 15,
   // Mirrors DEFAULT_DASHBOARD_METRIC_IDS in lib/dashboard-metrics.ts, which cannot
   // be imported here without a cycle (it pulls in the SLA helper). A test asserts

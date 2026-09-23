@@ -5,6 +5,7 @@ import { businessMinutesExceed, calculateBusinessMinutes, defaultSettings, getSl
 import { markDuplicates } from "../lib/duplicates";
 import { elapsedSlaMinutes, resolveSlaState } from "../lib/sla";
 import { resolveProjectMembership } from "../lib/sales-logic";
+import { certifyStoredAttribution } from "../lib/seller-evidence";
 import {
   TREND_METRICS, buildTrendSeries, buildTrendSeriesSet,
 } from "../lib/trend-series";
@@ -83,7 +84,10 @@ function referencePrepare(rows: DashboardRecord[], settings: DashboardSettings, 
   const project = rows.map(hydrateRecord).filter((row) => !selectedOrigins.size || selectedOrigins.has(String(row.originCategoryId)) || selectedProjectCategories.has(String(row.categoryId)));
   const decided = project.map((row) => {
     const { membership, basis } = resolveProjectMembership(row, selectedProjectCategories);
-    return { ...row, projectLeadMembership: membership, membershipBasis: basis };
+    return {
+      ...row, projectLeadMembership: membership, membershipBasis: basis,
+      sellerCertification: certifyStoredAttribution(row),
+    };
   });
   return markDuplicates(decided.map((row) => ({ ...row, slaStatus: referenceSla(row, settings, now) })));
 }

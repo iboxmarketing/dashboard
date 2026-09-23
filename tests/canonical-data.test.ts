@@ -7,7 +7,7 @@ import { buildDashboardMetrics } from "../lib/dashboard-metrics";
 import { isEligibleCohortDeal, isPreSqlClosed, isSalesLost, resolveProjectMembership } from "../lib/sales-logic";
 import {
   buildSalesSection, diagnosticsDataSection, membershipDiagnostics, prepareSalesBase, prepareSalesRecords, projectScopedRecords,
-  sourceAuthorityDiagnostics, type SalesQuery,
+  marketingChannelDiagnostics, type SalesQuery,
 } from "../lib/sales-sections";
 import { notRelevantRecords, salesLostRecords } from "../lib/manager-profile";
 import { nextDealDiscoveryScope } from "../lib/period-sales-coverage";
@@ -141,8 +141,10 @@ test("a Full Sync ends with a refresh of every known Deal; an incremental sync n
   assert.match(sync, /refreshKnown: job\.mode === "full"/);
   assert.match(sync, /if \(job\.dealScope === "refresh"\) return await refreshKnownStep\(/);
   // Only a definitive NOT_FOUND may change a stored record — and only its scope.
-  assert.match(sync, /if \(entry\.outcome === "NOT_FOUND"\) await setAnalyticsCurrentScope\(entry\.dealId, "UNAVAILABLE"\)/);
-  assert.doesNotMatch(sync.slice(sync.indexOf("async function refreshKnownStep"), sync.indexOf("async function stageStep")), /DELETE/i, "the refresh deletes nothing");
+  assert.match(sync, /if \(entry\.outcome === "NOT_FOUND"\) await setAnalyticsCurrentScope\(entry\.dealId, "DELETED"\)/);
+  const refreshStep = sync.slice(sync.indexOf("async function refreshKnownStep"), sync.indexOf("async function stageStep"));
+  assert.doesNotMatch(refreshStep, /DELETE\s+FROM|\bdelete\(/i, "the refresh deletes nothing — a gone Deal is marked, never erased");
+  assert.match(refreshStep, /setAnalyticsCurrentScope\(entry\.dealId, "DELETED"\)/);
   // Refreshed Deals take the ordinary path: written under the run id.
   assert.match(sync, /upsertRaw\("raw_deals", deals\.map\(\(deal\) => \[value\(deal, "ID"\), value\(deal, "CATEGORY_ID"\) \|\| "0", value\(deal, "DATE_CREATE"\), JSON\.stringify\(deal\), job\.runId\]\)\);\n\n  const listed/);
 
@@ -199,20 +201,21 @@ test("SQL rule: an ordinary direct Sales Lost is SQL and Sales Lost; Not Relevan
   assert.equal(nrAfterSql.lossReasonGroup, "MARKETING");
 });
 
-test("source authority: the configured Marketing channel when valid, else SOURCE_ID, raw source always kept", () => {
+test("source is SOURCE_ID only; the Marketing channel is a separate dimension", () => {
   const options = new Map([["UF_CRM_1784823646", new Map([["101", "Instagram"], ["102", "Telegram"]])]]);
   const sources = new Map([["WEBFORM", "CRM-форма"]]);
   const resolve = (deal: Record<string, unknown>, field: string | null = "UF_CRM_1784823646") =>
     resolveDealSource({ deal, marketingChannelField: field, fieldOptions: options, sources });
 
+  // Source is SOURCE_ID's label, whatever the channel says (owner decision).
   assert.deepEqual(resolve({ SOURCE_ID: "WEBFORM", UF_CRM_1784823646: "101" }),
-    { source: "Instagram", sourceAuthority: "MARKETING_CHANNEL", marketingChannel: "Instagram", rawSource: "CRM-форма" });
+    { source: "CRM-форма", rawSource: "CRM-форма", marketingChannel: "Instagram" });
   assert.deepEqual(resolve({ SOURCE_ID: "WEBFORM", UF_CRM_1784823646: "" }),
-    { source: "CRM-форма", sourceAuthority: "SOURCE_ID", marketingChannel: null, rawSource: "CRM-форма" });
-  assert.equal(resolve({ SOURCE_ID: "WEBFORM", UF_CRM_1784823646: "999" }).sourceAuthority, "SOURCE_ID", "an option Bitrix no longer lists is not a label");
-  assert.equal(resolve({ SOURCE_ID: "WEBFORM", UF_CRM_1784823646: "101" }, "ufCrm_1784823646").source, "Instagram", "a camelCase configuration reads the same field");
-  assert.equal(resolve({ SOURCE_ID: "WEBFORM", UF_CRM_1784823646: "101" }, null).source, "CRM-форма", "no configured field, no channel");
-  assert.equal(resolve({ SOURCE_ID: "" }).source, "Aniqlanmagan");
+    { source: "CRM-форма", rawSource: "CRM-форма", marketingChannel: null });
+  assert.equal(resolve({ SOURCE_ID: "WEBFORM", UF_CRM_1784823646: "999" }).marketingChannel, null, "an option Bitrix no longer lists is not a label");
+  assert.equal(resolve({ SOURCE_ID: "WEBFORM", UF_CRM_1784823646: "101" }, "ufCrm_1784823646").marketingChannel, "Instagram", "a camelCase configuration reads the same field");
+  assert.equal(resolve({ SOURCE_ID: "WEBFORM", UF_CRM_1784823646: "101" }, null).marketingChannel, null, "no configured field, no channel");
+  assert.equal(resolve({ SOURCE_ID: "" }).source, "Aniqlanmagan", "a Deal with no SOURCE_ID is unknown, never invented");
 
   const known = new Set(["UF_CRM_1784823646", "SOURCE_ID"]);
   assert.equal(validMarketingChannelField("UF_CRM_1784823646", known), "UF_CRM_1784823646");
@@ -230,8 +233,9 @@ test("source authority: the configured Marketing channel when valid, else SOURCE
     activities: [], callStats: [], providerRules: {}, settings: { ...SETTINGS, marketingChannelField: "UF_CRM_1784823646" }, users: new Map(),
     stageHistories: [], pipelines: new Map([["3", "IBOX"]]), stages: new Map(), sources, fieldOptions: options, domain: null, activitiesAvailable: true, stageHistoryAvailable: true,
   });
-  assert.equal(records[0].source, "Telegram");
+  assert.equal(records[0].source, "CRM-форма", "Source never comes from the channel");
   assert.equal(records[0].sourceId, "WEBFORM", "the raw SOURCE_ID is preserved");
   assert.equal(records[0].rawSource, "CRM-форма");
-  assert.deepEqual(sourceAuthorityDiagnostics([records[0], { sourceAuthority: "SOURCE_ID" }, {}]), { marketingChannel: 1, sourceId: 1, legacy: 1 });
+  assert.equal(records[0].marketingChannel, "Telegram", "the channel stays available as its own dimension");
+  assert.deepEqual(marketingChannelDiagnostics([records[0], { marketingChannel: null }, {}]), { withChannel: 1, withoutChannel: 2 });
 });

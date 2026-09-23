@@ -86,7 +86,9 @@ Important tables:
 - `raw_deals`, `raw_activities`, `raw_stage_history`, `raw_call_stats` — synchronized inputs;
 - `crm_dictionaries` — cached Bitrix lookup values;
 - `analytics_records` — flattened report records;
-- `deal_sales_snapshots` — stable won date and seller attribution; resolved
+- `deal_sales_snapshots` — stable won date and seller attribution, each carrying
+  a certification on read (`lib/seller-evidence.ts`) that decides whether it may
+  appear on an employee scorecard; resolved
   seller values are immutable, while legacy `CURRENT_RESPONSIBLE` guesses may
   be upgraded only by stronger custom-field/current-payment evidence;
 - `sync_jobs`, `sync_state` — resumable job and visible progress;

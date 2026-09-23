@@ -8,7 +8,9 @@ import { buildManagerProfile, notRelevantRecords, reasonBreakdown, salesLostReco
 import { boundsFromKeys, dateKey } from "./period";
 import { buildQualityAnalytics, type QualityAnalytics } from "./quality-analytics";
 import { dedupeByDealId, filterHistoricalRecords, historicalManagerOptions, type SalesFilterSelection } from "./record-filters";
-import { countClassificationConflicts, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isUnclassifiedLead, resolveProjectMembership, salesManagerKey } from "./sales-logic";
+import { countClassificationConflicts, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isUnclassifiedLead, resolveProjectMembership } from "./sales-logic";
+import { countsCurrently, dealLifecycle, lifecycleBreakdown } from "./deal-lifecycle";
+import { SELLER_BUCKET_LABELS, certifyStoredAttribution, countsForScorecard, scorecardSellerKey } from "./seller-evidence";
 import { SLA_LABELS, resolveSlaState } from "./sla";
 import { TREND_METRICS, buildTrendSeriesSet, type TrendMetricId, type TrendPoint } from "./trend-series";
 import type { DashboardSettings, SyncProgressState } from "./types";
@@ -169,7 +171,7 @@ export function prepareSalesBase(rows: DashboardRecord[], settings: Pick<Dashboa
  * funnel now. Membership: the builder's decision, or for an older record that
  * has none, `resolveProjectMembership` — never the bare legacy fallback.
  */
-export function projectScopedRecords<T extends Pick<DashboardRecord, "originCategoryId" | "categoryId" | "projectLeadMembership" | "lossReasonGroup" | "membershipBasis">>(
+export function projectScopedRecords<T extends Pick<DashboardRecord, "originCategoryId" | "categoryId" | "projectLeadMembership" | "lossReasonGroup" | "membershipBasis"> & Partial<Pick<DashboardRecord, "salesManagerId" | "salesManagerAttribution" | "sellerCertification">>>(
   rows: T[], settings: Pick<DashboardSettings, "selectedPipelineIds" | "postSalePipelineIds">,
 ): T[] {
   const selectedOrigins = new Set(settings.selectedPipelineIds.map(String));
@@ -178,7 +180,13 @@ export function projectScopedRecords<T extends Pick<DashboardRecord, "originCate
     .filter((row) => !selectedOrigins.size || selectedOrigins.has(String(row.originCategoryId ?? row.categoryId)) || projectCategories.has(String(row.categoryId)))
     .map((row) => {
       const { membership, basis } = resolveProjectMembership(row, projectCategories);
-      return { ...row, projectLeadMembership: membership, membershipBasis: basis };
+      return {
+        ...row, projectLeadMembership: membership, membershipBasis: basis,
+        // A record written before certification existed is judged by the same
+        // rule from what it does carry, so no scorecard credits an unproven
+        // attribution while waiting for the next Full Sync.
+        sellerCertification: certifyStoredAttribution(row),
+      };
     });
 }
 
@@ -206,11 +214,15 @@ export function salesPopulations(records: DashboardRecord[], query: SalesQuery):
   const to = query.to ? boundsFromKeys({ from: query.to, to: query.to }).to : Infinity;
   const base = filterHistoricalRecords(records, query);
   const cohort = base.filter((row) => { const created = new Date(row.createdAt).getTime(); return created >= from && created <= to; });
-  const won = base.filter((row) => row.salesStatus === "WON" && row.wonAt && new Date(row.wonAt).getTime() >= from && new Date(row.wonAt).getTime() <= to);
+  // A Deal Bitrix no longer has — or could not read — is not a current sale,
+  // however trustworthy its payment history was (lib/deal-lifecycle.ts). Its
+  // record and snapshot stay as audit evidence.
+  const won = base.filter((row) => countsCurrently(row) && row.salesStatus === "WON" && row.wonAt
+    && new Date(row.wonAt).getTime() >= from && new Date(row.wonAt).getTime() <= to);
   const span = Number.isFinite(from) && Number.isFinite(to) ? Math.max(86_400_000, to - from + 1) : 0;
   const previousTo = from - 1; const previousFrom = previousTo - span + 1;
   const previousCohort = span ? base.filter((row) => { const created = new Date(row.createdAt).getTime(); return created >= previousFrom && created <= previousTo; }) : [];
-  const previousWon = span ? base.filter((row) => row.salesStatus === "WON" && row.wonAt && new Date(row.wonAt).getTime() >= previousFrom && new Date(row.wonAt).getTime() <= previousTo) : [];
+  const previousWon = span ? base.filter((row) => countsCurrently(row) && row.salesStatus === "WON" && row.wonAt && new Date(row.wonAt).getTime() >= previousFrom && new Date(row.wonAt).getTime() <= previousTo) : [];
   const trendBounds = query.from && query.to ? { from: query.from, to: query.to } : null;
   const previousTrendBounds = span && trendBounds
     ? { from: localDateKey(new Date(previousFrom)), to: localDateKey(new Date(previousTo)) }
@@ -265,8 +277,11 @@ export type ManagerRow = {
 export function buildManagers(records: DashboardRecord[], wonRecords: DashboardRecord[] = records.filter((row) => row.salesStatus === "WON")): ManagerRow[] {
   const cohortByManager = new Map<string, DashboardRecord[]>();
   const wonByManager = new Map<string, DashboardRecord[]>();
+  // Employee-sensitive: a sale reaches a person only when its attribution is
+  // proven (lib/seller-evidence.ts). Everything else lands in the review or
+  // unknown bucket, so the rows still sum to the KPI without crediting anyone.
   const add = (map: Map<string, DashboardRecord[]>, record: DashboardRecord) => {
-    const key = salesManagerKey(record);
+    const key = scorecardSellerKey(record);
     const rows = map.get(key);
     if (rows) rows.push(record); else map.set(key, [record]);
   };
@@ -279,7 +294,9 @@ export function buildManagers(records: DashboardRecord[], wonRecords: DashboardR
     const metrics = buildDashboardMetrics(cohort, won);
     return {
       id,
-      name: cohort[0]?.salesManager ?? won[0]?.salesManager ?? "Aniqlanmagan",
+      name: SELLER_BUCKET_LABELS[id]
+        ?? [...cohort, ...won].find((row) => countsForScorecard(row.sellerCertification) && row.salesManager)?.salesManager
+        ?? cohort[0]?.salesManager ?? won[0]?.salesManager ?? "Aniqlanmagan",
       leads: metrics.counts.leads,
       leadShare: 0,
       classified: metrics.counts.classified_leads,
@@ -378,8 +395,14 @@ export const DEAL_ROW_FIELDS = [
   "salesManager", "salesManagerAttribution", "wonAt", "salesCycleHours", "opportunity", "currencyId",
   "lossReasonGroup", "lossReason", "source", "duplicateOfDealId", "processingAt", "processingSource",
   "processingBusinessMinutes", "slaStatus", "bitrixUrl",
+  // Attribution audit trail: why this Deal counts, for whom, and on what
+  // evidence — the questions an employee review has to be able to answer.
+  "salesManagerId", "sellerCertification", "sellerEvidenceReason", "sellerOutsideRoster",
+  "lostOwnerName", "lostOwnerCertification", "lostOwnerEvidenceReason",
+  "assignedManagerId", "movedById", "postSaleObserverId", "observerIds",
+  "categoryId", "projectLeadMembership", "currentScope", "marketingChannel", "rawSource", "analyticsVersion",
 ] as const;
-export type DealRow = Pick<DashboardRecord, (typeof DEAL_ROW_FIELDS)[number]>;
+export type DealRow = Pick<DashboardRecord, (typeof DEAL_ROW_FIELDS)[number]> & { lifecycle: ReturnType<typeof dealLifecycle> };
 export type DealsSection = Common & { deals: DealRow[] };
 
 export type NotReady = { ready: false };
@@ -446,7 +469,12 @@ export function qualitySection(records: DashboardRecord[], query: SalesQuery, co
 }
 
 export function dealRow(record: DashboardRecord): DealRow {
-  return Object.fromEntries(DEAL_ROW_FIELDS.map((field) => [field, record[field]])) as DealRow;
+  return {
+    ...Object.fromEntries(DEAL_ROW_FIELDS.map((field) => [field, record[field]])),
+    // One named lifecycle per Deal, so a reader never has to combine membership
+    // and scope by hand to learn whether the row counts.
+    lifecycle: dealLifecycle(record),
+  } as DealRow;
 }
 
 export function dealsSection(records: DashboardRecord[], query: SalesQuery, context: SectionContext): DealsSection {
@@ -516,19 +544,37 @@ export function membershipDiagnostics(records: Pick<DashboardRecord, "membership
   return { needsRefresh: count("LEGACY_NEEDS_REFRESH"), legacyOtherProject: count("LEGACY_OTHER_PROJECT"), legacyRouting: count("LEGACY_ROUTING") };
 }
 
-/** Which authority decided each record's Source (lib/source-authority.ts); `legacy` predates version 12. */
-export function sourceAuthorityDiagnostics(records: Pick<DashboardRecord, "sourceAuthority">[]) {
+/**
+ * Attribution certification counts over the sales in view: what an employee
+ * scorecard may count (CERTIFIED + OWNER_CONFIRMED) against what it may not.
+ */
+export function sellerCertificationDiagnostics(records: Pick<DashboardRecord, "salesStatus" | "sellerCertification">[]) {
+  const sales = records.filter((row) => row.salesStatus === "WON");
+  const count = (status: DashboardRecord["sellerCertification"]) => sales.filter((row) => row.sellerCertification === status).length;
   return {
-    marketingChannel: records.filter((row) => row.sourceAuthority === "MARKETING_CHANNEL").length,
-    sourceId: records.filter((row) => row.sourceAuthority === "SOURCE_ID").length,
-    legacy: records.filter((row) => !row.sourceAuthority).length,
+    sales: sales.length,
+    certified: count("CERTIFIED"),
+    ownerConfirmed: count("OWNER_CONFIRMED"),
+    reviewRequired: count("REVIEW_REQUIRED"),
+    unknown: sales.length - count("CERTIFIED") - count("OWNER_CONFIRMED") - count("REVIEW_REQUIRED"),
   };
+}
+
+/**
+ * Marketing channel coverage. Source itself is always SOURCE_ID (owner
+ * decision), so this only reports how often the separate marketing dimension
+ * carries a value.
+ */
+export function marketingChannelDiagnostics(records: Pick<DashboardRecord, "marketingChannel">[]) {
+  const withChannel = records.filter((row) => Boolean(row.marketingChannel)).length;
+  return { withChannel, withoutChannel: records.length - withChannel };
 }
 
 export function diagnosticsDataSection(records: DashboardRecord[]) {
   return {
     recordCount: records.length, dataQuality: summarizeDataQuality(records), classification: classificationDiagnostics(records),
-    membership: membershipDiagnostics(records), sourceAuthority: sourceAuthorityDiagnostics(records),
+    membership: membershipDiagnostics(records), marketingChannel: marketingChannelDiagnostics(records),
+    lifecycle: lifecycleBreakdown(records), sellerCertification: sellerCertificationDiagnostics(records),
   };
 }
 

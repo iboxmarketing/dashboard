@@ -39,6 +39,7 @@ function live(over: Partial<CurrentStageRecord> = {}): CurrentStageRecord {
     assignedManagerId: "m1", assignedManager: "Ali",
     categoryId: "1", pipeline: "IBOX sales",
     stageId: "C1:WORK", stage: "ОБРАБОТКА",
+    sourceId: "WEBFORM", source: "CRM-форма",
     stageEnteredAt: hoursAgo(stageAgeHours),
     stageAgeHours, stageLimitHours,
     stageOverdue: stageAgeHours > stageLimitHours,

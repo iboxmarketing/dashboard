@@ -66,3 +66,9 @@ export function singlePostSaleObserverId(raw: unknown, assignedManagerId: unknow
     .filter((observerId) => observerId !== assigned);
   return candidates.length === 1 ? candidates[0] : "";
 }
+
+/** Every valid observer id on a Deal, for the attribution audit trail. */
+export function observerIdList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return [...new Set(raw.map(positiveIntegerId).filter(Boolean))];
+}

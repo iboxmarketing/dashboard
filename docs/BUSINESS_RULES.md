@@ -202,6 +202,48 @@ Period Sale created before the selected range.
 
 The goal is to attribute performance to the seller responsible at the sales outcome, not to a later support/customer-care assignee.
 
+### Certification: no credit or blame without evidence
+
+This dashboard evaluates employees, so an attribution is either proven or it is
+not counted. Every attributed sale and every ordinary Sales loss carries a
+certification (`lib/seller-evidence.ts`):
+
+| Status | Meaning | Counts on a scorecard |
+| --- | --- | --- |
+| `OWNER_CONFIRMED` | explicit reviewed per-Deal owner decision | yes |
+| `CERTIFIED` | configured seller field, or the approved single post-sale observer handoff | yes |
+| `REVIEW_REQUIRED` | somebody is named, but the evidence does not prove they sold | no — shown for a human |
+| `UNKNOWN` | no seller evidence, or the id is not a real user | no |
+
+Manager Sales, Manager Revenue, Manager conversions, rankings and the manager
+profile count only `CERTIFIED` and `OWNER_CONFIRMED`. Everything else is visible
+in a named review/unknown bucket, so the rows still sum to the KPI totals while
+no person is credited. Core KPI membership — Lead, SQL, Not Relevant,
+Saralangan/Saralanmagan, Sales Lost, Cohort and Period Sales, Revenue — is
+decided by the funnel rules and is never changed by certification.
+
+What Bitrix can and cannot prove: its REST API exposes no history of
+`ASSIGNED_BY_ID`, and `crm.stagehistory.list` rows carry stage, funnel, semantic,
+type and time but **no actor**. "Who was responsible at the exact sale
+transition" is therefore reconstructible only from an owner confirmation, a
+configured stable seller field, or the observer handoff. `MOVED_BY_ID` is
+whoever moved a card, current `ASSIGNED_BY_ID` is routinely onboarding or
+support after a sale, and a legacy `FIRST_CALL` value is neither — all three are
+`REVIEW_REQUIRED`, never credit.
+
+An ordinary Sales loss is owned by the Sales person responsible when it closed.
+Without a configured seller field or an owner confirmation that person is not
+provable, so the loss owner is `UNKNOWN` rather than whoever holds the card now.
+`MOVED_BY_ID` is recorded beside it as audit evidence only.
+
+### Sales staff roster — validation only
+
+An optional Settings roster of approved Sales staff (`salesStaffIds`) may flag an
+attribution that names somebody outside it (`OUTSIDE_SALES_ROSTER`, which sends a
+countable attribution to review). It never decides who sold, never promotes an
+unproven attribution, and an owner confirmation outranks it. A seller who later
+leaves the company keeps their historical sales; job titles are never evidence.
+
 Priority order:
 
 1. `OWNER_CONFIRMED` — an explicit business-owner decision for one Deal,
@@ -272,6 +314,19 @@ inventory.
 - Retrieve only lightweight fields needed for manager, stage, age and link.
 - Reconcile live inventory against analytics cache and expose missing, stale and stage-mismatch counts.
 - Date filters must not alter current stage inventory.
+
+Canonical live workload: one row per distinct Deal ID, currently in a selected
+Sales funnel, whose current stage is still work. `CLOSED = N` alone is not the
+rule — Bitrix keeps some Not Relevant and closed-lost cards non-closed, and a
+paid card can sit in the payment stage — so Not Relevant, ordinary Sales Lost
+and payment stages are excluded, as are other funnels, deleted and unreadable
+Deals, and repeated ids. Every exclusion is counted by reason and shown beside
+the number (`lib/current-stages.ts`), never silently dropped.
+
+Live-view filters must affect the live number: seller (current assignee),
+Source (canonical `SOURCE_ID`), pipeline, stage and search all apply to the list.
+The date range deliberately does not apply to live inventory and the view says
+so, rather than offering a control that does nothing.
 
 ## 8. Historical cohort
 

@@ -25,6 +25,9 @@ function deal(over: Partial<AnalyticsRecord> = {}): AnalyticsRecord {
     processingBusinessMinutes: 10, salesCycleHours: null, slaStatus: "ON_TIME", source: "CRM-форма",
     stage: "Распределение", currentScope: null, customerKey: null, duplicateOfDealId: null,
     salesManagerId: "7", salesManager: "Ali", assignedManagerId: "7", assignedManager: "Ali",
+    // These fixtures model proven attributions; certification cases live in
+    // tests/employee-attribution.test.ts.
+    sellerCertification: "CERTIFIED",
     stageHistoryCount: 1, ...over,
   } as unknown as AnalyticsRecord;
 }

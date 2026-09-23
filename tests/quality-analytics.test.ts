@@ -13,6 +13,7 @@ function deal(over: Partial<AnalyticsRecord> = {}): AnalyticsRecord {
     opportunity: 0, currencyId: "UZS", processingBusinessMinutes: null,
     salesCycleHours: null, slaStatus: "PENDING", source: "CRM-форма",
     stage: "Распределение", currentScope: null, customerKey: null, duplicateOfDealId: null,
+    sellerCertification: "CERTIFIED",
     salesManagerId: "a", salesManager: "Ali", assignedManagerId: "a", assignedManager: "Ali",
     stageHistoryCount: 1, ...over,
   } as unknown as AnalyticsRecord;

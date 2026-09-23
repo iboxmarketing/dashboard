@@ -10,7 +10,7 @@ function deal(over: Partial<AnalyticsRecord> = {}): AnalyticsRecord {
     dealId: "1", createdAt: "2026-08-05T09:00:00.000Z", wonAt: null, salesStatus: "ACTIVE",
     qualified: false, lossReasonGroup: "NONE", opportunity: 0, currencyId: "UZS",
     processingBusinessMinutes: 10, salesCycleHours: null, slaStatus: "ON_TIME",
-    customerKey: null, duplicateOfDealId: null, ...over,
+    customerKey: null, duplicateOfDealId: null, sellerCertification: "CERTIFIED", ...over,
   } as unknown as AnalyticsRecord;
 }
 
