@@ -33,6 +33,7 @@ import { defaultSettings } from "../lib/business-time";
 import { buildDashboardMetrics } from "../lib/dashboard-metrics";
 import { boundsFromKeys } from "../lib/period";
 import { isEligibleCohortDeal, isSalesLost } from "../lib/sales-logic";
+import { projectScopedRecords } from "../lib/sales-sections";
 import { normalizeSettings } from "../lib/settings-safety";
 import { stageIdList } from "../lib/stage-config";
 import { resolveDashboardMetricIds } from "../lib/dashboard-metrics";
@@ -138,8 +139,11 @@ const build = (rows: RawDeal[], stageHistories: RawStageHistory[]) => buildAnaly
   domain: null, stageHistoryAvailable: true,
 });
 
-const currentRecords = build(deals, histories);
-const asOfRecords = build(deals.map(asOfDeal), histories.filter(before));
+// The canonical read path: the project's own records, each with a decided
+// membership — exactly what a Sales section computes from (lib/sales-sections.ts).
+const scoped = (records: AnalyticsRecord[]) => projectScopedRecords(records, settings);
+const currentRecords = scoped(build(deals, histories));
+const asOfRecords = scoped(build(deals.map(asOfDeal), histories.filter(before)));
 
 /* ------------------------------------------------------------ classification */
 
