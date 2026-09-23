@@ -10,6 +10,7 @@
     "repair:seller-snapshots": "node --import tsx scripts/invalidate-seller-snapshots.ts",
     "auth:bootstrap-admin": "node --import tsx scripts/bootstrap-admin.ts",
     "audit:outcome-drift": "node --import tsx scripts/outcome-drift.ts",
+    "audit:seller-classifier": "node --import tsx scripts/seller-classifier.ts",
     "install:ci": "bash scripts/install-ci.sh",
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vite",
     "build": "bash scripts/build-verified.sh",
