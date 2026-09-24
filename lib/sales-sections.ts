@@ -12,6 +12,7 @@ import { countClassificationConflicts, dealOutcomeLabel, isClassifiedLead, isEli
 import { countsCurrently, dealLifecycle, lifecycleBreakdown } from "./deal-lifecycle";
 import { certifyStoredAttribution, countsForScorecard } from "./seller-evidence";
 import { FUNNEL_OWNER_LABELS, funnelOwnerBreakdown, funnelOwnerKey, resolveFunnelOwner } from "./funnel-owner";
+import { resolveManagerName } from "./manager-identity";
 import { SLA_LABELS, resolveSlaState } from "./sla";
 import { TREND_METRICS, buildTrendSeriesSet, type TrendMetricId, type TrendPoint } from "./trend-series";
 import type { DashboardSettings, SyncProgressState } from "./types";
@@ -322,12 +323,10 @@ export function buildManagers(
       id,
       // An empty roster means "not configured": nobody is marked as former.
       activeRoster: !roster.size || roster.has(id),
-      // The owner's name comes from whichever evidence made them the owner: the
-      // certified seller on a sale, the Responsible person on open work.
-      name: FUNNEL_OWNER_LABELS[id]
-        ?? [...cohort, ...won].find((row) => row.funnelOwnerId === id && row.funnelOwnerName)?.funnelOwnerName
-        ?? [...cohort, ...won].find((row) => countsForScorecard(row.sellerCertification) && row.salesManager)?.salesManager
-        ?? cohort[0]?.assignedManager ?? won[0]?.salesManager ?? "Aniqlanmagan",
+      // The name must belong to THIS id and nothing else. The old chain fell back
+      // to "any row carrying a seller name", which let two ids render one name and
+      // sent the duplicate row's click to a third person (lib/manager-identity.ts).
+      name: resolveManagerName(id, [...cohort, ...won], FUNNEL_OWNER_LABELS),
       leads: metrics.counts.leads,
       leadShare: 0,
       classified: metrics.counts.classified_leads,
@@ -554,7 +553,8 @@ export function managerSection(records: DashboardRecord[], query: SalesQuery, co
   const benchmarkTeam = team.filter((row) => row.id !== "unknown");
   const withSql = (row: ManagerRow) => row.sql > 0;
   const own = team.find((row) => row.id === managerId);
-  const name = own?.name ?? historicalManagerOptions(records).find((option) => option.id === managerId)?.name ?? "Aniqlanmagan";
+  // Bound to managerId, never to a row's position or another manager's name.
+  const name = own?.name ?? resolveManagerName(managerId, records, FUNNEL_OWNER_LABELS);
   const notRelevant = notRelevantRecords(cohort);
   const salesLost = salesLostRecords(cohort);
   return {

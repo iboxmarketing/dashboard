@@ -2,7 +2,8 @@ import { buildDashboardMetrics } from "./dashboard-metrics";
 import type { MetricRecord } from "./dashboard-record";
 import { notRelevantRecords, reasonBreakdown, salesLostRecords, type ReasonRow } from "./manager-profile";
 import { hasMissingLossReason, isProductFitOutcome } from "./sales-logic";
-import { funnelOwnerKey } from "./funnel-owner";
+import { FUNNEL_OWNER_LABELS, funnelOwnerKey } from "./funnel-owner";
+import { resolveManagerName } from "./manager-identity";
 
 /**
  * Lead Quality diagnostics over the selected created-at cohort.
@@ -88,9 +89,14 @@ function managerGroups(rows: MetricRecord[]) {
   return [...grouped.entries()];
 }
 
+/**
+ * The name belonging to this id.
+ *
+ * It used to take the first row carrying ANY seller name, which is how a group
+ * could be labelled with somebody else's name (lib/manager-identity.ts).
+ */
 function managerName(id: string, rows: MetricRecord[]) {
-  if (id === "unknown") return "Aniqlanmagan";
-  return rows.find((row) => row.salesManager?.trim())?.salesManager?.trim() || "Aniqlanmagan";
+  return resolveManagerName(id, rows, FUNNEL_OWNER_LABELS);
 }
 
 /**
