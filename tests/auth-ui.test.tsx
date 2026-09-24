@@ -325,7 +325,7 @@ test("search and the role and status filters narrow the list", () => {
   const keep = (search: string, role: "all" | "ADMIN" | "MEMBER", active: "all" | "active" | "inactive") =>
     rows.filter((row) => matchesUserFilters(row, search, role, active)).map((row) => row.id);
   assert.deepEqual(keep("", "all", "all"), rows.map((row) => row.id));
-  assert.deepEqual(keep("sanjar", "all", "all"), ["u-sales"]);
+  assert.deepEqual(keep("sotuvchi", "all", "all"), ["u-sales"]);
   assert.deepEqual(keep("SULTONOV", "all", "all"), ["u-admin"]);
   assert.deepEqual(keep("", "ADMIN", "all"), ["u-admin"]);
   assert.deepEqual(keep("", "all", "inactive"), ["u-off"]);

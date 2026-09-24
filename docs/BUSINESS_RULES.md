@@ -261,6 +261,64 @@ Without a configured seller field or an owner confirmation that person is not
 provable, so the loss owner is `UNKNOWN` rather than whoever holds the card now.
 `MOVED_BY_ID` is recorded beside it as audit evidence only.
 
+### Manager funnel ownership — by the Deal's outcome
+
+A manager scorecard answers "what is this person's funnel", which is NOT the same
+question as "who sold this Deal". Ownership is therefore decided per Deal by its
+own state (`lib/funnel-owner.ts`):
+
+| Deal state | Owner |
+| --- | --- |
+| WON, or currently in the paired post-sale funnel | the **certified** sale seller (Sales Owner at Won). The current Responsible person is never used here — after a sale the card belongs to onboarding/customer care |
+| still open in Sales | the current Responsible person, **only** when they are on the approved Sales roster |
+| ordinary Sales Lost | the current Responsible person, same roster condition |
+| Not Relevant | the current Responsible person, same roster condition |
+| anything else — an operator, customer care, an unproven sale | `REVIEW_REQUIRED`: a visible bucket, credited to nobody |
+
+A production defect this rule replaces: the funnel used to be grouped by the sale
+seller, which exists only for WON Deals, so a seller with 11 proven sales showed
+Lead 11, SQL 11, Sales 11, Not Relevant 0, Sales Lost 0 and a 100% conversion.
+Sales Owner at Won decides **sales and revenue only**; it can never make Not
+Relevant or Sales Lost disappear from a scorecard, and every attributed row still
+sums to the KPI totals (the review bucket carries the remainder).
+
+### Approved Sales roster — resolved to user IDs
+
+The owner names the approved Sales employees (`OWNER_APPROVED_SELLER_NAMES` in
+`lib/seller-roster.ts`). Names are free text, so they are resolved **once** —
+provided name → exact Bitrix user → user id + canonical name — and every rule
+afterwards compares ids. Matching folds case, diacritics, apostrophes,
+punctuation and name order, and tolerates a single character edit per token
+(`Rahmatullo` / `Rahmatulloh`) but nothing looser: `Sanjar Juraev` never matches
+`Sardor Juraev`. A name matching two different users, or none, is
+`ROSTER_MAPPING_REVIEW` / `NOT_FOUND` and is left out of the approved set, so no
+automatic decision can rest on it. Full Sync persists the resolved ids in
+`salesStaffIds` and the mapping table in the `salesRoster` dictionary.
+
+### Legacy Sales Owner auto-confirmation
+
+One-time rule for old WON Deals whose canonical field is still empty
+(`lib/legacy-seller-autoconfirm.ts`). Observers are read **live** from Bitrix, not
+from the stored record: sync enriches that list only for Deals in the post-sale
+funnel, so a stored empty list means "never fetched" as often as "no observers".
+
+1. **Field already populated** — never overwritten. Certified when the named user
+   is on the roster (`CERTIFIED_EXISTING_FIELD`), otherwise flagged
+   (`REVIEW_REQUIRED_NON_SALES_OWNER`) and left exactly as it is.
+2. **Observers ∩ roster = exactly one** → that person sold it
+   (`AUTO_CONFIRM_OBSERVER`). More than one → `REVIEW_REQUIRED_MULTIPLE_SELLERS`.
+   Observers exist but none on the roster → `REVIEW_REQUIRED_NO_SELLER_OBSERVER`;
+   an observer outside the roster is never used.
+3. **No observers at all** → the current Responsible person, and only when they
+   are on the roster (`AUTO_CONFIRM_CURRENT_RESPONSIBLE_NO_OBSERVER`); otherwise
+   `REVIEW_REQUIRED_NON_SALES_RESPONSIBLE`. This fallback exists *because* there
+   is no observer, and is forbidden the moment one exists.
+4. Observer **order never decides anything** — the candidate set is a set.
+
+Before every write the Deal is re-read and re-classified against live Bitrix: a
+Deal whose field, observers or Responsible person moved since the dry-run is
+skipped, never written. Certification follows the write, never precedes it.
+
 ### Sales staff roster — validation only
 
 An optional Settings roster of approved Sales staff (`salesStaffIds`) may flag an

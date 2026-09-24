@@ -11,7 +11,7 @@ import type { AuthUser } from "../lib/auth-types";
  */
 export const AUTH_FIXTURE_USERS: AuthUser[] = [
   { id: "u-admin", email: "admin@ibox.uz", name: "Diyorbek Sultonov", role: "ADMIN", mustChangePassword: false, active: true, permissions: [], lastLoginAt: "2026-09-20T08:10:00.000Z" },
-  { id: "u-sales", email: "sanjar@ibox.uz", name: "Sanjar Juraev", role: "MEMBER", mustChangePassword: false, active: true, permissions: ["dashboard", "managers", "leadFlow", "deals"], lastLoginAt: "2026-09-19T14:02:00.000Z" },
+  { id: "u-sales", email: "sotuvchi@ibox.uz", name: "Sotuvchi Fixture", role: "MEMBER", mustChangePassword: false, active: true, permissions: ["dashboard", "managers", "leadFlow", "deals"], lastLoginAt: "2026-09-19T14:02:00.000Z" },
   { id: "u-fin", email: "mamura@ibox.uz", name: "Mamura Sobirova", role: "MEMBER", mustChangePassword: false, active: true, permissions: ["finance", "projects"], lastLoginAt: null },
   { id: "u-new", email: "yangi@ibox.uz", name: "Yangi Xodim", role: "MEMBER", mustChangePassword: true, active: true, permissions: ["dashboard"], lastLoginAt: null },
   { id: "u-none", email: "kutish@ibox.uz", name: "Kutilayotgan Xodim", role: "MEMBER", mustChangePassword: false, active: true, permissions: [], lastLoginAt: null },

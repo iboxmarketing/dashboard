@@ -86,7 +86,9 @@ Important tables:
 
 - `app_settings` — funnel selection, fields, SLA and stage limits;
 - `raw_deals`, `raw_activities`, `raw_stage_history`, `raw_call_stats` — synchronized inputs;
-- `crm_dictionaries` — cached Bitrix lookup values;
+- `crm_dictionaries` — cached Bitrix lookup values, including `salesRoster`: the
+  owner-approved Sales names resolved to Bitrix user ids once per Full Sync
+  (`lib/seller-roster.ts`), with any ambiguous entry marked for review;
 - `analytics_records` — flattened report records;
 - `deal_sales_snapshots` — stable won date and seller attribution, each carrying
   a certification on read (`lib/seller-evidence.ts`) that decides whether it may

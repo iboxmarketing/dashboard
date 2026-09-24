@@ -142,6 +142,23 @@ post-sale transition scan remains. Candidate Deal IDs are deduplicated against
 the current run before Deal details and full history are fetched, so payment
 plus post-sale evidence does not multiply analytics rows.
 
+## Legacy Sales Owner auto-confirmation (observers + roster)
+
+For old sales whose canonical field is still empty, **Sotuvchi tasdiqlash** also
+runs the observer rule (`action: "legacy-autoconfirm"`, admin only):
+
+1. **Dry-run** — reports the roster mapping table, the exact counts
+   (auto-confirm by observer, auto-confirm by Responsible with no observer,
+   multiple roster observers, observers with nobody on the roster, non-roster
+   Responsible, already populated, existing field holding a non-roster user) and a
+   Deal-level table. Observers are read live from Bitrix for every candidate.
+2. **Apply** — writes `UF_CRM_1790230512` only for the deterministic cases, at
+   most 200 per request, re-reading and re-classifying each Deal immediately
+   before its write. Anything that moved is skipped with a `SKIP_*` reason.
+
+Everything else waits for a human in the review queue. The append-only
+`seller_attribution_audit` records every decision, including the skips.
+
 ## Sales Owner at Won: canonical seller migration
 
 The seller of a new sale comes from the Bitrix Deal field `UF_CRM_1790230512`
