@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { ANALYTICS_VERSION, buildAnalyticsRecords } from "../lib/analytics";
@@ -9,6 +10,8 @@ import { canConfirm, matchesQueueFilters, sortQueue, type SellerQueueRow } from 
 import { SALES_OWNER_AT_WON_FIELD, isRejectedSellerField, normalizeSalesOwnerAtWonField, normalizeSafeStableSellerField } from "../lib/stable-seller-field";
 import { employeeFieldValue, writeSalesOwnerAtWon } from "../lib/seller-writeback";
 import { attributionSplit } from "../lib/sales-sections";
+import { SALES_SNAPSHOT_UPSERT } from "../lib/sales-snapshots";
+import { SELLER_CONFIRMATION_UPSERT, writeSucceeded } from "../lib/seller-confirmation-sql";
 import type { DashboardRecord } from "../lib/dashboard-record";
 import type { DashboardSettings } from "../lib/types";
 
@@ -356,4 +359,62 @@ test("21. scorecards count only certified sales, and the split still sums to the
   assert.equal(split.unknown, 1);
   assert.equal(split.unknownRevenue, 400);
   assert.equal(split.certified + split.reviewRequired + split.unknown, split.sales);
+});
+
+/* ------------------------------------------------------------ persistence SQL */
+
+let DatabaseSync: typeof import("node:sqlite").DatabaseSync | null = null;
+try { ({ DatabaseSync } = await import("node:sqlite")); } catch { /* runtime without node:sqlite */ }
+
+test("22. the snapshot upsert follows evidence strength", { skip: DatabaseSync ? false : "node:sqlite unavailable" }, () => {
+  const db = new DatabaseSync!(":memory:");
+  db.exec(readFileSync(new URL("../drizzle/0002_flawless_king_cobra.sql", import.meta.url), "utf8").replace(/-->.*$/gm, ""));
+  const save = (managerId: string, source: string) => db.prepare(SALES_SNAPSHOT_UPSERT)
+    .run("1", "2026-09-10T04:00:00.000Z", managerId, `Menejer ${managerId}`, source, "2026-09-10T04:00:00.000Z");
+  // node:sqlite hands back a null-prototype row; spread it so deepEqual compares values.
+  const row = () => ({ ...(db.prepare("SELECT manager_id, attribution_source FROM deal_sales_snapshots").get() as Record<string, string>) });
+
+  save("22", "CUSTOM_FIELD");
+  assert.deepEqual(row(), { manager_id: "22", attribution_source: "CUSTOM_FIELD" });
+  // The canonical field replaces inferred evidence...
+  save("11", "SALES_OWNER_AT_WON");
+  assert.deepEqual(row(), { manager_id: "11", attribution_source: "SALES_OWNER_AT_WON" });
+  // ...and inferred evidence can never take it back, however the Deal moves.
+  for (const source of ["CUSTOM_FIELD", "STAGE_MOVER", "POST_SALE_OBSERVER", "CURRENT_RESPONSIBLE"]) {
+    save("22", source);
+    assert.deepEqual(row(), { manager_id: "11", attribution_source: "SALES_OWNER_AT_WON" }, source);
+  }
+  // An attested fact outranks the field, and only another attested fact moves it.
+  save("33", "MANUAL_CONFIRMATION");
+  assert.deepEqual(row(), { manager_id: "33", attribution_source: "MANUAL_CONFIRMATION" });
+  save("11", "SALES_OWNER_AT_WON");
+  assert.deepEqual(row(), { manager_id: "33", attribution_source: "MANUAL_CONFIRMATION" });
+  save("44", "OWNER_CONFIRMED");
+  assert.deepEqual(row(), { manager_id: "44", attribution_source: "OWNER_CONFIRMED" });
+});
+
+test("23. a refused confirmation never replaces a successful one", { skip: DatabaseSync ? false : "node:sqlite unavailable" }, () => {
+  const db = new DatabaseSync!(":memory:");
+  db.exec(readFileSync(new URL("../drizzle/0011_seller_confirmations.sql", import.meta.url), "utf8").replace(/-->.*$/gm, ""));
+  const save = (sellerId: string, status: string, prior: string | null = null) => db.prepare(SELLER_CONFIRMATION_UPSERT)
+    .run("900", sellerId, `Menejer ${sellerId}`, "admin@example.com", "2026-09-24T10:00:00Z", prior, status, "2026-09-24T10:00:00Z", null,
+      writeSucceeded(status) ? 1 : 0);
+  const row = () => ({ ...(db.prepare("SELECT seller_id, bitrix_write_status, prior_evidence FROM seller_confirmations").get() as Record<string, string | null>) });
+
+  // A first attempt is recorded even when it failed, so the attempt is visible.
+  save("11", "FAILED", "{\"attribution\":\"STAGE_MOVER\"}");
+  assert.deepEqual(row(), { seller_id: "11", bitrix_write_status: "FAILED", prior_evidence: "{\"attribution\":\"STAGE_MOVER\"}" });
+  // A successful confirmation replaces it and keeps the earliest prior evidence.
+  save("22", "WRITTEN", "{\"attribution\":\"LATER\"}");
+  assert.deepEqual(row(), { seller_id: "22", bitrix_write_status: "WRITTEN", prior_evidence: "{\"attribution\":\"STAGE_MOVER\"}" });
+  // Neither a refusal nor a failure may erase it — the production bug this guards.
+  for (const status of ["SKIPPED_NOT_EMPTY", "FAILED", "SKIPPED_NO_FIELD"]) {
+    save("33", status);
+    assert.deepEqual(row(), { seller_id: "22", bitrix_write_status: "WRITTEN", prior_evidence: "{\"attribution\":\"STAGE_MOVER\"}" }, status);
+  }
+  // Another successful confirmation still corrects the seller.
+  save("44", "ALREADY_SET");
+  assert.equal(row().seller_id, "44");
+  assert.equal(writeSucceeded("SKIPPED_NOT_EMPTY"), false);
+  assert.equal(writeSucceeded("ALREADY_SET"), true);
 });

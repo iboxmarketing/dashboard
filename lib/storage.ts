@@ -2,6 +2,7 @@ import { getD1 } from "@/db";
 import { DASHBOARD_TIMELINE_FIELD, STAGE_FUNNEL_FIELDS, STAGE_HISTORY_COUNT_FIELD, dashboardRemovedPaths } from "./dashboard-record";
 import { defaultSettings } from "./business-time";
 import { SALES_SNAPSHOT_UPSERT, isSnapshotCandidate } from "./sales-snapshots";
+import { SELLER_CONFIRMATION_UPSERT, writeSucceeded } from "./seller-confirmation-sql";
 import { stageIdList } from "./stage-config";
 import { resolveDashboardMetricIds } from "./dashboard-metrics";
 import { normalizeSafeStableSellerField } from "./stable-seller-field";
@@ -375,7 +376,7 @@ export async function listSellerConfirmations(options: { includeFailed?: boolean
   const result = new Map<string, SellerConfirmationEvidence>();
   for (const row of rows.results ?? []) {
     const status = row.bitrix_write_status ? String(row.bitrix_write_status) : null;
-    if (!options.includeFailed && status !== "WRITTEN" && status !== "ALREADY_SET") continue;
+    if (!options.includeFailed && !writeSucceeded(status)) continue;
     result.set(String(row.deal_id), {
       dealId: String(row.deal_id), sellerId: String(row.seller_id),
       sellerName: row.seller_name ? String(row.seller_name) : null,
@@ -389,20 +390,21 @@ export async function listSellerConfirmations(options: { includeFailed?: boolean
   return result;
 }
 
-/** Idempotent: confirming the same seller twice rewrites the same row. */
+/**
+ * Store one admin confirmation.
+ *
+ * Idempotent, and never destructive: the statement itself refuses to let a
+ * FAILED or refused attempt replace a confirmation whose write succeeded
+ * (lib/seller-confirmation-sql.ts). The refused attempt still reaches
+ * `seller_attribution_audit`, which is append-only.
+ */
 export async function saveSellerConfirmation(entry: SellerConfirmationEvidence) {
   await ensureSchema();
   await getD1()
-    .prepare(`INSERT INTO seller_confirmations(deal_id, seller_id, seller_name, confirmed_by, confirmed_at, prior_evidence, bitrix_write_status, bitrix_write_at, bitrix_error_code)
-      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(deal_id) DO UPDATE SET
-        seller_id = excluded.seller_id, seller_name = excluded.seller_name,
-        confirmed_by = excluded.confirmed_by, confirmed_at = excluded.confirmed_at,
-        prior_evidence = COALESCE(seller_confirmations.prior_evidence, excluded.prior_evidence),
-        bitrix_write_status = excluded.bitrix_write_status,
-        bitrix_write_at = excluded.bitrix_write_at, bitrix_error_code = excluded.bitrix_error_code`)
+    .prepare(SELLER_CONFIRMATION_UPSERT)
     .bind(entry.dealId, entry.sellerId, entry.sellerName, entry.confirmedBy, entry.confirmedAt,
-      entry.priorEvidence ?? null, entry.bitrixWriteStatus ?? null, entry.bitrixWriteAt ?? null, entry.bitrixErrorCode ?? null)
+      entry.priorEvidence ?? null, entry.bitrixWriteStatus ?? null, entry.bitrixWriteAt ?? null, entry.bitrixErrorCode ?? null,
+      writeSucceeded(entry.bitrixWriteStatus) ? 1 : 0)
     .run();
 }
 
