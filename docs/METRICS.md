@@ -54,8 +54,8 @@ vaqti, SLA.
 | **Sifatli lead %** | SQL | **Saralangan leadlar** | `createdAt` | non-members | — |
 | **Sifatsiz lead %** | Not Relevant | **Saralangan leadlar** | `createdAt` | non-members | — |
 | **Umumiy leadlardan Not Relevant %** | Not Relevant | Leadlar | `createdAt` | non-members | full-funnel share, *not* a quality rate |
-| **Sotilmadi** | canonical Lead with `lossReasonGroup === "SALES"` **and** `qualified === true` | **SQL** | `createdAt` | non-members, pre-SQL closures | closed-lost stage, non-routing reason |
-| **SQLgacha yopilgan** | canonical Lead with `LOST` + `SALES` + `qualified !== true` | — | `createdAt` | non-members | diagnostic only; inside Saralanmagan |
+| **Sotilmadi** | canonical Lead with `lossReasonGroup === "SALES"` (always `qualified === true`, including a direct close) | **SQL** | `createdAt` | non-members | closed-lost stage, non-routing reason |
+| **SQLgacha yopilgan** | `LOST` + `SALES` + no `qualifiedStageId` | — | `createdAt` | non-members | **diagnostic only** — never subtracted from SQL, Sotilmadi or Saralangan |
 | **Kelgan leadlardan sotuv** | canonical cohort `salesStatus === "WON"` | Leadlar (and SQL for the second rate) | `createdAt` — sale may land later | non-members | payment stage / history / post-sale funnel |
 | **Shu davrdagi sotuvlar** | `salesStatus === "WON" && wonAt` in range | — | **`wonAt`** — creation date irrelevant | needs a trustworthy `wonAt` | as above |
 | **Sotuv summasi** | Σ `OPPORTUNITY` over *Shu davrdagi sotuvlar* | — | `wonAt` | — | `OPPORTUNITY` |
@@ -90,11 +90,14 @@ Source and failure reason never decide membership. Quality classification is a
 separate decision over `qualified` and `lossReasonGroup` via
 `isClassifiedLead()`, never by matching a display stage name.
 
-SQL is evidence-based: a lead is qualified by explicit configured SQL-stage
-evidence, by downstream same-pipeline evidence at or after the SQL threshold, or
-by being a canonical WON. A terminal LOST outcome qualifies a deal only when the
-history could not be observed at all. Deals closed in the Sales funnel with no
-SQL evidence are **SQLgacha yopilgan** and count in none of the quality KPIs.
+SQL is evidence-based with one owner-decided addition: a lead is qualified by
+explicit configured SQL-stage evidence, by downstream same-pipeline evidence at or
+after the SQL threshold, by being a canonical WON, **or by being an ordinary Sales
+closure** (`lossReasonGroup === "SALES"`). A Deal closed directly as
+`Сделка провалена` without ever visiting SQL is therefore SQL = yes and
+Sotilmadi = yes; `SQLgacha yopilgan` merely flags the missing evidence trail and
+subtracts from nothing. `Not Relevant` is never SQL, and routed/transferred
+closures stay outside the eligible cohort.
 
 Note for releases: `qualified` is computed during sync and **stored** on the
 record, so a change to this rule only affects deals that are subsequently

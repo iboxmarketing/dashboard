@@ -1629,9 +1629,9 @@ function SettingsView({ settings, syncing, lastSyncAt, onSave, onFullSync, onDir
             <TextInput list="crm-field-options" value={draft.salesManagerField ?? ""} placeholder="Bo‘sh bo‘lsa avtomatik"
               onChange={(event) => setDraft({ ...draft, salesManagerField: event.target.value.trim() || null })} />
           </FormField>
-          <FormField label="Marketing kanal maydoni"
-            hint="Deal’da shu maydon to‘ldirilgan bo‘lsa Manba shu yerdan olinadi, aks holda standart SOURCE_ID. Nom bo‘yicha taxmin qilinmaydi — faqat shu yerda tanlangan maydon.">
-            <TextInput list="marketing-field-options" value={draft.marketingChannelField ?? ""} placeholder="Bo‘sh bo‘lsa SOURCE_ID"
+          <FormField label="Marketing kanali maydoni"
+            hint="Manba (SOURCE_ID) — Bitrix’dagi standart manba. Marketing kanali — alohida o‘lcham, Manba o‘rnini bosmaydi: bu maydon to‘ldirilgan bo‘lsa ham Manba SOURCE_ID’dan olinadi. Nom bo‘yicha taxmin qilinmaydi — faqat shu yerda tanlangan maydon o‘qiladi.">
+            <TextInput list="marketing-field-options" value={draft.marketingChannelField ?? ""} placeholder="Bo‘sh bo‘lsa marketing kanali o‘qilmaydi"
               onChange={(event) => setDraft({ ...draft, marketingChannelField: event.target.value.trim() || null })} />
           </FormField>
           <datalist id="marketing-field-options">{reasonFieldOptions.map((field) => <option key={field.key} value={field.key}>{field.title}</option>)}</datalist>

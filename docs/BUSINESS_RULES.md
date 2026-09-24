@@ -104,17 +104,26 @@ IBOX metrics; those metric formulas are approved separately.
 A deal is quality accepted when it reaches the configured SQL stage, normally Обработка.
 
 A canonical **WON** also counts as quality accepted: an actual sale proves the
-lead was accepted, whatever the history shows. `Not Relevant` never does.
+lead was accepted, whatever the history shows. `Not Relevant` never does —
+`LOW_QUALITY` forces `qualified: false`, so Not Relevant is never SQL.
 
-A terminal **LOST** state is *not* by itself quality-acceptance evidence. It may
-stand in for evidence only when the qualification history genuinely could not be
-observed — the history source was unavailable, or returned no rows for the deal.
-History that was read and simply contains no SQL stage is positive evidence that
-the lead never reached SQL, and must not be upgraded.
+An **ordinary Sales-funnel closure is also always quality accepted** (owner
+decision, deployed in analytics version 7 and unchanged since). A Deal moved
+straight to `Сделка провалена` / `Закрыто и нереализовано` without ever visiting
+SQL/Обработка is a seller process violation, not proof the lead was never worked,
+so it counts as **SQL = yes and Sales Lost = yes**:
 
-Before this correction the LOST fallback was unconditional. On the 2026-08 production
-cohort it promoted 82 of 249 SQL deals whose complete history showed paths such as
-`РАСПРЕДЕЛЁННЫЕ СДЕЛКИ → НЕТ ОТВЕТА → Сделка провалена` — leads that were never worked.
+| Outcome | SQL | Sales Lost | `preSqlClosed` diagnostic |
+| --- | --- | --- | --- |
+| direct `Сделка провалена`, no prior SQL stage | **yes** | **yes** | **true** |
+| `Сделка провалена` after a real SQL stage | yes | yes | false |
+| `Not Relevant` (`lossReasonGroup = MARKETING`) | **no** | no | false |
+| routed / transferred closure (`ROUTING`) | no | no | false — outside the eligible cohort |
+
+`qualifiedAt` / `qualifiedStage` stay `null` for a direct close, because timing
+may come only from real qualification evidence; `qualified` is still true. Routed
+and transferred closures are excluded from this rule: they never had a chance to
+convert here, so they are neither SQL nor Sales Lost.
 
 ### Classified vs unclassified
 
@@ -139,15 +148,17 @@ unclassified by default rather than being silently miscounted.
 A `Not Relevant` deal that previously visited SQL stays `qualified: false`: it is
 classified and low quality, and must never also count as quality accepted.
 
-### Pre-SQL closure — "SQLgacha yopilgan"
+### Pre-SQL closure — "SQLgacha yopilgan" (diagnostic only)
 
-`salesStatus === "LOST"` and `lossReasonGroup === "SALES"` and `qualified !== true`.
+`isPreSqlClosed` = `salesStatus === "LOST"` and `lossReasonGroup === "SALES"` and
+no `qualifiedStageId`.
 
-A deal closed inside the Sales funnel that never produced SQL evidence. It is a
-workflow signal, not a KPI, and belongs to none of SQL, Sifatli, Sifatsiz,
-Not Relevant, Sotilmadi or Sales Lost. It sits inside **Saralanmagan**, because
-its quality verdict was never actually reached — so Saralanmagan legitimately
-contains both still-active pre-SQL leads and these terminal ones.
+It flags a **missing SQL-stage evidence trail** — a Deal closed as an ordinary
+Sales loss without ever passing through SQL/Обработка — and is a process-discipline
+signal, never a population. It is **never subtracted** from SQL, Sales Lost,
+Saralangan or any other KPI: such a Deal is counted as SQL and as Sales Lost (see
+*Quality accepted* above). Versions 5 and 6 of the analytics record excluded it and
+therefore report different SQL, Sotilmadi and Saralangan numbers until rebuilt.
 
 ## 3. Sales loss
 
@@ -319,13 +330,18 @@ Before every write the Deal is re-read and re-classified against live Bitrix: a
 Deal whose field, observers or Responsible person moved since the dry-run is
 skipped, never written. Certification follows the write, never precedes it.
 
-### Sales staff roster — validation only
+### Sales staff roster — validation only, and never over owner-reviewed evidence
 
-An optional Settings roster of approved Sales staff (`salesStaffIds`) may flag an
-attribution that names somebody outside it (`OUTSIDE_SALES_ROSTER`, which sends a
-countable attribution to review). It never decides who sold, never promotes an
-unproven attribution, and an owner confirmation outranks it. A seller who later
-leaves the company keeps their historical sales; job titles are never evidence.
+The roster of approved Sales staff (`salesStaffIds`, resolved from the owner's
+names) may flag an **inferred** attribution that names somebody outside it
+(`OUTSIDE_SALES_ROSTER`, which sends an otherwise countable attribution to
+review). It never decides who sold and never promotes an unproven attribution.
+
+It may **not** demote owner-reviewed evidence: `SALES_OWNER_AT_WON`,
+`MANUAL_CONFIRMATION` and the owner registry are exempt. A seller who has since
+left Sales therefore keeps the sales they made — historical seller attribution and
+the current active roster are two different questions (see *Manager funnel
+ownership*). Job titles are never evidence.
 
 Priority order:
 
@@ -431,18 +447,23 @@ so, rather than offering a control that does nothing.
 
 ## 9. Source and failure reason
 
-- Marketing source uses the configured custom Marketing channel field when the
-  Deal carries a valid value for it. On production that field is
-  `UF_CRM_1784823646` ("Marketing Kanali", a 9-option enumeration discovered
-  through `crm.deal.userfield.list`). The field is configured in Settings and is
-  never detected by name; a configured field Bitrix no longer lists is dropped.
-- Fallback source is standard Bitrix `SOURCE_ID`. An enumeration value whose
-  option Bitrix no longer lists is not a label anyone chose, so it falls back to
-  `SOURCE_ID` rather than showing a bare option ID.
+- **Standard Source is the Bitrix `SOURCE_ID` label, and only that** (owner
+  decision, deployed in analytics version 13 and unchanged since). `source` and
+  `rawSource` are therefore always equal on a current record. There is no
+  fallback and no override: the Marketing channel can never become Manba.
+- **Marketing Kanali is a separate dimension.** The configured custom field —
+  `UF_CRM_1784823646` on production, a 9-option enumeration — is read into
+  `marketingChannel` and reported beside Source, never as Source. It is configured
+  in Settings and never detected by name; a configured field Bitrix no longer
+  lists is dropped, and an enum value whose option Bitrix no longer lists yields no
+  channel label rather than a bare option ID.
+- Every user-facing surface says which is which: "Manba (SOURCE_ID)" for Source,
+  "Marketing kanali" for the channel. Nothing labelled Manba is ever fed by the
+  channel.
 - Labels are Bitrix's own, verbatim, from the channel's option list or the
   SOURCE dictionary. The two vocabularies are never mapped onto each other.
-- `rawSource` always keeps the `SOURCE_ID` label, and `sourceAuthority` records
-  which authority decided, so the two can be compared per Deal.
+- `sourceAuthority` is a legacy version-12 field: the current builder never writes
+  it, and records that still carry it are pre-13 rows awaiting a rebuild.
 - Failure reason uses the configured Bitrix custom field and must resolve enum IDs to readable labels.
 - Missing failure reason on a terminal lead is a data-quality issue and must be visible in Diagnostics.
 

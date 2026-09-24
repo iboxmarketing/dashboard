@@ -10,16 +10,19 @@ detailed rules live in `docs/BUSINESS_RULES.md`, the runbooks in
 | | |
 | --- | --- |
 | Worker | `bitrix-deal-dashboard` (Cloudflare Workers, Paid — 30 s CPU) |
-| URL | `https://bitrix-deal-dashboard.lively-river-afba.workers.dev` (behind Cloudflare Access) |
+| Worker version | `05ae03ed-4623-418a-bf10-db97b2c31ae1` |
+| Release SHA | `216a0bc1513bcc4a522208e899ffdca7f9ad7668` |
 | Release branch | `release/meeting-2026-09-21` |
+| URL | `https://bitrix-deal-dashboard.lively-river-afba.workers.dev` (behind Cloudflare Access) |
 | D1 database | `ibox-dashboard-production`, id `281835a3-f1f4-4f92-be6c-818b05583a00` |
+| Latest accepted Full Sync | `2026-09-24T09:24:57.400Z` (14:24:57 Asia/Tashkent), run `2421c3e2-5762-4048-b53f-bad446536aa7`, analytics version 14 |
 | Staging Worker | `bitrix-dashboard-staging` → D1 `ibox-dashboard-staging` (`a97770c8-995d-419d-aa5d-122fbb956610`) |
 | Cron | `*/15 * * * *`; it syncs only while `autoSyncMinutes > 0` (currently `0`, so sync is manual) |
 | Observability | deliberately OFF — public share tokens ride in the URL path and Workers Logs would retain them |
 
-The deployed SHA and Worker version for this handoff are recorded in the release
-report that accompanied it; read them live with
-`npx wrangler deployments status --name bitrix-deal-dashboard`.
+The identity above is the accepted production release. Confirm it live with
+`npx wrangler deployments status --name bitrix-deal-dashboard`, and update this
+table whenever a new version is accepted.
 
 **Staging and production share ONE Bitrix portal.** A CRM write issued from
 staging changes production data. Never create test Deals in the portal: they
@@ -119,17 +122,42 @@ currency is per entry and totals never mix currencies.
 
 ## Rollback and recovery
 
-1. **Worker rollback.** `npx wrangler deployments list --name bitrix-deal-dashboard`,
-   then `npx wrangler rollback <previous-version-id> --name bitrix-deal-dashboard`.
-   Code rollback alone is safe; if the rolled-back build reads an older analytics
-   version, run a Full Sync afterwards.
-2. **D1 recovery.** `npx wrangler d1 time-travel info ibox-dashboard-production`
-   to find a bookmark, then
-   `npx wrangler d1 time-travel restore ibox-dashboard-production --bookmark <id>`.
-   Restoring rewinds settings, analytics, snapshots, confirmations and auth
-   together — take a fresh bookmark first.
-3. **Bitrix has no undo.** A written `UF_CRM_1790230512` can only be corrected in
-   Bitrix or through a new admin confirmation.
+Rollback is **two decisions, not one**: the Worker version, and the stored data
+the rolled-back code will read. See the rollback matrix in `docs/OPERATIONS.md`.
+
+**Reverting to a Worker version whose analytics or storage semantics differ** —
+a different `ANALYTICS_VERSION`, a different record shape, a new table or column:
+
+1. roll the Worker back:
+   `npx wrangler deployments list --name bitrix-deal-dashboard` then
+   `npx wrangler rollback <previous-version-id> --name bitrix-deal-dashboard`;
+2. restore D1 to the **matching** Time Travel bookmark — the one taken immediately
+   before the deploy or the first write of that release:
+   `npx wrangler d1 time-travel restore ibox-dashboard-production --bookmark=<id>`;
+3. verify schema and data compatibility: analytics versions present
+   (`SELECT DISTINCT json_extract(payload,'$.analyticsVersion') FROM analytics_records`),
+   the tables the old code expects, and one KPI window against the accepted
+   reference figures;
+4. only then resume normal operation.
+
+Both steps, always. A code-only rollback across a semantics change leaves new-shape
+records being read by old rules — a state neither release produces, which reports
+numbers that belong to nothing (`docs/OPERATIONS.md` documents exactly such a
+mix: SQL 167 with Sotilmadi 124).
+
+**Code-only rollback is safe only when** the stored schema and analytics semantics
+are compatible with both builds: the same `ANALYTICS_VERSION`, no migration since
+the version being restored, and no change to how records are written. UX,
+copy-only and documentation releases — this one included — are in that category.
+
+**A Full Sync is not a rollback.** It re-derives records with whatever code is
+deployed, so it can never restore previous semantics; never present
+"Worker rollback + Full Sync" as the universal safe path.
+
+**Bitrix has no undo.** A written `UF_CRM_1790230512` can only be corrected in
+Bitrix or through a new admin confirmation. D1 restore rewinds settings, analytics,
+snapshots, confirmations and auth together, so take a fresh bookmark before
+restoring an old one.
 
 **What NOT to do**
 

@@ -288,7 +288,10 @@ with no `qualified` requirement, so on the 2026-08 production cohort:
 
 The last row is a state neither rule produces by design: the 82 pre-SQL closures
 are excluded from SQL but still counted in Sotilmadi. Do not describe that as a
-restored dashboard.
+restored dashboard. (Both rows above describe analytics versions 5 and 6. From
+version 7 onward the owner-decided rule applies: an ordinary direct
+`Сделка провалена` is SQL **and** Sotilmadi, and `pre_sql_closed` is a diagnostic
+that is never subtracted — see docs/BUSINESS_RULES.md §2.)
 
 **Rollback matrix**
 
