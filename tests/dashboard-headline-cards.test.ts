@@ -5,6 +5,7 @@ import { buildDashboardMetrics, resolveDashboardMetric, DASHBOARD_METRICS, selec
 import {
   DASHBOARD_HEADLINE_CARD_IDS, DEFAULT_HEADLINE_CARD_IDS, MERGED_INTO_HEADLINE,
   NON_HEADLINE_METRIC_IDS, headlineCardLabel, resolveHeadlineCardIds,
+  LEGACY_DEFAULT_METRIC_IDS,
 } from "../lib/dashboard-cards";
 import { validateWidgetConfig } from "../lib/custom-pages";
 import { boundsFromKeys } from "../lib/period";
@@ -146,8 +147,14 @@ test("J/O: merged and diagnostic metrics are absent from the headline selector",
 });
 
 test("K: the untouched legacy 26-card default migrates to the curated headline layout", () => {
-  const legacy = DASHBOARD_METRICS.map((metric) => metric.id);
+  // The legacy default is a frozen historical list, not whatever the registry
+  // holds today: a metric added later must never change what counts as "the
+  // untouched default", or a dashboard still storing that list would silently get
+  // a different headline layout.
+  const legacy = [...LEGACY_DEFAULT_METRIC_IDS];
   assert.equal(legacy.length, 26);
+  assert.equal(legacy.every((id) => DASHBOARD_METRICS.some((metric) => metric.id === id)), true,
+    "every id in the historical list still exists in the registry");
   const resolved = resolveHeadlineCardIds(legacy);
   assert.deepEqual(resolved, DEFAULT_HEADLINE_CARD_IDS,
     "production's unmistakable old default gets the intentional order and keeps Active optional");

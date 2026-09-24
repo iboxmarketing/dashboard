@@ -1,4 +1,5 @@
 import { SALES_OWNER_AT_WON_FIELD } from "./stable-seller-field";
+import { PRODUCT_FIT_STAGE } from "./stage-config";
 import type { DashboardSettings } from "./types";
 
 type LocalParts = {
@@ -249,6 +250,9 @@ export const defaultSettings: DashboardSettings = {
   lowQualityStageIds: [],
   paymentStageIds: [],
   closedLostStageIds: [],
+  // Owner decision 2026-09-24: "Klient lekin programma nepodxodit" is a
+  // product-fit outcome, not a Sales loss (docs/BUSINESS_RULES.md §3).
+  productFitStageIds: [PRODUCT_FIT_STAGE],
   routingReasonPatterns: ["idoko", "sd", "передан", "перевод", "routing", "yo'naltir", "yo‘naltir", "o'tkaz", "o‘tkaz"],
   salesStaffIds: [],
   autoSyncMinutes: 15,

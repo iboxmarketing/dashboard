@@ -31,6 +31,8 @@ export type DashboardSettings = {
   lowQualityStageIds: string[];
   paymentStageIds: string[];
   closedLostStageIds: string[];
+  /** Stages whose closure is a product-fit outcome — see StageSemantics. */
+  productFitStageIds: string[];
   routingReasonPatterns: string[];
   /**
    * Approved Sales staff, for validation only: an attribution naming somebody
@@ -169,7 +171,19 @@ export type ProcessingSource = "QUALIFICATION_STAGE" | "NO_PROCESSING_EVIDENCE" 
 export type SlaStatus = "ON_TIME" | "LATE" | "PENDING" | "OVERDUE_UNPROCESSED" | "UNKNOWN_EVIDENCE";
 export type CreationPeriod = "WORK_HOURS" | "AFTER_HOURS";
 export type SalesStatus = "ACTIVE" | "LOW_QUALITY" | "LOST" | "WON";
-export type LossReasonGroup = "MARKETING" | "SALES" | "ROUTING" | "NONE";
+/**
+ * Why a Deal closed unsuccessfully.
+ *
+ *   MARKETING     Not Relevant — a marketing-quality rejection.
+ *   SALES         an ordinary Sales loss; the only group that is Sotilmadi.
+ *   ROUTING       transferred to another brand/team; outside the eligible cohort.
+ *   PRODUCT_FIT   a real client our programme does not fit (owner decision,
+ *                 2026-09-24). Blames neither Marketing nor Sales: it is not SQL,
+ *                 not Not Relevant and not Sotilmadi, stays a Lead inside
+ *                 Saralanmagan, and is reported as its own outcome.
+ *   NONE          still open, or closed with nothing to classify.
+ */
+export type LossReasonGroup = "MARKETING" | "SALES" | "ROUTING" | "PRODUCT_FIT" | "NONE";
 export type SalesManagerAttribution =
   | "OWNER_CONFIRMED"
   /** An admin named the seller in the dashboard review queue; written back to Bitrix. */

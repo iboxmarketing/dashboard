@@ -79,8 +79,18 @@ import type { AnalyticsRecord, DashboardSettings, ProcessingSource, SalesManager
  *      legacy snapshot, and `UF_CRM_1740741551` ("Первый sales") is rejected
  *      everywhere. Lead, SQL, Not Relevant, Sales, Revenue and membership rules
  *      are unchanged.
+ * 15 — Product-fit outcome. A Deal closed in a configured product-fit stage
+ *      (`productFitStageIds`, owner decision: `C3:UC_FKITQ2` "Klient lekin
+ *      programma nepodxodit") carries `lossReasonGroup = "PRODUCT_FIT"`: it is a
+ *      Lead, it is NOT SQL, NOT Not Relevant and NOT Sales Lost, it sits inside
+ *      Saralanmagan, and it is reported on its own line. Blames neither Marketing
+ *      nor Sales. Independently, Bitrix `SEMANTICS = F` now travels on stage
+ *      metadata, so a failure stage can never become "downstream of SQL"
+ *      qualification evidence merely because its SORT sits after Обработка — the
+ *      defect that made one such Deal count as SQL + Sotilmadi. A version 14
+ *      record reports the old classification for those Deals until rebuilt.
  */
-export const ANALYTICS_VERSION = 14;
+export const ANALYTICS_VERSION = 15;
 
 export type RawDeal = Record<string, unknown>;
 export type RawActivity = Record<string, unknown>;
@@ -171,6 +181,7 @@ export function buildAnalyticsRecords(input: {
   const stageSemantics: StageSemantics = {
     lowQualityStageIds: input.settings.lowQualityStageIds, paymentStageIds: input.settings.paymentStageIds,
     closedLostStageIds: input.settings.closedLostStageIds, qualifiedStageIds: input.settings.qualifiedStageIds,
+    productFitStageIds: input.settings.productFitStageIds,
   };
   const fieldOptions = input.fieldOptions ?? new Map<string, Map<string, string>>(); const snapshots = input.snapshots ?? new Map<string, SalesSnapshot>();
 
@@ -231,7 +242,12 @@ export function buildAnalyticsRecords(input: {
     const reasonKey = reasonField ? canonicalDealFieldKey(reasonField) : "";
     const lossReason = reasonKey ? fieldDisplayValue(deal[reasonKey] ?? deal[reasonField as string], fieldOptions.get(reasonKey) ?? fieldOptions.get(reasonField as string)) : "";
     const effectiveLossReason = lossReason || ((salesStatus === "LOST" || salesStatus === "LOW_QUALITY") ? MISSING_LOSS_REASON : "");
-    const lossReasonGroup = classifyLossReasonGroup({ status: salesStatus, reason: effectiveLossReason, routingPatterns: input.settings.routingReasonPatterns });
+    const lossReasonGroup = classifyLossReasonGroup({
+      status: salesStatus, reason: effectiveLossReason, routingPatterns: input.settings.routingReasonPatterns,
+      // A configured product-fit stage decides the group from the stage the Deal
+      // actually closed in, never from the failure reason text.
+      stageId: currentStageId, config: stageSemantics,
+    });
     // Quality acceptance. Not Relevant is always a marketing rejection, so a
     // previous SQL visit must not reclassify it as a salesperson loss. A sale
     // proves acceptance on its own. An ORDINARY Sales-funnel closure

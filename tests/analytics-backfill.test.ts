@@ -136,12 +136,16 @@ test("dictionary builders derive stage ordering from SORT, never from names", ()
   const { stages, sources, stageMeta } = buildStatusMaps([
     { STATUS_ID: "C3:NEW", NAME: "РАСПРЕДЕЛЁННЫЕ СДЕЛКИ", ENTITY_ID: "DEAL_STAGE_3", SORT: 10 },
     { STATUS_ID: "C3:UC_9SUEMM", NAME: "ОБРАБОТКА", ENTITY_ID: "DEAL_STAGE_3", SORT: 50 },
+    { STATUS_ID: "C3:LOSE", NAME: "Сделка провалена", ENTITY_ID: "DEAL_STAGE_3", SORT: 110, SEMANTICS: "F" },
     { STATUS_ID: "NEW", NAME: "Yangi", ENTITY_ID: "DEAL_STAGE", SORT: 5 },
     { STATUS_ID: "WEBFORM", NAME: "CRM-форма", ENTITY_ID: "SOURCE", SORT: 25 },
   ]);
   assert.equal(stages.get("C3:UC_9SUEMM"), "ОБРАБОТКА");
-  assert.deepEqual(stageMeta.get("C3:UC_9SUEMM"), { sort: 50, categoryId: "3" });
-  assert.deepEqual(stageMeta.get("NEW"), { sort: 5, categoryId: "0" }, "the default funnel maps to category 0");
+  assert.deepEqual(stageMeta.get("C3:UC_9SUEMM"), { sort: 50, categoryId: "3", semantics: "" });
+  assert.deepEqual(stageMeta.get("NEW"), { sort: 5, categoryId: "0", semantics: "" }, "the default funnel maps to category 0");
+  // Bitrix SEMANTICS travels with the stage so a timeline walk can tell a failure
+  // stage apart without the caller carrying it (lib/sales-logic.ts).
+  assert.deepEqual(stageMeta.get("C3:LOSE"), { sort: 110, categoryId: "3", semantics: "F" });
   assert.equal(sources.get("WEBFORM"), "CRM-форма");
   assert.equal(stages.has("WEBFORM"), false, "a source is never a stage");
 

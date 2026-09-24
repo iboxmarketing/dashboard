@@ -50,6 +50,7 @@ enter production KPI.
 | **SQL** | a qualified Deal. An ordinary direct "Сделка провалена" IS SQL. Not Relevant is never SQL. |
 | **Not Relevant** | marketing-side rejection (`lossReasonGroup = MARKETING`). Never SQL, never Sales Lost. |
 | **Sales Lost** | Sales-side loss (`lossReasonGroup = SALES`), including a direct close without a historical SQL stage. Routing losses are excluded from the cohort entirely. |
+| **Product fit** | a Deal closed in a configured product-fit stage (`productFitStageIds`, production: `C3:UC_FKITQ2` "Klient lekin programma nepodxodit"): a real client our programme does not fit. A Lead and Saralanmagan; **not** SQL, **not** Not Relevant, **not** Sales Lost, and never on a seller's Lost score. Reported on its own line. |
 | **Cohort Sales** | sales among Deals *created* in the window (`createdAt`). |
 | **Period Sales** | sales whose payment date (`wonAt`) falls in the window. A proven IBOX sale keeps its Period Sale even if the Deal later moves; a DELETED Deal does not. |
 | **Revenue** | sum of `OPPORTUNITY` over Period Sales, currency as Bitrix reports it (UZS). |

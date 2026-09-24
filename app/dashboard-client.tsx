@@ -975,6 +975,8 @@ function QualityView({ analytics, onManager }: { analytics: QualityAnalytics; on
       <KpiCard label="Saralash qamrovi" value={qualityRate(summary.classificationCoverage)} detail={<>{summary.classified} / {summary.leads} · Saralangan / Leadlar<small className="card-note">Saralanmagan: {summary.unclassified}</small></>} icon={Gauge} tone="blue" />
       <KpiCard label="Sotilmadi" value={String(summary.salesLost)} detail={<>{qualityRate(summary.salesLostRate)} SQL’dan<small className="card-note">Faqat canonical Sales Lost</small></>} icon={XCircle} tone="red" />
       <KpiCard label="Sababsiz yopilgan" value={String(summary.missingReasons)} detail={<>{qualityRate(summary.missingReasonRate)} · {summary.missingReasons} / {summary.missingReasonPopulation}<small className="card-note">NR + Sales Lost · sabab intizomi</small></>} icon={ClipboardList} tone="slate" />
+      <KpiCard label="Programma mos emas" value={String(summary.productFit)}
+        detail={<>Mijoz real, programma to‘g‘ri kelmadi<small className="card-note">Leadlarda qoladi · SQL/Not Relevant/Sotilmadi emas</small></>} icon={ClipboardList} tone="slate" />
       <KpiCard label="Top marketing muammo" value={topMarketing?.reason ?? "—"} valueClassName="reason-value" detail={topMarketing ? `${topMarketing.count} ta · ${topMarketing.share}% Not Relevant’dan` : "Not Relevant yo‘q"} icon={AlertTriangle} tone="amber" />
       <KpiCard label="Top sales yo‘qotish sababi" value={topSales?.reason ?? "—"} valueClassName="reason-value" detail={topSales ? `${topSales.count} ta · ${topSales.share}% Sotilmadi’dan` : "Sales Lost yo‘q"} icon={XCircle} tone="red" />
     </section>
@@ -1224,6 +1226,7 @@ function DiagnosticsView({ data, reconciliation }: { data: DiagnosticsData; reco
     { label: "Ma’lumot mavjud emas", hint: "Activity yoki stage history olinmagan", count: quality.dataUnavailable },
     { label: "Eski yozuv — yangilash kerak", hint: "Loyiha a’zoligi aniqlanmagan; UNRESOLVED sifatida saqlanadi, Full Sync qayta quradi", count: data.membership.needsRefresh },
     { label: "Eski yozuv — boshqa loyiha", hint: "Oxirgi ma’lum funnel loyihaga kirmaydi; Lead’ga qo‘shilmaydi", count: data.membership.legacyOtherProject },
+    { label: "Programma mos emas", hint: "Mijoz real, programma mos emas — Marketing ham, Sales ham ayibdor emas", count: data.classification.productFit ?? 0 },
     { label: "Marketing kanal to‘ldirilgan", hint: data.marketingChannelField ? `${data.marketingChannelField} — alohida o‘lcham, Manba emas` : "Marketing kanal maydoni sozlanmagan", count: data.marketingChannel.withChannel },
     { label: "Sotuv atributsiyasi tasdiqlanmagan", hint: "Tekshiruv kerak — hech bir xodim hisobiga kirmaydi", count: data.sellerCertification.reviewRequired },
     { label: "Sotuv atributsiyasi aniqlanmagan", hint: "Sotuvchi dalili yo‘q", count: data.sellerCertification.unknown },
@@ -1248,9 +1251,10 @@ function DiagnosticsView({ data, reconciliation }: { data: DiagnosticsData; reco
   </>;
 }
 
-type StageSemanticKey = "qualifiedStageIds" | "lowQualityStageIds" | "paymentStageIds" | "closedLostStageIds";
+type StageSemanticKey = "qualifiedStageIds" | "lowQualityStageIds" | "paymentStageIds" | "closedLostStageIds" | "productFitStageIds";
 const stageSemanticFields: { key: StageSemanticKey; title: string; hint: string }[] = [
   { key: "qualifiedStageIds", title: "SQL bosqichi", hint: "Obrabotka — sifatli deb qabul qilingan lead" },
+  { key: "productFitStageIds", title: "Programma mos emas bosqichi", hint: "Mijoz real, lekin programma mos emas. SQL, Not Relevant va Sotilmadi'ga kirmaydi; Leadlarda va Saralanmaganda qoladi" },
   { key: "lowQualityStageIds", title: "Not Relevant bosqichi", hint: "Marketing sifatsizligi; Sotilmadi’ga qo‘shilmaydi" },
   { key: "paymentStageIds", title: "Sotuv / To‘lov bosqichi", hint: "Bu bosqichga yetgan deal sotilgan hisoblanadi" },
   { key: "closedLostStageIds", title: "Sotilmadi bosqichi", hint: "Закрыто и нереализовано — sotuvda yo‘qotilgan" },

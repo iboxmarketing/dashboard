@@ -42,6 +42,9 @@ export function normalizeSettings(raw: Partial<DashboardSettings> | null | undef
     lowQualityStageIds: stageIdList(source.lowQualityStageIds),
     paymentStageIds: stageIdList(source.paymentStageIds),
     closedLostStageIds: stageIdList(source.closedLostStageIds),
+    productFitStageIds: source.productFitStageIds === undefined
+      ? defaultSettings.productFitStageIds
+      : stageIdList(source.productFitStageIds),
     routingReasonPatterns: strings(source.routingReasonPatterns),
     failureReasonFieldByPipeline: record(source.failureReasonFieldByPipeline),
     stageLimits: Object.fromEntries(

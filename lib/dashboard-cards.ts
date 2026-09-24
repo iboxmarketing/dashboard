@@ -65,9 +65,28 @@ export function isHeadlineCardId(value: string): value is HeadlineCardId {
  * card rather than two. Order is otherwise untouched, so a user's arrangement
  * survives the consolidation.
  */
+/**
+ * Production's old stored default: "every metric the registry had" at the time it
+ * was saved, frozen here as the historical list it is.
+ *
+ * It must NOT be derived from the live registry. Adding a metric — `product_fit`
+ * did exactly this — would otherwise change what counts as "the untouched
+ * default", and every dashboard still holding that list would silently get a
+ * different headline layout.
+ */
+export const LEGACY_DEFAULT_METRIC_IDS: readonly string[] = [
+  "leads", "sql", "not_relevant", "sales_lost",
+  "cohort_sales", "period_sales", "revenue", "avg_processing",
+  "sla", "lead_to_sql", "lead_to_sale", "sql_to_sale",
+  "avg_check", "median_check", "sales_cycle", "duplicates",
+  "active_cohort", "classified_leads", "unclassified_leads", "classification_coverage",
+  "quality_accepted_rate", "low_quality_rate", "not_relevant_of_leads", "duplicates_eligible",
+  "unique_ish_leads", "pre_sql_closed",
+] as const;
+
 export function resolveHeadlineCardIds(saved: unknown): HeadlineCardId[] {
   const raw = Array.isArray(saved) ? saved.map(String) : [];
-  const legacyDefault = DASHBOARD_METRICS.map((metric) => metric.id);
+  const legacyDefault = LEGACY_DEFAULT_METRIC_IDS;
   if (raw.length === legacyDefault.length && raw.every((value, index) => value === legacyDefault[index])) {
     return DEFAULT_HEADLINE_CARD_IDS;
   }

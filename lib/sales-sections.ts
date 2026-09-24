@@ -8,7 +8,7 @@ import { buildManagerProfile, notRelevantRecords, reasonBreakdown, salesLostReco
 import { boundsFromKeys, dateKey } from "./period";
 import { buildQualityAnalytics, type QualityAnalytics } from "./quality-analytics";
 import { dedupeByDealId, filterHistoricalRecords, historicalManagerOptions, type SalesFilterSelection } from "./record-filters";
-import { countClassificationConflicts, dealOutcomeLabel, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isUnclassifiedLead, resolveProjectMembership } from "./sales-logic";
+import { countClassificationConflicts, dealOutcomeLabel, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isProductFitOutcome, isUnclassifiedLead, resolveProjectMembership } from "./sales-logic";
 import { countsCurrently, dealLifecycle, lifecycleBreakdown } from "./deal-lifecycle";
 import { certifyStoredAttribution, countsForScorecard } from "./seller-evidence";
 import { FUNNEL_OWNER_LABELS, funnelOwnerBreakdown, funnelOwnerKey, resolveFunnelOwner } from "./funnel-owner";
@@ -655,6 +655,9 @@ export function classificationDiagnostics(records: DashboardRecord[]) {
     unclassifiedStages: groupedCount(unclassified, (row) => row.stage || "Stage ko‘rsatilmagan"),
     preSqlCount: preSql.length,
     preSqlReasons: groupedCount(preSql, (row) => row.lossReason || "Sabab ko‘rsatilmagan").slice(0, 12),
+    // Product-fit closures: a Lead inside Saralanmagan that nobody is blamed for.
+    productFit: eligible.filter(isProductFitOutcome).length,
+    productFitStages: groupedCount(eligible.filter(isProductFitOutcome), (row) => row.stage || "Stage ko‘rsatilmagan"),
   };
 }
 

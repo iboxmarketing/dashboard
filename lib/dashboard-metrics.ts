@@ -1,6 +1,6 @@
 import { countDuplicates } from "./duplicates";
 import { countsAsOperational } from "./stale-resolution";
-import { countClassificationConflicts, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isSalesLost, isUnclassifiedLead } from "./sales-logic";
+import { countClassificationConflicts, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isProductFitOutcome, isSalesLost, isUnclassifiedLead } from "./sales-logic";
 import { summarizeSla } from "./sla";
 import type { MetricRecord } from "./dashboard-record";
 
@@ -34,7 +34,7 @@ export type DashboardMetricId =
   | "sla" | "avg_check" | "median_check" | "sales_cycle" | "duplicates" | "active_cohort"
   | "classified_leads" | "unclassified_leads" | "classification_coverage"
   | "quality_accepted_rate" | "low_quality_rate" | "not_relevant_of_leads"
-  | "duplicates_eligible" | "unique_ish_leads" | "pre_sql_closed";
+  | "duplicates_eligible" | "unique_ish_leads" | "pre_sql_closed" | "product_fit";
 
 /** Stable ids; user-facing labels may change without breaking saved settings. */
 export const DASHBOARD_METRICS: { id: DashboardMetricId; label: string }[] = [
@@ -66,6 +66,7 @@ export const DASHBOARD_METRICS: { id: DashboardMetricId; label: string }[] = [
   { id: "duplicates_eligible", label: "Takroriy lead (eligible)" },
   { id: "unique_ish_leads", label: "Takrorsiz lead (taxminiy)" },
   { id: "pre_sql_closed", label: "SQLgacha yopilgan" },
+  { id: "product_fit", label: "Programma mos emas" },
 ];
 
 export const DEFAULT_DASHBOARD_METRIC_IDS: DashboardMetricId[] = [
@@ -126,6 +127,7 @@ export function buildDashboardMetrics(cohortRecords: MetricRecord[], periodSales
   // workflow signal, not a KPI: it is in none of SQL, Sifatli, Sifatsiz or
   // Sotilmadi, and sits inside Saralanmagan because no verdict was reached.
   const preSqlClosed = eligible.filter(isPreSqlClosed);
+  const productFit = eligible.filter(isProductFitOutcome);
   const unclassified = eligible.filter(isUnclassifiedLead);
   const sla = summarizeSla(eligible);
   // Duplicates are reported over both populations. The historical metric counts
@@ -169,6 +171,10 @@ export function buildDashboardMetrics(cohortRecords: MetricRecord[], periodSales
       // deal id is one lead, and a repeat customer may be a real second deal.
       unique_ish_leads: eligible.length - duplicatesEligible,
       pre_sql_closed: preSqlClosed.length,
+      // A real client our programme does not fit: neither Marketing's fault nor
+      // Sales'. Inside Leadlar and Saralanmagan, reported on its own line so it
+      // is not read as an unworked lead (lib/sales-logic.ts isProductFitOutcome).
+      product_fit: productFit.length,
       classified_leads: classified.length,
       unclassified_leads: unclassified.length,
       // Aktiv leadlar is a *current operational* figure, so it excludes deals
@@ -236,7 +242,7 @@ export function resolveDashboardMetric(metrics: DashboardMetrics, id: DashboardM
     case "leads": case "sql": case "not_relevant": case "sales_lost":
     case "cohort_sales": case "period_sales": case "duplicates": case "active_cohort":
     case "classified_leads": case "unclassified_leads": case "duplicates_eligible":
-    case "unique_ish_leads": case "pre_sql_closed":
+    case "unique_ish_leads": case "pre_sql_closed": case "product_fit":
       return { label, value: String(metrics.counts[id]) };
     case "lead_to_sql": case "lead_to_sale": case "sql_to_sale": case "sla":
     case "classification_coverage": case "quality_accepted_rate":

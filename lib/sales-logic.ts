@@ -9,6 +9,20 @@ function normalized(value: unknown) {
 // Every predicate is stage-ID first, stage-name second. A configured id is the
 // trustworthy signal because Bitrix ids survive renames; the name match stays as
 // the backward-compatible fallback, so an empty config behaves exactly as before.
+/**
+ * A stage the owner has declared a product-fit outcome. Configured ids only —
+ * never the display name, so renaming a stage cannot silently move a Deal out of
+ * Sales Lost.
+ */
+export function isProductFitStage(stageId: string, config: StageSemantics = {}) {
+  return hasConfiguredStage(config.productFitStageIds, stageId);
+}
+
+/** The Deal closed because our programme does not fit a real client. */
+export function isProductFitOutcome(row: { lossReasonGroup?: LossReasonGroup | null }) {
+  return row.lossReasonGroup === "PRODUCT_FIT";
+}
+
 export function isLowQualityStage(stage: string, stageId = "", config: StageSemantics = {}) {
   if (hasConfiguredStage(config.lowQualityStageIds, stageId)) return true;
   const value = normalized(stage);
@@ -36,8 +50,15 @@ export function classifyLossReasonGroup(input: {
   status: SalesStatus;
   reason: string;
   routingPatterns?: string[];
+  /** The stage the Deal closed in, so a configured product-fit stage can decide. */
+  stageId?: string;
+  config?: StageSemantics;
 }): LossReasonGroup {
   if (!input.reason && !["LOW_QUALITY", "LOST"].includes(input.status)) return "NONE";
+  // A configured product-fit stage outranks every other reading of the closure:
+  // the client was real and the programme did not fit, so the loss belongs to
+  // neither Marketing nor Sales (docs/BUSINESS_RULES.md §3).
+  if (input.status === "LOST" && isProductFitStage(input.stageId ?? "", input.config ?? {})) return "PRODUCT_FIT";
   // The business rule is stage-authoritative: every Not Relevant card is a
   // marketing-quality rejection, regardless of the selected failure reason.
   if (input.status === "LOW_QUALITY") return "MARKETING";
@@ -205,6 +226,9 @@ export function dealOutcomeLabel(row: { salesStatus?: SalesStatus; lossReasonGro
   if (row.salesStatus === "LOW_QUALITY") return { label: "Sifatsiz", tone: "warning" };
   if (row.salesStatus === "LOST") {
     if (row.lossReasonGroup === "ROUTING") return { label: "Yo‘naltirildi", tone: "neutral" };
+    // Neither Marketing's nor Sales' failure: shown as its own outcome so nobody
+    // reads it as a lost sale.
+    if (row.lossReasonGroup === "PRODUCT_FIT") return { label: "Programma mos emas", tone: "neutral" };
     return { label: "Sotilmadi", tone: "danger" };
   }
   return { label: "Aktiv", tone: "neutral" };
@@ -233,7 +257,15 @@ export function isSqlOrDownstreamStage(input: {
 }) {
   const config = input.config ?? {};
   if (isLowQualityStage(input.stage, input.stageId, config)) return false;
-  if (isClosedLostStage(input.stage, input.semantic ?? "", input.stageId, config)) return false;
+  // Bitrix's own SEMANTICS is authoritative about failure, and a caller walking
+  // the stage timeline does not carry it — so read it from the live stage
+  // dictionary when it was omitted. Without this, a NEW terminal stage that
+  // nobody has configured yet becomes "downstream of SQL" purely because its
+  // SORT sits after Обработка, which fabricates qualification evidence out of a
+  // lost Deal (found on C3:UC_FKITQ2, one Deal, 2026-09-24).
+  const semantic = input.semantic || input.stageMeta?.get(input.stageId)?.semantics || "";
+  if (isClosedLostStage(input.stage, semantic, input.stageId, config)) return false;
+  if (isProductFitStage(input.stageId, config)) return false;
   if (isQualificationStage(input.stage, input.stageId, config)) return true;
   const threshold = input.thresholds?.get(input.categoryId);
   const sort = input.stageMeta?.get(input.stageId)?.sort;

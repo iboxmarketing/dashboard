@@ -13,7 +13,21 @@ export type StageSemantics = {
   paymentStageIds?: string[];
   closedLostStageIds?: string[];
   qualifiedStageIds?: string[];
+  /**
+   * Stages whose closure means "the client is real, our programme does not fit"
+   * — neither a marketing-quality rejection nor a seller's failure to close
+   * (owner decision, 2026-09-24). Configured per stage id only: a product-fit
+   * outcome is a business judgement about a stage, never guessed from its name.
+   */
+  productFitStageIds?: string[];
 };
+
+/**
+ * The stage the owner classified as a product-fit outcome (2026-09-24):
+ * "Klient lekin programma nepodxodit". Named here so the default configuration
+ * and the tests refer to one constant instead of repeating the id.
+ */
+export const PRODUCT_FIT_STAGE = "C3:UC_FKITQ2";
 
 /** Normalises a stored/posted stage-id list: strings, de-duplicated, no blanks. */
 export function stageIdList(value: unknown): string[] {
@@ -24,11 +38,21 @@ export function hasConfiguredStage(ids: string[] | undefined, stageId: string) {
   return Boolean(stageId) && Boolean(ids?.includes(stageId));
 }
 
+/** The semantics every funnel must configure; readiness is measured against these. */
 export const STAGE_SEMANTIC_GROUPS = [
   { key: "lowQualityStageIds", label: "Not Relevant" },
   { key: "paymentStageIds", label: "Sotuv / To‘lov" },
   { key: "closedLostStageIds", label: "Sotilmadi" },
   { key: "qualifiedStageIds", label: "SQL" },
+] as const;
+
+/**
+ * Optional semantics: a funnel may simply not have such a stage, so an empty list
+ * is a valid configuration and never counts as "not ready". They still take part
+ * in conflict detection, because one stage id may only mean one thing.
+ */
+export const OPTIONAL_STAGE_SEMANTIC_GROUPS = [
+  { key: "productFitStageIds", label: "Programma mos emas" },
 ] as const;
 
 /**
@@ -38,7 +62,7 @@ export const STAGE_SEMANTIC_GROUPS = [
  */
 export function stageConfigConflicts(config: StageSemantics) {
   const groupsByStage = new Map<string, string[]>();
-  for (const group of STAGE_SEMANTIC_GROUPS) {
+  for (const group of [...STAGE_SEMANTIC_GROUPS, ...OPTIONAL_STAGE_SEMANTIC_GROUPS]) {
     for (const stageId of stageIdList(config[group.key])) {
       groupsByStage.set(stageId, [...(groupsByStage.get(stageId) ?? []), group.label]);
     }
@@ -48,8 +72,13 @@ export function stageConfigConflicts(config: StageSemantics) {
     .map(([stageId, groups]) => ({ stageId, groups }));
 }
 
-/** Live stage dictionary entry: Bitrix SORT plus the pipeline it belongs to. */
-export type StageMeta = { sort: number; categoryId: string };
+/**
+ * Live stage dictionary entry: Bitrix SORT, the pipeline it belongs to, and
+ * Bitrix's own SEMANTICS (`S` won, `F` failed, empty for a process stage).
+ * The semantics travel with the stage so a caller walking a stage timeline — which
+ * carries no semantics of its own — can still tell a failure stage apart.
+ */
+export type StageMeta = { sort: number; categoryId: string; semantics?: string };
 
 /**
  * Lowest configured SQL-stage SORT per pipeline — the qualification threshold.

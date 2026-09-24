@@ -160,6 +160,41 @@ Saralangan or any other KPI: such a Deal is counted as SQL and as Sales Lost (se
 *Quality accepted* above). Versions 5 and 6 of the analytics record excluded it and
 therefore report different SQL, Sotilmadi and Saralangan numbers until rebuilt.
 
+### Product fit — "Programma mos emas"
+
+Owner decision, 2026-09-24. A Deal closed in a stage configured as a **product-fit
+outcome** (`productFitStageIds`; on production `C3:UC_FKITQ2` "Klient lekin
+programma nepodxodit") means: *the client is real, our programme does not fit them*.
+It blames neither Marketing nor Sales.
+
+| | |
+| --- | --- |
+| Lead | **yes** — it stays in the eligible cohort |
+| SQL | **no** |
+| Not Relevant | **no** |
+| Sales Lost | **no** |
+| Saralangan | no |
+| **Saralanmagan** | **yes** |
+| `preSqlClosed` | no — that diagnostic is defined over `SALES` losses only |
+| Product Fit | **yes** — reported on its own line |
+
+`lossReasonGroup = "PRODUCT_FIT"`. The stage decides it, never the failure-reason
+text: the same reason in an ordinary lost stage is still a Sales loss. Only
+configured stage ids qualify, so renaming a stage cannot move a Deal out of
+Sotilmadi, and an unconfigured failure stage is **never** assumed to be product fit.
+It is excluded from Not Relevant, from Sotilmadi, from every seller's Lost score and
+from all seller performance penalties, and it is visible in Lead sifati, in
+Diagnostics, on the Deal row ("Programma mos emas") and in the CSV export.
+
+### Bitrix stage semantics are authoritative about failure
+
+A stage Bitrix marks `SEMANTICS = F` can never be read as qualification evidence,
+whether or not it has been configured. The semantics travel on stage metadata, so a
+caller walking the stage timeline (which carries no semantics of its own) still sees
+them. Without this, a newly created terminal stage became "downstream of SQL"
+purely because its SORT sat after Обработка — which is exactly how one product-fit
+Deal was counted as SQL + Sotilmadi before this correction.
+
 ## 3. Sales loss
 
 `Закрыто и не реализовано` / closed-and-not-realized is a Sales loss:

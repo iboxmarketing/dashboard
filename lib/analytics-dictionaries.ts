@@ -33,14 +33,20 @@ export function buildUserMap(userRows: Record<string, unknown>[]) {
 export function buildStatusMaps(statusRows: Record<string, unknown>[]) {
   const stages = new Map<string, string>();
   const sources = new Map<string, string>();
-  const stageMeta = new Map<string, { sort: number; categoryId: string }>();
+  const stageMeta = new Map<string, { sort: number; categoryId: string; semantics?: string }>();
   for (const status of statusRows) {
     const id = value(status, "STATUS_ID");
     const name = value(status, "NAME") || id;
     const entity = value(status, "ENTITY_ID");
     if (entity.startsWith("DEAL_STAGE")) {
       stages.set(id, name);
-      stageMeta.set(id, { sort: Number(status.SORT ?? 0), categoryId: entity === "DEAL_STAGE" ? "0" : entity.replace("DEAL_STAGE_", "") });
+      stageMeta.set(id, {
+        sort: Number(status.SORT ?? 0),
+        categoryId: entity === "DEAL_STAGE" ? "0" : entity.replace("DEAL_STAGE_", ""),
+        // Bitrix SEMANTICS: `F` marks a failure stage, and it decides more than
+        // SORT does (lib/sales-logic.ts isSqlOrDownstreamStage).
+        semantics: value(status, "SEMANTICS") || value(status, "SYSTEM_STATUS_ID"),
+      });
     }
     if (entity === "SOURCE") sources.set(id, name);
   }

@@ -1,7 +1,7 @@
 import { buildDashboardMetrics } from "./dashboard-metrics";
 import type { MetricRecord } from "./dashboard-record";
 import { notRelevantRecords, reasonBreakdown, salesLostRecords, type ReasonRow } from "./manager-profile";
-import { hasMissingLossReason } from "./sales-logic";
+import { hasMissingLossReason, isProductFitOutcome } from "./sales-logic";
 import { funnelOwnerKey } from "./funnel-owner";
 
 /**
@@ -60,6 +60,13 @@ export type QualitySummary = {
   topMarketingReason: ReasonRow | null;
   topSalesReason: ReasonRow | null;
   routing: number;
+  /**
+   * A real client our programme does not fit. Inside Leadlar and Saralanmagan,
+   * counted here so it is visible instead of hiding among unworked leads — and
+   * deliberately absent from Not Relevant, Sotilmadi and every seller score.
+   */
+  productFit: number;
+  productFitReasons: ReasonRow[];
 };
 
 export type QualityAnalytics = {
@@ -111,6 +118,10 @@ export function buildQualityAnalytics(cohort: MetricRecord[]): QualityAnalytics 
   const marketingReasons = reasonBreakdown(notRelevant);
   const salesReasons = reasonBreakdown(salesLost);
   const routingReasons = reasonBreakdown(routing);
+  // Product-fit closures: their reasons are reported apart from both Marketing
+  // and Sales, because the outcome belongs to neither.
+  const productFit = cohort.filter(isProductFitOutcome);
+  const productFitReasons = reasonBreakdown(productFit);
   const missingPopulation = [...notRelevant, ...salesLost];
   const missingReasons = missingPopulation.filter(isMissingReason).length;
 
@@ -172,6 +183,8 @@ export function buildQualityAnalytics(cohort: MetricRecord[]): QualityAnalytics 
       topMarketingReason: marketingReasons[0] ?? null,
       topSalesReason: salesReasons[0] ?? null,
       routing: routing.length,
+      productFit: productFit.length,
+      productFitReasons,
     },
     marketingReasons,
     salesReasons,

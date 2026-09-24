@@ -84,6 +84,11 @@ export async function getSettings(): Promise<DashboardSettings> {
       lowQualityStageIds: stageIdList(parsed.lowQualityStageIds),
       paymentStageIds: stageIdList(parsed.paymentStageIds),
       closedLostStageIds: stageIdList(parsed.closedLostStageIds),
+      // Absent means "not configured yet": keep the owner-decided default rather
+      // than silently reclassifying a product-fit stage as a Sales loss.
+      productFitStageIds: parsed.productFitStageIds === undefined
+        ? defaultSettings.productFitStageIds
+        : stageIdList(parsed.productFitStageIds),
       routingReasonPatterns: Array.isArray(parsed.routingReasonPatterns) ? parsed.routingReasonPatterns.map(String).filter(Boolean) : defaultSettings.routingReasonPatterns,
       // Validation roster only: it flags attributions, never decides them.
       salesStaffIds: Array.isArray(parsed.salesStaffIds) ? [...new Set(parsed.salesStaffIds.map(String).filter(Boolean))] : [],
