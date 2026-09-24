@@ -10,9 +10,10 @@ detailed rules live in `docs/BUSINESS_RULES.md`, the runbooks in
 | | |
 | --- | --- |
 | Worker | `bitrix-deal-dashboard` (Cloudflare Workers, Paid — 30 s CPU) |
-| Worker version (deployed) | `ee716970-f458-42e1-b42d-e24779aaa37c` |
-| Release SHA (deployed application) | `83d73fc572431ad299349f9c3ac9f0b628531e39` — this file's own identity update is the docs-only commit that follows it, and changes no application code |
-| Release branch | `release/meeting-2026-09-21` |
+| **Worker version** (what serves traffic) | `ee716970-f458-42e1-b42d-e24779aaa37c` |
+| **Deployed application SHA** (what that version was built from) | `83d73fc572431ad299349f9c3ac9f0b628531e39` |
+| **Release branch** | `release/meeting-2026-09-21` |
+| **Branch HEAD** (latest commit on that branch) | `9949c1c82ac7e628719daf9a462ef41106483261` |
 | URL | `https://bitrix-deal-dashboard.lively-river-afba.workers.dev` (behind Cloudflare Access) |
 | D1 database | `ibox-dashboard-production`, id `281835a3-f1f4-4f92-be6c-818b05583a00` |
 | Latest accepted Full Sync | `2026-09-24T09:24:57.400Z` (14:24:57 Asia/Tashkent), run `2421c3e2-5762-4048-b53f-bad446536aa7`, analytics version 14 |
@@ -20,11 +21,21 @@ detailed rules live in `docs/BUSINESS_RULES.md`, the runbooks in
 | Cron | `*/15 * * * *`; it syncs only while `autoSyncMinutes > 0` (currently `0`, so sync is manual) |
 | Observability | deliberately OFF — public share tokens ride in the URL path and Workers Logs would retain them |
 
-The identity above is what is running in production right now. The previous
-accepted version was `05ae03ed-4623-418a-bf10-db97b2c31ae1` (SHA `216a0bc`), kept
-here only as the rollback target. Confirm the live identity with
-`npx wrangler deployments status --name bitrix-deal-dashboard`, and update this
-table whenever a new version is accepted.
+Three identities, deliberately listed apart:
+
+- the **Worker version** is what serves traffic — the only thing a user is
+  actually looking at;
+- the **deployed application SHA** is the commit that version was built from;
+- the **branch HEAD** may be ahead of it by documentation-only commits (this file
+  records the deployment, so the commit that records it necessarily follows it).
+  A branch HEAD ahead by application code means something is built but not
+  deployed — check before assuming production has it.
+
+The previous accepted version was `05ae03ed-4623-418a-bf10-db97b2c31ae1`
+(SHA `216a0bc`), kept here only as the rollback target. Confirm the live identity
+with `npx wrangler deployments status --name bitrix-deal-dashboard` and
+`git rev-parse origin/release/meeting-2026-09-21`, and update this table whenever a
+new version is accepted.
 
 **Staging and production share ONE Bitrix portal.** A CRM write issued from
 staging changes production data. Never create test Deals in the portal: they

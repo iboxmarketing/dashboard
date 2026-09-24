@@ -1611,7 +1611,7 @@ function SettingsView({ settings, syncing, lastSyncAt, onSave, onFullSync, onDir
             </button></article>;
         })}</div>
       </section>
-      <section className="panel"><SectionHeader title="Qo‘shimcha Bitrix maydonlari" subtitle="Sotuvchi va Marketing kanal maydonlari. Kanal bo‘sh bo‘lsa Manba standart SOURCE_ID’dan olinadi." />
+      <section className="panel"><SectionHeader title="Qo‘shimcha Bitrix maydonlari" subtitle="Sotuvchi va Marketing kanali maydonlari. Manba har doim Bitrix SOURCE_ID’dan olinadi. Marketing kanali — alohida o‘lcham." />
         <div className={`field-discovery ${customFieldCount ? "ok" : "warning"}`}>{customFieldCount ? `${customFieldCount} ta maxsus maydon topildi. Nom yoki kod bo‘yicha qidiring.` : "Webhook maxsus maydon nomlarini bermadi. UF_CRM_... kodini qo‘lda kiritish mumkin."}</div>
         <datalist id="crm-field-options">{sellerFieldOptions}</datalist>
         <div className="config-fields">
