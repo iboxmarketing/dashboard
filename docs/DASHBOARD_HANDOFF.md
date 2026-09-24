@@ -10,13 +10,13 @@ detailed rules live in `docs/BUSINESS_RULES.md`, the runbooks in
 | | |
 | --- | --- |
 | Worker | `bitrix-deal-dashboard` (Cloudflare Workers, Paid — 30 s CPU) |
-| **Worker version** (what serves traffic) | `be58b080-b832-48f1-8a5d-5805ea83c4fe` |
-| **Deployed application SHA** (what that version was built from) | `0d60464ffdeb6f887dd2148939ee0d4c48da39d8` |
+| **Worker version** (what serves traffic) | `8aeb9e00-3e2c-4694-afeb-05ac949b1c0b` |
+| **Deployed application SHA** (what that version was built from) | `0005ad7` — analytics version 15 |
 | **Release branch** | `release/meeting-2026-09-21` |
-| **Branch HEAD** (latest commit on that branch) | `0d60464ffdeb6f887dd2148939ee0d4c48da39d8`, plus the documentation-only commit that records this deployment |
+| **Branch HEAD** (latest commit on that branch) | `0005ad7`, plus the documentation-only commit that records this deployment |
 | URL | `https://bitrix-deal-dashboard.lively-river-afba.workers.dev` (behind Cloudflare Access) |
 | D1 database | `ibox-dashboard-production`, id `281835a3-f1f4-4f92-be6c-818b05583a00` |
-| Latest accepted Full Sync | `2026-09-24T09:24:57.400Z` (14:24:57 Asia/Tashkent), run `2421c3e2-5762-4048-b53f-bad446536aa7`, analytics version 14 |
+| Latest Full Sync | `2026-09-24T09:24:57.400Z` (14:24:57 Asia/Tashkent), run `2421c3e2-5762-4048-b53f-bad446536aa7`, analytics version 14 — **a new Full Sync is required** for version 15 records |
 | Staging Worker | `bitrix-dashboard-staging` → D1 `ibox-dashboard-staging` (`a97770c8-995d-419d-aa5d-122fbb956610`) |
 | Cron | `*/15 * * * *`; it syncs only while `autoSyncMinutes > 0` (currently `0`, so sync is manual) |
 | Observability | deliberately OFF — public share tokens ride in the URL path and Workers Logs would retain them |
@@ -31,8 +31,10 @@ Three identities, deliberately listed apart:
   A branch HEAD ahead by application code means something is built but not
   deployed — check before assuming production has it.
 
-The previous accepted version was `ee716970-f458-42e1-b42d-e24779aaa37c`
-(SHA `83d73fc`), kept here only as the rollback target. Confirm the live identity
+The previous accepted version was `be58b080-b832-48f1-8a5d-5805ea83c4fe`
+(SHA `0d60464`, analytics version 14), kept here only as the rollback target — and
+because version 15 changes stored classification, rolling back to it needs the
+matching D1 restore, not code alone. Confirm the live identity
 with `npx wrangler deployments status --name bitrix-deal-dashboard` and
 `git rev-parse origin/release/meeting-2026-09-21`, and update this table whenever a
 new version is accepted.
