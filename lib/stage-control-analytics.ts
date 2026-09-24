@@ -196,6 +196,13 @@ export function buildSummary(records: CurrentStageRecord[], catalog: StageCatalo
 
 export type ReconciliationView = {
   liveCount: number;
+  /**
+   * Deals that changed in Bitrix since the last Full Sync: a gap inside the
+   * import window, a cached row the live snapshot no longer lists, or a stage
+   * that has moved. Ordinary elapsed time, not a data fault — the sync is a
+   * point in time and the CRM keeps working after it.
+   */
+  driftCount: number;
   matchedCount: number;
   coverage: number | null;
   cachedCount: number;
@@ -229,14 +236,14 @@ export function buildReconciliationView(
 ): ReconciliationView | null {
   if (!reconciliation) return null;
   const truncated = Boolean(options.truncated);
+  const driftCount = reconciliation.missingWithinHistoryCount + reconciliation.staleCount + reconciliation.stageMismatchCount;
+  // Only a truncated live snapshot is a fault: the live numbers on the page are
+  // then incomplete. Everything else is post-sync drift, reported with its own
+  // wording so nobody reads elapsed time as a broken pipeline.
   const reasons: string[] = [];
   if (truncated) reasons.push("Bitrix live snapshot to‘liq yuklanmadi");
-  if (reconciliation.missingWithinHistoryCount > 0) {
-    reasons.push(`${reconciliation.missingWithinHistoryCount} ta joriy deal history oynasi ichida, lekin analytics cache’da yo‘q`);
-  }
-  if (reconciliation.staleCount > 0) reasons.push(`${reconciliation.staleCount} ta cache yozuvi Bitrix joriy holatida yo‘q`);
-  if (reconciliation.stageMismatchCount > 0) reasons.push(`${reconciliation.stageMismatchCount} ta deal stage’i cache bilan mos emas`);
   return {
+    driftCount,
     liveCount: reconciliation.liveCount,
     matchedCount: reconciliation.matchedCount,
     coverage: rate(reconciliation.matchedCount, reconciliation.liveCount),
@@ -252,7 +259,7 @@ export function buildReconciliationView(
     stageMismatchDealIds: reconciliation.stageMismatchDealIds,
     historyDays: reconciliation.historyDays,
     truncated,
-    severity: reasons.length ? "warning" : "ok",
+    severity: truncated ? "warning" : "ok",
     reasons,
   };
 }

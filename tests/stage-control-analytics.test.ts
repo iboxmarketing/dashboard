@@ -84,7 +84,13 @@ test("B: a missing deal older than the history window is an expected gap", () =>
 
 test("C: a missing deal inside the history window is an unexpected cache gap", () => {
   assert.deepEqual(RECON.missingWithinHistoryDealIds, ["recent-missing"]);
-  assert.equal(buildReconciliationView(RECON)?.severity, "warning");
+  const view = buildReconciliationView(RECON);
+  // Post-sync drift is reported, not alarmed: a Full Sync is a point in time and
+  // the CRM keeps working after it. Only an incomplete live snapshot is a fault.
+  assert.equal(view?.severity, "ok");
+  assert.equal(view?.driftCount, RECON.missingWithinHistoryCount + RECON.staleCount + RECON.stageMismatchCount);
+  assert.equal(buildReconciliationView(RECON, { truncated: true })?.severity, "warning");
+  assert.deepEqual(buildReconciliationView(RECON, { truncated: true })?.reasons, ["Bitrix live snapshot to‘liq yuklanmadi"]);
 });
 
 test("D: a stage mismatch stays detectable", () => {

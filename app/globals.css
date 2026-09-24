@@ -1117,3 +1117,18 @@ button:focus-visible, a:focus-visible, summary:focus-visible,
 /* A manager row for somebody no longer on the active Sales roster. */
 .manager-cell .manager-former { margin-left: 6px; padding: 1px 6px; border: 1px solid var(--line); border-radius: 999px;
   font-size: 9px; font-style: normal; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+
+/* Manager detail: the two sections the page separates. */
+.section-heading-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 18px 0 -4px; }
+.section-heading-row h2 { margin: 0; font-size: 13px; letter-spacing: -.01em; }
+.section-heading-row p { margin: 0; color: var(--muted); font-size: 10px; }
+
+/* Stage Control: live vs cache vs drift, stated as four plain facts. */
+.recon-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 10px 0 6px; }
+.recon-facts > div { display: grid; gap: 2px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: #fafbfc; }
+.recon-facts span { color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
+.recon-facts strong { font-size: 12px; }
+@media (max-width: 720px) { .recon-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* The marketing channel is never presented as Manba. */
+.deal-table .channel-note { color: var(--muted); font-style: normal; }

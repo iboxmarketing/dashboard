@@ -342,6 +342,86 @@ function ManagerTable({ rows, onSelect, limit }: { rows: ManagerRow[]; onSelect:
 }
 
 /**
+ * Sellers who are no longer on the active Sales roster.
+ *
+ * They keep the sales they made — an owner-reviewed Sales Owner at Won value is
+ * historical evidence — but they hold no current workload, so they are listed
+ * apart from the team ranking rather than mixed into it.
+ */
+function FormerSellers({ rows, onSelect }: { rows: ManagerRow[]; onSelect: (manager: ManagerRow) => void }) {
+  if (!rows.length) return null;
+  const money = (value: number, currency: string) => `${Math.round(value).toLocaleString("uz-UZ")} ${currency || "UZS"}`;
+  return <section className="panel">
+    <SectionHeader title="Tarixiy sotuvchilar" subtitle="Sales ro‘yxatida yo‘q — sotuvlari o‘zlarida qoladi, joriy ish yuki ularga tegishli emas" />
+    <div className="table-wrap"><table className="data-table">
+      <thead><tr><th className="sticky-col">Sotuvchi</th><th>Tarixiy sotuv</th><th>Tarixiy summa</th><th>Holat</th></tr></thead>
+      <tbody>{rows.map((row) => <tr key={row.id} onClick={() => onSelect(row)}>
+        <td className="sticky-col"><div className="manager-cell"><span>{row.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span><strong>{row.name}</strong></div></td>
+        <td><strong className="success-text">{row.periodSales} ta</strong><small>davr sotuvi</small></td>
+        <td><strong>{money(row.revenue, row.currency)}</strong></td>
+        <td><span className="pill">Tarixiy sotuvchi</span></td>
+      </tr>)}</tbody>
+    </table></div>
+  </section>;
+}
+
+const SELLER_EVIDENCE_LABELS: Record<string, string> = {
+  SALES_OWNER_AT_WON: "Sales Owner at Won maydoni",
+  MANUAL_CONFIRMATION: "Admin tasdiqlagan",
+  OWNER_CONFIRMED: "Owner tasdiqlagan",
+  POST_SALE_OBSERVER: "Observer handoff",
+  CUSTOM_FIELD: "Eski maydon qiymati",
+  STAGE_MOVER: "Kartani ko‘chirgan",
+  CURRENT_RESPONSIBLE: "Joriy mas’ul",
+  UNKNOWN: "Aniqlanmagan",
+};
+
+const REVIEW_REASON_LABELS: Record<string, string> = {
+  REVIEW_REQUIRED_UNPROVEN_SALE: "Sotuv dalili tasdiqlanmagan — Sales Owner at Won bo‘sh",
+  REVIEW_REQUIRED_NO_SELLER: "Sotuvchi ko‘rsatilmagan",
+  REVIEW_REQUIRED_NON_ROSTER_RESPONSIBLE: "Joriy mas’ul Sales ro‘yxatida emas (operator / Customer Care)",
+  REVIEW_REQUIRED_NO_RESPONSIBLE: "Deal’da mas’ul yo‘q",
+};
+
+/**
+ * The Deals nobody is credited or blamed for.
+ *
+ * Deliberately visible: these rows still sum into the KPI totals, so hiding them
+ * would make the team rows look as though they added up to less than the funnel.
+ */
+function ReviewBucketPanel({ review }: { review: ManagersSection["review"] }) {
+  const [open, setOpen] = useState(false);
+  const money = (value: number) => `${Math.round(value).toLocaleString("uz-UZ")} UZS`;
+  if (!review.leads && !review.sales) {
+    return <section className="panel"><SectionHeader title="Tekshiruv kerak" subtitle="Hech bir xodim natijasiga qo‘shilmagan Deal’lar" />
+      <div className="notice page-notice"><Check size={17} />Tanlangan davrda barcha Deal egasi aniq.</div></section>;
+  }
+  return <section className="panel">
+    <SectionHeader title="Tekshiruv kerak" subtitle="Bu Deal hech bir xodim natijasiga qo‘shilmagan — KPI jamida qoladi, lekin hech kimga yozilmaydi" />
+    <div className="quality-grid">
+      <div><span>Deal soni</span><strong>{review.leads}</strong><small>lead sifatida</small></div>
+      <div><span>Shundan sotuv</span><strong>{review.sales}</strong><small>{money(review.revenue)}</small></div>
+      {review.reasons.map(([reason, count]) => (
+        <div key={reason}><span>{REVIEW_REASON_LABELS[reason] ?? reason}</span><strong>{count}</strong><small>sabab</small></div>
+      ))}
+    </div>
+    <details open={open} onToggle={(event) => setOpen((event.target as HTMLDetailsElement).open)}>
+      <summary>Deal’larni ko‘rish ({review.rows.length}{review.truncated ? "+" : ""})</summary>
+      <div className="table-wrap"><table className="data-table">
+        <thead><tr><th>Deal</th><th>Holat</th><th>Summa</th><th>Sabab</th></tr></thead>
+        <tbody>{review.rows.map((row) => <tr key={row.dealId}>
+          <td>{row.bitrixUrl ? <a href={row.bitrixUrl} target="_blank" rel="noreferrer">#{row.dealId}</a> : <span>#{row.dealId}</span>}</td>
+          <td>{row.outcome}</td>
+          <td>{row.opportunity ? money(row.opportunity) : "—"}</td>
+          <td><small>{REVIEW_REASON_LABELS[row.reason] ?? row.reason}</small></td>
+        </tr>)}</tbody>
+      </table></div>
+      {review.truncated && <p className="card-note">Birinchi {review.rows.length} yozuv ko‘rsatilgan; sonlar to‘liq.</p>}
+    </details>
+  </section>;
+}
+
+/**
  * Filter bar. Its options arrive with each Sales section from the server — the
  * browser no longer holds the records they used to be derived from.
  *
@@ -370,7 +450,7 @@ function FiltersBar({ filters, setFilters, options, currentStages, mode = "cohor
     return <div className="filters-shell current-stage-filters"><div className="filters-main">
       <div className="search-box"><Search size={16} /><input value={filters.search} onChange={(event) => set("search", event.target.value)} placeholder="Deal ID yoki nomi…" /></div>
       <MultiSelect label="Menejer" allLabel="Barcha menejerlar" options={managers} selected={filters.managers} onChange={(value) => setMany("managers", value)} />
-      <MultiSelect label="Manba" allLabel="Barcha manbalar" options={sources} selected={filters.sources} onChange={(value) => setMany("sources", value)} />
+      <MultiSelect label="Manba (SOURCE_ID)" allLabel="Barcha manbalar" options={sources} selected={filters.sources} onChange={(value) => setMany("sources", value)} />
       <Select label="Pipeline" value={filters.pipeline} onChange={(value) => set("pipeline", value)}><option value="">Barcha pipeline</option>{pipelines.map((pipeline) => <option key={pipeline}>{pipeline}</option>)}</Select>
       <Select label="Joriy stage" value={filters.stage} onChange={(value) => set("stage", value)}><option value="">Barcha stage’lar</option>{stages.map((stage) => <option key={stage}>{stage}</option>)}</Select>
       {(currentActiveCount > 0 || filters.search) && <button className="clear-filter" onClick={() => setFilters((current) => ({ ...emptyFilters, range: current.range }))}><X size={15} />Tozalash</button>}
@@ -387,7 +467,7 @@ function FiltersBar({ filters, setFilters, options, currentStages, mode = "cohor
     </div>
     {filters.range === "custom" && <div className="custom-dates"><label>Boshlanish<input type="date" value={filters.from} onChange={(event) => set("from", event.target.value)} /></label><label>Tugash<input type="date" value={filters.to} onChange={(event) => set("to", event.target.value)} /></label></div>}
     {expanded && <div className="filters-extra">
-      <MultiSelect label="Manba" allLabel="Barcha manbalar" options={sources} selected={filters.sources} onChange={(value) => setMany("sources", value)} />
+      <MultiSelect label="Manba (SOURCE_ID)" allLabel="Barcha manbalar" options={sources} selected={filters.sources} onChange={(value) => setMany("sources", value)} />
       <Select label="Status" value={filters.stage} onChange={(value) => set("stage", value)}><option value="">Barcha statuslar</option>{stages.map((value) => <option key={value}>{value}</option>)}</Select>
       <Select label="Ish vaqti" value={filters.period} onChange={(value) => set("period", value)}><option value="">Ish vaqti: barchasi</option><option value="WORK_HOURS">Ish vaqtida</option><option value="AFTER_HOURS">Ish vaqtidan tashqarida</option></Select>
       <Select label="SLA" value={filters.sla} onChange={(value) => set("sla", value)}><option value="">SLA: barchasi</option>{(Object.keys(SLA_LABELS) as (keyof typeof SLA_LABELS)[]).map((state) => <option key={state} value={state}>{SLA_LABELS[state]}</option>)}</Select>
@@ -548,7 +628,7 @@ function TrendChart({ trend }: { trend: DashboardSection["trend"] }) {
 function ManagerDetailView({ section, currentStages, onBack }: { section: ManagerSection; currentStages: CurrentStageRecord[] | null; onBack: () => void }) {
   // Profile, team lead total and team medians are computed on the server from
   // the same helpers; only the finished figures arrive here.
-  const { manager, metrics, teamLeads, medians } = section;
+  const { manager, metrics, teamLeads, medians, activeRoster: isActiveSales, historical } = section;
 
   const money = (value: number) => `${Math.round(value).toLocaleString("uz-UZ")} ${metrics.money.currency || "UZS"}`;
   const number = (value: number | null) => (value === null ? "—" : Math.round(value).toLocaleString("uz-UZ"));
@@ -580,8 +660,29 @@ function ManagerDetailView({ section, currentStages, onBack }: { section: Manage
   const salesLostReasons = section.salesLost.reasons;
   const sources = section.sources;
 
-  return <><div className="page-title manager-detail-title"><div><button className="back-button" onClick={onBack}><ArrowLeft size={16} />Menejerlarga qaytish</button><p className="eyebrow">INDIVIDUAL PERFORMANCE</p><h1>{manager.name}</h1><p>Nima berildi → qanday saralandi → qanday natija berdi → nima ochiq qoldi.</p></div><div className="manager-identity"><span>{manager.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span><div><strong>{manager.name}</strong><small>{manager.id === "unknown" ? "Sotuvchi aniqlanmagan" : `Bitrix user #${manager.id}`}</small></div></div></div>
+  return <><div className="page-title manager-detail-title"><div><button className="back-button" onClick={onBack}><ArrowLeft size={16} />Menejerlarga qaytish</button><p className="eyebrow">{isActiveSales ? "INDIVIDUAL PERFORMANCE" : "TARIXIY SOTUVCHI"}</p><h1>{manager.name}</h1>
+      <p>{isActiveSales
+        ? "Nima berildi → qanday saralandi → qanday natija berdi → nima ochiq qoldi."
+        : "Sales ro‘yxatida yo‘q. Sotuvlari o‘zlarida qoladi; joriy ish yuki (ochiq leadlar, Not Relevant, Sotilmadi) ularga yozilmaydi."}</p></div><div className="manager-identity"><span>{manager.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span><div><strong>{manager.name}</strong><small>{manager.id === "unknown" ? "Sotuvchi aniqlanmagan" : `Bitrix user #${manager.id}`}</small></div></div></div>
 
+    <section className="panel">
+      <SectionHeader title="B. Tarixiy sotuv egaligi"
+        subtitle="Sales Owner at Won bo‘yicha barcha davrlar — tanlangan sana oralig‘iga bog‘liq emas" />
+      <div className="quality-grid">
+        <div><span>Tarixiy sotuv</span><strong>{historical.sales}</strong><small>barcha davrlar</small></div>
+        <div><span>Tarixiy summa</span><strong>{Math.round(historical.revenue).toLocaleString("uz-UZ")} {historical.currency || "UZS"}</strong><small>Opportunity yig‘indisi</small></div>
+        <div><span>Birinchi sotuv</span><strong>{fmtDate(historical.firstSaleAt, false)}</strong><small>Oplata sanasi</small></div>
+        <div><span>Oxirgi sotuv</span><strong>{fmtDate(historical.lastSaleAt, false)}</strong><small>Oplata sanasi</small></div>
+        {historical.byEvidence.map(([evidence, count]) => (
+          <div key={evidence}><span>{SELLER_EVIDENCE_LABELS[evidence] ?? evidence}</span><strong>{count}</strong><small>dalil turi</small></div>
+        ))}
+      </div>
+      {!isActiveSales && <div className="notice page-notice"><ShieldCheck size={17} />
+        Tarixiy sotuvchi: joriy ish yuki ko‘rsatkichlari ko‘rsatilmaydi. Agar u yana Sales ro‘yxatiga qo‘shilsa, joriy ko‘rsatkichlar avtomatik qaytadi.
+      </div>}
+    </section>
+
+    {!isActiveSales ? null : <><section className="section-heading-row"><h2>A. Joriy Sales natijalari</h2><p>Tanlangan sana oralig‘i bo‘yicha</p></section>
     <section className="kpi-grid sales-kpis">
       <KpiCard label="Leadlar" icon={Database} value={String(metrics.counts.leads)}
         detail={`${pct(metrics.counts.leads, teamLeads)}% jamoa leadlaridan`} />
@@ -609,7 +710,7 @@ function ManagerDetailView({ section, currentStages, onBack }: { section: Manage
 
     <section className="panel"><SectionHeader title="Source funnel" subtitle="Tanlangan davrda kelgan leadlar bo‘yicha — davr sotuvi bu yerda ko‘rsatilmaydi" />
       <div className="table-wrap"><table className="data-table funnel-table"><thead><tr>
-        <th className="sticky-col">Source</th><th>Leadlar</th><th>Saralangan</th><th>SQL</th><th>Not Relevant</th><th>Cohort sotuv</th><th title="Cohort sotuv / SQL">SQL → Sotuv</th><th title="Sotilmadi / SQL">Sotilmadi</th>
+        <th className="sticky-col" title="Bitrix SOURCE_ID">Manba (SOURCE_ID)</th><th>Leadlar</th><th>Saralangan</th><th>SQL</th><th>Not Relevant</th><th>Cohort sotuv</th><th title="Cohort sotuv / SQL">SQL → Sotuv</th><th title="Sotilmadi / SQL">Sotilmadi</th>
       </tr></thead><tbody>{sources.map((row) => <tr key={row.source}>
         <td className="sticky-col"><strong>{row.source}</strong></td>
         <td><strong>{row.leads}</strong></td>
@@ -645,7 +746,7 @@ function ManagerDetailView({ section, currentStages, onBack }: { section: Manage
         <BarList rows={salesLostReasons.slice(0, 12).map((row) => ({ label: row.reason, value: row.count, total: salesLost.length, color: "#ef5962" }))} />
         {!salesLostReasons.length && <div className="empty-table">Sotilmadi yo‘q.</div>}
       </article>
-    </section>
+    </section></>}
   </>;
 }
 
@@ -754,20 +855,23 @@ function DealsTable({ records }: { records: DealRow[] }) {
   const safePage = Math.min(page, pages);
   const rows = sorted.slice((safePage - 1) * perPage, safePage * perPage);
   function exportCsv() {
-    const headers = ["Deal ID", "Deal nomi", "Yaratilgan vaqt", "Deal mas’uli", "Sales pipeline", "Current pipeline", "Current stage", "Stage age hours", "Stage limit hours", "Sales status", "SQL at", "Sales manager", "Seller attribution", "Won at", "Sales cycle hours", "Opportunity", "Currency", "Failure group", "Failure reason", "Source", "Duplicate of", "First processing at", "Processing source", "Processing business minutes", "SLA status"];
+    const headers = ["Deal ID", "Deal nomi", "Yaratilgan vaqt", "Deal mas’uli", "Sales pipeline", "Current pipeline", "Current stage", "Stage age hours", "Stage limit hours", "Sales status", "SQL at", "Sales manager", "Seller attribution", "Won at", "Sales cycle hours", "Opportunity", "Currency", "Failure group", "Failure reason", "Source (SOURCE_ID)", "Marketing kanali", "Duplicate of", "First processing at", "Processing source", "Processing business minutes", "SLA status"];
     const quote = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
-    const lines: unknown[][] = [headers, ...sorted.map((row) => [row.dealId, row.title, row.createdAt, row.assignedManager, row.originPipeline, row.pipeline, row.stage, row.stageAgeHours, row.stageLimitHours, row.salesStatus, row.qualifiedAt, row.salesManager, row.salesManagerAttribution, row.wonAt, row.salesCycleHours, row.opportunity, row.currencyId, row.lossReasonGroup, row.lossReason, row.source, row.duplicateOfDealId, row.processingAt, row.processingSource, row.processingBusinessMinutes, row.slaStatus])];
+    const lines: unknown[][] = [headers, ...sorted.map((row) => [row.dealId, row.title, row.createdAt, row.assignedManager, row.originPipeline, row.pipeline, row.stage, row.stageAgeHours, row.stageLimitHours, row.salesStatus, row.qualifiedAt, row.salesManager, row.salesManagerAttribution, row.wonAt, row.salesCycleHours, row.opportunity, row.currencyId, row.lossReasonGroup, row.lossReason, row.source, row.marketingChannel ?? "", row.duplicateOfDealId, row.processingAt, row.processingSource, row.processingBusinessMinutes, row.slaStatus])];
     const blob = new Blob(["\ufeff", lines.map((line) => line.map(quote).join(",")).join("\n")], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob); const link = document.createElement("a");
     link.href = url; link.download = `bitrix-deals-${new Date().toISOString().slice(0, 10)}.csv`; link.click(); URL.revokeObjectURL(url);
   }
   return <section className="panel deals-panel"><SectionHeader title="Detailed Deal report" subtitle={`${records.length} ta Deal`} action={<div className="table-actions"><Select label="Saralash" value={sort} onChange={(value) => setSort(value as typeof sort)}><option value="createdAt">Yangi Deal</option><option value="processingBusinessMinutes">Eng tez obrabotka</option></Select><button className="button small secondary" onClick={exportCsv}><Download size={16} />CSV export</button></div>} />
-    <div className="table-wrap"><table className="data-table deal-table"><thead><tr><th>Deal</th><th>Sotuv holati</th><th>Mas’ul / sotuvchi</th><th>Pipeline / Stage</th><th>Stage yoshi</th><th>Source / sabab</th><th>Birinchi ishlov</th><th>SLA</th></tr></thead><tbody>{rows.map((row) => { const outcome = dealOutcomeLabel(row); return <tr key={row.dealId}>
+    <div className="table-wrap"><table className="data-table deal-table"><thead><tr><th>Deal</th><th>Sotuv holati</th><th>Mas’ul / sotuvchi</th><th>Pipeline / Stage</th><th>Stage yoshi</th><th title="Bitrix SOURCE_ID">Manba (SOURCE_ID)</th><th>Birinchi ishlov</th><th>SLA</th></tr></thead><tbody>{rows.map((row) => { const outcome = dealOutcomeLabel(row); return <tr key={row.dealId}>
       <td><div className="deal-name"><strong>{row.title}</strong>{row.bitrixUrl ? <a href={row.bitrixUrl} target="_blank" rel="noreferrer">#{row.dealId}<ExternalLink size={12} /></a> : <small>#{row.dealId}</small>}</div></td>
       <td><span className={`pill ${outcome.tone}`}>{outcome.label}</span><small>{row.wonAt ? fmtDate(row.wonAt) : fmtDate(row.createdAt)}{row.duplicateOfDealId ? ` · duplicate #${row.duplicateOfDealId}` : ""}</small></td>
       <td><span>{row.salesManager ?? "Aniqlanmagan"}</span><small>{row.salesManagerAttribution} · hozir: {row.assignedManager}</small></td><td><span>{row.originPipeline}</span><small>{row.stage}{row.qualifiedAt ? ` · SQL ${fmtDate(row.qualifiedAt)}` : ""}</small></td>
       <td><span className={row.stageOverdue ? "danger-text" : ""}>{Math.round(row.stageAgeHours)} soat</span><small>Limit: {row.stageLimitHours} soat</small></td>
-      <td><span>{row.source}</span><small>{row.lossReasonGroup !== "NONE" ? `${row.lossReasonGroup} · ${row.lossReason}` : row.lossReason || "—"}</small></td>
+      <td><span>{row.source}</span>
+        {/* The marketing channel is a separate dimension and is never Manba. */}
+        {row.marketingChannel && <small className="channel-note">Marketing kanali: {row.marketingChannel}</small>}
+        <small>{row.lossReasonGroup !== "NONE" ? `${row.lossReasonGroup} · ${row.lossReason}` : row.lossReason || "—"}</small></td>
       <td><span className="source-pill">{row.processingSource === "QUALIFICATION_STAGE" ? "✅ Ishlov" : row.processingSource === "NO_PROCESSING_EVIDENCE" ? "❔ Noma’lum" : "⚠️ Yo‘q"}</span><small>{fmtMinutes(row.processingBusinessMinutes)}</small></td>
       <td><span className={`pill ${SLA_TONES[row.slaStatus]}`}>{SLA_LABELS[row.slaStatus]}</span></td>
     </tr>; })}</tbody></table>{!rows.length && <div className="empty-table">Tanlangan filtr bo‘yicha Deal topilmadi.</div>}</div>
@@ -883,7 +987,7 @@ function QualityView({ analytics, onManager }: { analytics: QualityAnalytics; on
   </>;
 }
 
-function ReconciliationBanner({ view }: { view: ReconciliationView }) {
+function ReconciliationBanner({ view, lastSyncAt }: { view: ReconciliationView; lastSyncAt: string | null }) {
   const [open, setOpen] = useState(false);
   const idList = (label: string, ids: string[], total: number) => ids.length
     ? <p><strong>{label}:</strong> {ids.slice(0, 40).join(", ")}{total > ids.length ? ` … (${total} tadan ${Math.min(40, ids.length)} tasi)` : ""}</p>
@@ -897,22 +1001,30 @@ function ReconciliationBanner({ view }: { view: ReconciliationView }) {
         <small>Analytics tarix cache: {view.cachedCount} ta record — bu live hisob-kitobning maxraji emas.</small>
       </div>
     </div>
-    <p className="recon-note">Joriy Stage nazorati Bitrix live snapshot’dan olinadi. Analytics cache farqi live Deal’larni bu sahifadan olib tashlamaydi.</p>
+    {/* The four facts a reader needs to tell a live number from a synced one. */}
+    <div className="recon-facts">
+      <div><span>Oxirgi Full Sync</span><strong>{fmtDate(lastSyncAt)}</strong></div>
+      <div><span>Live Bitrix</span><strong>{view.liveCount}</strong></div>
+      <div><span>Analytics cache</span><strong>{view.cachedCount}</strong></div>
+      <div><span>Syncdan keyingi o‘zgarishlar</span><strong>{view.driftCount}</strong></div>
+    </div>
+    <p className="recon-note">Joriy Stage nazorati Bitrix live snapshot’dan olinadi — sana oralig‘i filtri bu sonlarga ta’sir qilmaydi.
+      Syncdan keyingi o‘zgarishlar xato emas: Full Sync bir nuqtadagi holat, CRM esa undan keyin ham ishlaydi. Keyingi Full Sync ularni tenglashtiradi.</p>
     {view.truncated && <p className="recon-alert"><AlertTriangle size={15} />Bitrix live snapshot to‘liq yuklanmadi — joriy sonlar ham to‘liq bo‘lmasligi mumkin.</p>}
     <div className="recon-chips">
       {view.expectedGap > 0 && <span className="pill neutral" title="Analytics tarix oynasidan oldin yaratilgan — kutilgan holat">{view.expectedGap} ta eski ochiq deal {view.historyDays ?? "—"} kunlik analytics tarixidan oldin yaratilgan</span>}
-      {view.unexpectedGap > 0 && <span className="pill danger">{view.unexpectedGap} ta joriy deal history oynasi ichida, lekin analytics cache’da yo‘q</span>}
-      {view.staleCount > 0 && <span className="pill danger">{view.staleCount} ta eskirgan cache yozuvi</span>}
-      {view.stageMismatchCount > 0 && <span className="pill danger">{view.stageMismatchCount} ta stage farqi</span>}
-      {view.severity === "ok" && <span className="pill success">Live snapshot ishonchli</span>}
+      {view.unexpectedGap > 0 && <span className="pill neutral" title="Syncdan keyin yaratilgan — keyingi Full Sync qo‘shadi">{view.unexpectedGap} ta deal syncdan keyin yaratilgan</span>}
+      {view.staleCount > 0 && <span className="pill neutral" title="Syncdan keyin yopilgan — cache hali ochiq deb ko‘rsatadi">{view.staleCount} ta deal syncdan keyin yopilgan</span>}
+      {view.stageMismatchCount > 0 && <span className="pill neutral" title="Syncdan keyin bosqichi o‘zgargan">{view.stageMismatchCount} ta deal syncdan keyin bosqich almashtirgan</span>}
+      {!view.truncated && <span className="pill success">Live snapshot to‘liq</span>}
     </div>
     {(view.missingCount || view.staleCount || view.stageMismatchCount) > 0 && <details open={open} onToggle={(event) => setOpen((event.target as HTMLDetailsElement).open)}>
-      <summary>Farqli Deal ID’lar</summary>
+      <summary>Syncdan keyin o‘zgargan Deal ID’lar</summary>
       <div className="recon-details">
         {idList("History oynasidan eski", view.expectedGapDealIds, view.expectedGap)}
         {idList("History oynasi ichida yo‘q", view.unexpectedGapDealIds, view.unexpectedGap)}
-        {idList("Eskirgan cache", view.staleDealIds, view.staleCount)}
-        {idList("Stage farqi", view.stageMismatchDealIds, view.stageMismatchCount)}
+        {idList("Syncdan keyin yopilgan", view.staleDealIds, view.staleCount)}
+        {idList("Syncdan keyin bosqich almashgan", view.stageMismatchDealIds, view.stageMismatchCount)}
       </div>
     </details>}
   </div>;
@@ -979,7 +1091,7 @@ function OverdueList({ rows, catalog, managers }: { rows: CurrentStageRecord[]; 
   </section>;
 }
 
-function StageControlView({ records, historicalRecords, reconciliation, stageCatalog, truncated, excluded, settings, loading, error, onRefresh, funnelStatus, onRetryFunnel }: { records: CurrentStageRecord[]; historicalRecords: StageFunnelRecord[]; reconciliation: StageReconciliation | null; stageCatalog: PipelineStageOption[]; truncated: boolean; excluded: { candidates: number; counts: Record<string, number> } | null; settings: DashboardSettings | null; loading: boolean; error: string | null; onRefresh: () => void; funnelStatus: StageFunnelStatus; onRetryFunnel: () => void }) {
+function StageControlView({ records, historicalRecords, reconciliation, stageCatalog, truncated, excluded, settings, loading, error, onRefresh, funnelStatus, onRetryFunnel, lastSyncAt }: { records: CurrentStageRecord[]; historicalRecords: StageFunnelRecord[]; reconciliation: StageReconciliation | null; stageCatalog: PipelineStageOption[]; truncated: boolean; excluded: { candidates: number; counts: Record<string, number> } | null; settings: DashboardSettings | null; loading: boolean; error: string | null; onRefresh: () => void; funnelStatus: StageFunnelStatus; onRetryFunnel: () => void; lastSyncAt: string | null }) {
   const pipelineNames = useMemo(() => new Map((settings?.selectedPipelineIds ?? []).map((id, index) => [String(id), settings?.selectedPipelineNames?.[index] ?? `Pipeline #${id}`])), [settings]);
   const liveCatalog = useMemo(() => buildStageCatalog({ catalog: stageCatalog, live: records, pipelineNames }), [stageCatalog, records, pipelineNames]);
   const historyCatalog = useMemo(() => buildStageCatalog({ catalog: stageCatalog, historical: historicalRecords, pipelineNames }), [stageCatalog, historicalRecords, pipelineNames]);
@@ -996,7 +1108,7 @@ function StageControlView({ records, historicalRecords, reconciliation, stageCat
   return <><div className="page-title"><div><p className="eyebrow">PIPELINE CONTROL</p><h1>Stage nazorati</h1><p>Bitrix’dagi joriy ochiq deal’lar. <strong>Joriy stage sana filtriga bog‘liq emas</strong> — 400 kun oldin ochilgan deal ham shu yerda qoladi.</p></div><button className="button secondary" onClick={onRefresh} disabled={loading}>{loading ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}Joriy holatni yangilash</button></div>
     {loading && !reconciliation && <div className="notice page-notice"><Loader2 size={17} className="spin" />Bitrix’dagi joriy stage’lar olinmoqda…</div>}
     {error && <div className="notice warning page-notice"><AlertTriangle size={17} /><span>Bitrix live snapshot olinmadi: {error}. Vaqtincha oxirgi sync bazasi ko‘rsatilmoqda.</span></div>}
-    {reconView && <ReconciliationBanner view={reconView} />}
+    {reconView && <ReconciliationBanner view={reconView} lastSyncAt={lastSyncAt} />}
 
     <p className="scope-flag live">Bitrix live · hozir</p>
     {excluded && excluded.candidates > 0 && <div className="field-discovery ok stage-exclusions">
@@ -2465,14 +2577,19 @@ function DashboardApp({ session }: { session: AuthSession }) {
         {isSalesView(view) && view !== "stages" && activeSales && <SectionStatus state={activeSales} />}
         <ViewErrorBoundary onBack={() => setView(defaultView)}>
         {view === "dashboard" && dashboardSection.data && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{dashboardSection.data.leadCount} Leadlar</strong></div></div>{dashboardSection.data.leadCount === 0 && <EmptyCohortNotice />}<DashboardView section={dashboardSection.data} onManager={(manager) => { if (canManagers) { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); } }} /><TrendChart trend={dashboardSection.data.trend} /></>}
-        {view === "managers" && managersSection.data && <><div className="page-title"><div><p className="eyebrow">TEAM PERFORMANCE</p><h1>Menejerlar</h1><p>Lead, sifatsizlik, sales loss, sotuv soni va Opportunity kesimida.</p></div></div>
+        {view === "managers" && managersSection.data && <><div className="page-title"><div><p className="eyebrow">TEAM PERFORMANCE</p><h1>Menejerlar</h1><p>Joriy Sales jamoasi reytingi. Tarixiy sotuvchilar pastda alohida ko‘rsatiladi.</p></div></div>
           <section className="dashboard-grid compact-kpis">
             <div className="section-header"><div><h2>Sotuv atributsiyasi</h2><p>Faqat tasdiqlangan sotuv xodim hisobiga kiradi; qolgani ko‘rinadi, lekin hech kimga yozilmaydi</p></div></div>
             <div><span>Tasdiqlangan sotuv</span><strong>{managersSection.data.attribution.certified}</strong><small className="card-note">{managersSection.data.attribution.certifiedRevenue.toLocaleString("uz-UZ")} — Sales Owner at Won yoki aniq tasdiq</small></div>
             <div><span>Tekshiruv kerak</span><strong>{managersSection.data.attribution.reviewRequired}</strong><small className="card-note">{managersSection.data.attribution.reviewRevenue.toLocaleString("uz-UZ")} — dalil yetarli emas</small></div>
             <div><span>Aniqlanmagan</span><strong>{managersSection.data.attribution.unknown}</strong><small className="card-note">{managersSection.data.attribution.unknownRevenue.toLocaleString("uz-UZ")} — sotuvchi dalili yo‘q</small></div>
           </section>
-          <section className="panel"><SectionHeader title="Menejerlar reytingi" subtitle="Lead va cohort konversiya — yaratilgan sana; davr sotuv — Oplata sanasi bo‘yicha" /><ManagerTable rows={managersSection.data.managers} onSelect={(manager) => { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); }} /></section></>}
+          <section className="panel"><SectionHeader title="Joriy Sales jamoasi" subtitle="Lead va cohort konversiya — yaratilgan sana; davr sotuv — Oplata sanasi bo‘yicha" />
+            <ManagerTable rows={managersSection.data.managers.filter((row) => row.activeRoster && row.id !== "review" && row.id !== "unknown")}
+              onSelect={(manager) => { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); }} /></section>
+          <FormerSellers rows={managersSection.data.managers.filter((row) => !row.activeRoster && row.id !== "review" && row.id !== "unknown")}
+            onSelect={(manager) => { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); }} />
+          <ReviewBucketPanel review={managersSection.data.review} /></>}
         {view === "managerDetail" && selectedManager && managerSection.data && <ManagerDetailView section={managerSection.data} currentStages={currentStageRecords} onBack={() => setView("managers")} />}
         {view === "leadFlow" && leadFlowSection.data && <>{leadFlowSection.data.flow.total === 0 && <EmptyCohortNotice />}<LeadFlowView flow={leadFlowSection.data.flow} /></>}
         {view === "quality" && qualitySection.data && <QualityView analytics={qualitySection.data.analytics} onManager={(managerId) => {
@@ -2481,7 +2598,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
           const row = [...qualitySection.data!.analytics.marketingManagers, ...qualitySection.data!.analytics.salesManagers].find((entry) => entry.id === managerId);
           setSelectedManager({ id: managerId, name: row?.name ?? "Aniqlanmagan" }); setView("managerDetail");
         }} />}
-        {view === "stages" && <StageControlView records={filteredCurrentStages} historicalRecords={stageHistoricalRecords} reconciliation={stageReconciliation} stageCatalog={stageCatalog} truncated={stageSnapshotTruncated} excluded={stageExcluded} settings={(stageSettings ?? settings) as DashboardSettings | null} loading={currentStageLoading} error={currentStageError} onRefresh={() => void loadCurrentStages()} funnelStatus={stageFunnelStatus} onRetryFunnel={() => dispatchStageFunnel({ type: "RETRY" })} />}
+        {view === "stages" && <StageControlView records={filteredCurrentStages} historicalRecords={stageHistoricalRecords} reconciliation={stageReconciliation} stageCatalog={stageCatalog} truncated={stageSnapshotTruncated} excluded={stageExcluded} settings={(stageSettings ?? settings) as DashboardSettings | null} loading={currentStageLoading} error={currentStageError} onRefresh={() => void loadCurrentStages()} funnelStatus={stageFunnelStatus} onRetryFunnel={() => dispatchStageFunnel({ type: "RETRY" })} lastSyncAt={sync.lastSyncAt} />}
         {view === "projects" && <ProjectsView projects={projects} updates={projectUpdateRows} filters={projectFilters} setFilters={setProjectFilters} busy={projectBusy}
           onOpen={(project) => { setOpenProjectId(project.id); setView("projectDetail"); }}
           onNew={() => setProjectDraft({ name: "", description: "", status: "", deadline: "" })} />}

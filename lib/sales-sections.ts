@@ -8,7 +8,7 @@ import { buildManagerProfile, notRelevantRecords, reasonBreakdown, salesLostReco
 import { boundsFromKeys, dateKey } from "./period";
 import { buildQualityAnalytics, type QualityAnalytics } from "./quality-analytics";
 import { dedupeByDealId, filterHistoricalRecords, historicalManagerOptions, type SalesFilterSelection } from "./record-filters";
-import { countClassificationConflicts, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isUnclassifiedLead, resolveProjectMembership } from "./sales-logic";
+import { countClassificationConflicts, dealOutcomeLabel, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isUnclassifiedLead, resolveProjectMembership } from "./sales-logic";
 import { countsCurrently, dealLifecycle, lifecycleBreakdown } from "./deal-lifecycle";
 import { certifyStoredAttribution, countsForScorecard } from "./seller-evidence";
 import { FUNNEL_OWNER_LABELS, funnelOwnerBreakdown, funnelOwnerKey, resolveFunnelOwner } from "./funnel-owner";
@@ -409,6 +409,16 @@ export type DashboardSection = Common & {
 export type ManagersSection = Common & {
   managers: ManagerRow[];
   /**
+   * The Deals no employee is credited or blamed for, with the reason each one
+   * landed there. Shown, never hidden: the rows still sum to the KPI totals.
+   */
+  review: {
+    leads: number; sales: number; revenue: number;
+    reasons: [string, number][];
+    rows: { dealId: string; bitrixUrl: string | null; outcome: string; reason: string; opportunity: number; wonAt: string | null }[];
+    truncated: boolean;
+  };
+  /**
    * Certified against uncertified sales for the selected window, shown side by
    * side so a reader can see how much of the period is actually attributable.
    * Neither number credits or blames anybody: the uncertified sales stay in the
@@ -418,6 +428,18 @@ export type ManagersSection = Common & {
 };
 export type ManagerSection = Common & {
   manager: { id: string; name: string };
+  /** On the CURRENT active Sales roster. A former seller keeps their sales only. */
+  activeRoster: boolean;
+  /**
+   * Sales ownership across all time, not the selected window: what this person
+   * sold while they were selling. Kept separate from the current-performance
+   * figures so a former seller's history is never read as today's workload.
+   */
+  historical: {
+    sales: number; revenue: number; currency: string;
+    firstSaleAt: string | null; lastSaleAt: string | null;
+    byEvidence: [string, number][];
+  };
   metrics: PublicMetrics;
   teamLeads: number;
   medians: { sqlToSale: number | null; salesLostRate: number | null; processing: number | null; sla: number | null; cycle: number | null };
@@ -467,12 +489,34 @@ export function dashboardSection(records: DashboardRecord[], query: SalesQuery, 
   };
 }
 
+/** How many review rows a caller may see at once; the counts are never capped. */
+const REVIEW_ROW_LIMIT = 100;
+
 export function managersSection(records: DashboardRecord[], query: SalesQuery, context: SectionContext): ManagersSection {
   const pop = salesPopulations(records, query);
+  const reviewRows = pop.cohort.filter((row) => !row.funnelOwnerId);
+  const reviewSales = pop.won.filter((row) => !row.funnelOwnerId);
+  const reasons = new Map<string, number>();
+  for (const row of [...reviewRows, ...reviewSales.filter((row) => !reviewRows.includes(row))]) {
+    const reason = String(row.funnelOwnerBasis ?? "REVIEW_REQUIRED_NO_RESPONSIBLE");
+    reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+  }
   return {
     ...common(records, query, context),
     managers: buildManagers(pop.cohort, pop.won, activeRoster(context.settings)),
     attribution: attributionSplit(pop.won),
+    review: {
+      leads: reviewRows.length,
+      sales: reviewSales.length,
+      revenue: reviewSales.reduce((sum, row) => sum + row.opportunity, 0),
+      reasons: [...reasons.entries()].sort((a, b) => b[1] - a[1]),
+      rows: [...new Set([...reviewRows, ...reviewSales])].slice(0, REVIEW_ROW_LIMIT).map((row) => ({
+        dealId: row.dealId, bitrixUrl: row.bitrixUrl, outcome: dealOutcomeLabel(row).label,
+        reason: String(row.funnelOwnerBasis ?? "REVIEW_REQUIRED_NO_RESPONSIBLE"),
+        opportunity: row.opportunity, wonAt: row.wonAt,
+      })),
+      truncated: new Set([...reviewRows, ...reviewSales]).size > REVIEW_ROW_LIMIT,
+    },
   };
 }
 
@@ -493,6 +537,18 @@ export function attributionSplit(won: DashboardRecord[]) {
 export function managerSection(records: DashboardRecord[], query: SalesQuery, context: SectionContext): ManagerSection {
   const pop = salesPopulations(records, query);
   const managerId = query.managerId ?? "unknown";
+  const roster = activeRoster(context.settings);
+  // All-time ownership, outside the window: every sale this person owns under the
+  // canonical rule, whether or not they are still in Sales.
+  const ownedSales = records.filter((row) =>
+    row.salesStatus === "WON" && row.wonAt && row.projectLeadMembership !== "EXCLUDED"
+    && countsCurrently(row) && funnelOwnerKey(row) === managerId);
+  const wonDates = ownedSales.map((row) => String(row.wonAt)).sort();
+  const evidence = new Map<string, number>();
+  for (const row of ownedSales) {
+    const key = String(row.salesManagerAttribution ?? "UNKNOWN");
+    evidence.set(key, (evidence.get(key) ?? 0) + 1);
+  }
   const { cohort, metrics } = buildManagerProfile(pop.cohort, pop.won, managerId);
   const team = buildManagers(pop.cohort, pop.won, activeRoster(context.settings));
   const benchmarkTeam = team.filter((row) => row.id !== "unknown");
@@ -504,6 +560,15 @@ export function managerSection(records: DashboardRecord[], query: SalesQuery, co
   return {
     ...common(records, query, context),
     manager: { id: managerId, name },
+    activeRoster: !roster.size || roster.has(managerId),
+    historical: {
+      sales: ownedSales.length,
+      revenue: ownedSales.reduce((sum, row) => sum + row.opportunity, 0),
+      currency: ownedSales[0]?.currencyId || metrics.money.currency,
+      firstSaleAt: wonDates[0] ?? null,
+      lastSaleAt: wonDates[wonDates.length - 1] ?? null,
+      byEvidence: [...evidence.entries()].sort((a, b) => b[1] - a[1]),
+    },
     metrics: publicMetrics(metrics),
     teamLeads: team.reduce((sum, row) => sum + row.leads, 0),
     medians: {

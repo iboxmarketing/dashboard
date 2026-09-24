@@ -286,7 +286,10 @@ test("G: the Managers page passes no limit and shows every manager", () => {
   assert.equal(visibleRows(MANY, "periodSales", "desc").length, MANY.length);
   assert.equal(visibleRows(MANY, "periodSales", "desc", undefined).length, 12);
   assert.match(client, /<ManagerTable rows=\{managers\} limit=\{8\} onSelect=\{onManager\} \/>/, "Dashboard limits to 8");
-  assert.match(client, /<ManagerTable rows=\{managersSection\.data\.managers\} onSelect=/, "Managers page has no limit");
+  // The Managers page still passes no limit; it now shows the CURRENT active
+  // roster, with former sellers listed in their own section below.
+  assert.match(client, /<ManagerTable rows=\{managersSection\.data\.managers\.filter\(\(row\) => row\.activeRoster[^}]*\}\n?\s*onSelect=/, "Managers page has no limit");
+  assert.match(client, /function FormerSellers\(/, "former sellers are listed apart from the ranking");
   // Rows are built once on the server by the canonical helper.
   // Rows come from the canonical helper with the whole populations — the
   // attribution split beside them is a summary, never a second row source.
