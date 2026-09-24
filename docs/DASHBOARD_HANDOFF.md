@@ -10,10 +10,10 @@ detailed rules live in `docs/BUSINESS_RULES.md`, the runbooks in
 | | |
 | --- | --- |
 | Worker | `bitrix-deal-dashboard` (Cloudflare Workers, Paid — 30 s CPU) |
-| **Worker version** (what serves traffic) | `8aeb9e00-3e2c-4694-afeb-05ac949b1c0b` |
-| **Deployed application SHA** (what that version was built from) | `0005ad7` — analytics version 15 |
+| **Worker version** (what serves traffic) | `c9fd375b-4028-4656-bbc2-ef0f2f8c3ebf` |
+| **Deployed application SHA** (what that version was built from) | `4ce68f7` — analytics version 15 |
 | **Release branch** | `release/meeting-2026-09-21` |
-| **Branch HEAD** (latest commit on that branch) | `0005ad7`, plus the documentation-only commit that records this deployment |
+| **Branch HEAD** (latest commit on that branch) | `4ce68f7`, plus the documentation-only commit that records this deployment |
 | URL | `https://bitrix-deal-dashboard.lively-river-afba.workers.dev` (behind Cloudflare Access) |
 | D1 database | `ibox-dashboard-production`, id `281835a3-f1f4-4f92-be6c-818b05583a00` |
 | Latest Full Sync | `2026-09-24T09:24:57.400Z` (14:24:57 Asia/Tashkent), run `2421c3e2-5762-4048-b53f-bad446536aa7`, analytics version 14 — **a new Full Sync is required** for version 15 records |
@@ -34,7 +34,13 @@ Three identities, deliberately listed apart:
 The previous accepted version was `be58b080-b832-48f1-8a5d-5805ea83c4fe`
 (SHA `0d60464`, analytics version 14), kept here only as the rollback target — and
 because version 15 changes stored classification, rolling back to it needs the
-matching D1 restore, not code alone. Confirm the live identity
+matching D1 restore, not code alone.
+
+**Deploying:** `npm run verify` builds `dist/` only after its test suite passes, so
+a failed run leaves the previous build in place. Always confirm the build ran
+(`Build complete` in the log, or `dist/server/index.js`'s timestamp) before
+`wrangler deploy`, or the deploy ships the last successful build instead of the
+change you just made. Confirm the live identity
 with `npx wrangler deployments status --name bitrix-deal-dashboard` and
 `git rev-parse origin/release/meeting-2026-09-21`, and update this table whenever a
 new version is accepted.
