@@ -1113,3 +1113,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible,
 .seller-review-filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 .seller-review-filters > * { min-width: 180px; flex: 0 1 240px; }
 .seller-backfill-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+/* A manager row for somebody no longer on the active Sales roster. */
+.manager-cell .manager-former { margin-left: 6px; padding: 1px 6px; border: 1px solid var(--line); border-radius: 999px;
+  font-size: 9px; font-style: normal; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }

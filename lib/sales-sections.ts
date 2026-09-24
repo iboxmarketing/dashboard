@@ -275,6 +275,13 @@ export type ManagerRow = {
   // Carried for the profile's team benchmarks; the table does not show them.
   slaRate: number | null; slaDenominator: number; salesCycleHours: number | null;
   currency: string;
+  /**
+   * Whether this person is on the CURRENT active Sales roster. A former Sales
+   * employee keeps the sales they made (owner-reviewed Sales Owner at Won is
+   * historical evidence and roster-independent) but owns no current open, Not
+   * Relevant or Sales Lost work, so the two must never be read as one workload.
+   */
+  activeRoster: boolean;
 };
 
 /**
@@ -282,7 +289,16 @@ export type ManagerRow = {
  * dashboard client: partitioned by `salesManagerKey`, so every deal lands in
  * exactly one row and the rows sum back to the dashboard's own totals.
  */
-export function buildManagers(records: DashboardRecord[], wonRecords: DashboardRecord[] = records.filter((row) => row.salesStatus === "WON")): ManagerRow[] {
+/** The CURRENT active Sales roster, as the sections read it from settings. */
+export function activeRoster(settings: Pick<DashboardSettings, "salesStaffIds">) {
+  return new Set((settings.salesStaffIds ?? []).map(String).filter(Boolean));
+}
+
+export function buildManagers(
+  records: DashboardRecord[],
+  wonRecords: DashboardRecord[] = records.filter((row) => row.salesStatus === "WON"),
+  roster: ReadonlySet<string> = new Set(),
+): ManagerRow[] {
   const cohortByManager = new Map<string, DashboardRecord[]>();
   const wonByManager = new Map<string, DashboardRecord[]>();
   // Employee-sensitive, and scoped by the Deal's own outcome: a sale reaches a
@@ -304,6 +320,8 @@ export function buildManagers(records: DashboardRecord[], wonRecords: DashboardR
     const metrics = buildDashboardMetrics(cohort, won);
     return {
       id,
+      // An empty roster means "not configured": nobody is marked as former.
+      activeRoster: !roster.size || roster.has(id),
       // The owner's name comes from whichever evidence made them the owner: the
       // certified seller on a sale, the Responsible person on open work.
       name: FUNNEL_OWNER_LABELS[id]
@@ -445,7 +463,7 @@ export function dashboardSection(records: DashboardRecord[], query: SalesQuery, 
     previousMetrics: publicMetrics(buildDashboardMetrics(pop.previousCohort, pop.previousWon)),
     metricIds: context.settings.dashboardMetricIds,
     trend,
-    managers: context.can("managers") ? buildManagers(pop.cohort, pop.won) : null,
+    managers: context.can("managers") ? buildManagers(pop.cohort, pop.won, activeRoster(context.settings)) : null,
   };
 }
 
@@ -453,7 +471,7 @@ export function managersSection(records: DashboardRecord[], query: SalesQuery, c
   const pop = salesPopulations(records, query);
   return {
     ...common(records, query, context),
-    managers: buildManagers(pop.cohort, pop.won),
+    managers: buildManagers(pop.cohort, pop.won, activeRoster(context.settings)),
     attribution: attributionSplit(pop.won),
   };
 }
@@ -476,7 +494,7 @@ export function managerSection(records: DashboardRecord[], query: SalesQuery, co
   const pop = salesPopulations(records, query);
   const managerId = query.managerId ?? "unknown";
   const { cohort, metrics } = buildManagerProfile(pop.cohort, pop.won, managerId);
-  const team = buildManagers(pop.cohort, pop.won);
+  const team = buildManagers(pop.cohort, pop.won, activeRoster(context.settings));
   const benchmarkTeam = team.filter((row) => row.id !== "unknown");
   const withSql = (row: ManagerRow) => row.sql > 0;
   const own = team.find((row) => row.id === managerId);

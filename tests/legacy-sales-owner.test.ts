@@ -8,6 +8,7 @@ import {
 } from "../lib/legacy-seller-autoconfirm";
 import { FUNNEL_REVIEW_KEY, FUNNEL_UNKNOWN_KEY, funnelOwnerKey, resolveFunnelOwner } from "../lib/funnel-owner";
 import { buildManagers, prepareSalesRecords, salesPopulations, type SalesQuery } from "../lib/sales-sections";
+import { certifySeller, certifyStoredAttribution, countsForScorecard } from "../lib/seller-evidence";
 import { defaultSettings } from "../lib/business-time";
 import {
   OWNER_APPROVED_SELLER_NAMES, directoryUsers, normalizeRosterName, resolveRoster, withinOneEdit,
@@ -359,4 +360,93 @@ test("an unconfigured roster does not empty the funnel", () => {
   const owner = resolveFunnelOwner({ salesStatus: "ACTIVE", assignedManagerId: OPERATOR }, { roster: new Set() });
   assert.equal(owner.ownerId, OPERATOR);
   assert.equal(owner.basis, "CURRENT_RESPONSIBLE_IN_ROSTER");
+});
+
+
+/* ------------------------------- historical seller vs current active roster */
+
+test("a former Sales employee keeps the sales they made", () => {
+  const FORMER = "9903"; // on nobody's roster any more
+  // The canonical field is owner-reviewed evidence, so the roster may not demote it.
+  const field = certifySeller({
+    attribution: "SALES_OWNER_AT_WON", sellerId: FORMER, fromSnapshot: false,
+    hasConfiguredSellerField: false, knownUser: true, salesRoster: APPROVED,
+  });
+  assert.equal(field.status, "CERTIFIED");
+  assert.equal(field.reason, "SALES_OWNER_AT_WON_FIELD");
+  assert.equal(field.outsideRoster, true, "still flagged as outside the roster");
+  assert.ok(countsForScorecard(field.status));
+
+  const confirmed = certifySeller({
+    attribution: "MANUAL_CONFIRMATION", sellerId: FORMER, fromSnapshot: false,
+    hasConfiguredSellerField: false, knownUser: true, salesRoster: APPROVED,
+  });
+  assert.equal(confirmed.status, "OWNER_CONFIRMED");
+
+  // An INFERRED attribution is still demoted by the roster — only owner-reviewed
+  // evidence is exempt.
+  const observer = certifySeller({
+    attribution: "POST_SALE_OBSERVER", sellerId: FORMER, fromSnapshot: false,
+    hasConfiguredSellerField: false, knownUser: true, salesRoster: APPROVED,
+  });
+  assert.equal(observer.status, "REVIEW_REQUIRED");
+  assert.equal(observer.reason, "OUTSIDE_SALES_ROSTER");
+
+  // A row stored while the old rule demoted the field is corrected on read, with
+  // no second Full Sync.
+  assert.equal(certifyStoredAttribution({
+    salesManagerId: FORMER, salesManagerAttribution: "SALES_OWNER_AT_WON",
+    sellerCertification: "REVIEW_REQUIRED", sellerEvidenceReason: "OUTSIDE_SALES_ROSTER",
+  }), "CERTIFIED");
+  assert.equal(certifyStoredAttribution({
+    salesManagerId: FORMER, salesManagerAttribution: "MANUAL_CONFIRMATION",
+    sellerCertification: "REVIEW_REQUIRED", sellerEvidenceReason: "OUTSIDE_SALES_ROSTER",
+  }), "OWNER_CONFIRMED");
+});
+
+test("a former seller's historical sale is theirs, today's open work is not", () => {
+  const FORMER = "9903";
+  const rows = [
+    record({
+      dealId: "won-former", qualified: true, salesStatus: "WON", wonAt: "2026-09-12T09:00:00.000Z", opportunity: 400_000,
+      salesManagerId: FORMER, salesManager: "Oybek Shukurillayev", salesManagerAttribution: "SALES_OWNER_AT_WON",
+      sellerCertification: "CERTIFIED", sellerEvidenceReason: "SALES_OWNER_AT_WON_FIELD",
+      categoryId: "13", assignedManagerId: CARE, assignedManager: "Customer Care",
+    }),
+    // Open, Not Relevant and Sales Lost work the former employee still holds in
+    // Bitrix: none of it may reach their scorecard.
+    record({ dealId: "open-former", qualified: true, assignedManagerId: FORMER, assignedManager: "Oybek Shukurillayev" }),
+    record({ dealId: "nr-former", salesStatus: "LOW_QUALITY", lossReasonGroup: "MARKETING", lossReason: "Campaign", assignedManagerId: FORMER, assignedManager: "Oybek Shukurillayev" }),
+    record({ dealId: "lost-former", qualified: true, salesStatus: "LOST", lossReasonGroup: "SALES", lossReason: "Otsrochka", assignedManagerId: FORMER, assignedManager: "Oybek Shukurillayev" }),
+  ];
+  const prepared = prepareSalesRecords(rows, settings(), new Date("2026-09-30T00:00:00Z"));
+  const populations = salesPopulations(prepared, QUERY);
+  const managers = buildManagers(populations.cohort, populations.won, APPROVED);
+  const former = managers.find((row) => row.id === FORMER);
+
+  assert.ok(former, "the former seller has a row for their sale");
+  assert.equal(former.activeRoster, false, "and it is marked as not current Sales");
+  assert.equal(former.periodSales, 1);
+  assert.equal(former.revenue, 400_000);
+  assert.equal(former.leads, 1, "only the sale — none of their current workload");
+  assert.equal(former.notRelevant, 0);
+  assert.equal(former.salesLost, 0);
+  assert.equal(former.active, 0);
+
+  // Their current workload is visible, credited to nobody.
+  const review = managers.find((row) => row.id === FUNNEL_REVIEW_KEY);
+  assert.equal(review?.leads, 3);
+  assert.equal(review?.notRelevant, 1);
+  assert.equal(review?.salesLost, 1);
+  assert.equal(review?.activeRoster, false);
+
+  // Core KPI totals are untouched by any of this.
+  const total = buildDashboardMetrics(populations.cohort, populations.won);
+  assert.equal(total.counts.leads, 4);
+  assert.equal(total.counts.not_relevant, 1);
+  assert.equal(total.counts.sales_lost, 1);
+  assert.equal(total.counts.period_sales, 1);
+  assert.equal(total.money.revenue, 400_000);
+  assert.equal(managers.reduce((sum, row) => sum + row.leads, 0), total.counts.leads);
+  assert.equal(managers.reduce((sum, row) => sum + row.revenue, 0), total.money.revenue);
 });

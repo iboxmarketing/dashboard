@@ -86,9 +86,17 @@ export function certifySeller(input: SellerEvidenceInput): SellerEvidence {
   const sellerId = String(input.sellerId ?? "").trim();
   const outsideRoster = Boolean(sellerId) && Boolean(input.salesRoster?.size) && !input.salesRoster?.has(sellerId);
   const flag = (status: SellerCertification, reason: SellerEvidenceReason): SellerEvidence => {
-    // The roster never decides who sold: it can only send a countable
-    // attribution to a human, and an owner confirmation outranks it.
-    if (outsideRoster && status === "CERTIFIED") return { status: "REVIEW_REQUIRED", reason: "OUTSIDE_SALES_ROSTER", outsideRoster };
+    // The roster never decides who sold: it can only send an INFERRED countable
+    // attribution to a human. It may not touch evidence the owner has reviewed —
+    // an owner confirmation, a manual confirmation, or the canonical Sales Owner
+    // at Won field. Historical seller attribution and the CURRENT active Sales
+    // roster are two different things (owner decision, 2026-09-24): a former Sales
+    // employee keeps the sales they made, and the roster only decides who owns
+    // today's open, Not Relevant and Sales Lost work.
+    const ownerReviewed = reason === "SALES_OWNER_AT_WON_FIELD" || reason === "MANUAL_OWNER_CONFIRMATION" || reason === "OWNER_REGISTRY";
+    if (outsideRoster && status === "CERTIFIED" && !ownerReviewed) {
+      return { status: "REVIEW_REQUIRED", reason: "OUTSIDE_SALES_ROSTER", outsideRoster };
+    }
     return { status, reason, outsideRoster };
   };
 
@@ -159,7 +167,16 @@ export function certifyStoredAttribution(row: {
   salesManagerId?: string | null;
   salesManagerAttribution?: SalesManagerAttribution;
   sellerCertification?: SellerCertification;
+  sellerEvidenceReason?: string;
 }): SellerCertification {
+  // A stored row written while the roster still demoted the canonical field is
+  // corrected here rather than by another Full Sync: the field is owner-reviewed
+  // historical evidence and a departed seller keeps their sales.
+  if (row.sellerEvidenceReason === "OUTSIDE_SALES_ROSTER"
+    && (row.salesManagerAttribution === "SALES_OWNER_AT_WON" || row.salesManagerAttribution === "MANUAL_CONFIRMATION")
+    && row.salesManagerId) {
+    return row.salesManagerAttribution === "MANUAL_CONFIRMATION" ? "OWNER_CONFIRMED" : "CERTIFIED";
+  }
   if (row.sellerCertification) return row.sellerCertification;
   if (!row.salesManagerId) return "UNKNOWN";
   if (row.salesManagerAttribution === "OWNER_CONFIRMED") return "OWNER_CONFIRMED";

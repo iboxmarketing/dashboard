@@ -184,7 +184,9 @@ test("T/U: row click still opens the detail, and both tables share one row model
   // Dashboard top-8 and the Managers page build rows from the same inputs.
   // definition + Dashboard + Managers page + the profile's team benchmark
   assert.equal((client.match(/buildManagers\(/g) ?? []).length, 4);
-  assert.equal((client.match(/buildManagers\(pop\.cohort, pop\.won\)/g) ?? []).length, 3);
+  // Every build takes the same canonical populations plus the CURRENT active
+  // roster, which only marks former sellers — it never changes the rows.
+  assert.equal((client.match(/buildManagers\(pop\.cohort, pop\.won, activeRoster\(context\.settings\)\)/g) ?? []).length, 3);
 });
 
 test("the manager row reuses canonical metrics rather than re-deriving them", () => {
@@ -288,7 +290,7 @@ test("G: the Managers page passes no limit and shows every manager", () => {
   // Rows are built once on the server by the canonical helper.
   // Rows come from the canonical helper with the whole populations — the
   // attribution split beside them is a summary, never a second row source.
-  assert.match(client, /managers: buildManagers\(pop\.cohort, pop\.won\),?\n/, "shared rows remain canonical");
+  assert.match(client, /managers: buildManagers\(pop\.cohort, pop\.won, activeRoster\(context\.settings\)\),?\n/, "shared rows remain canonical");
   assert.doesNotMatch(client, /managers\.slice\(0, 8\)/, "the pre-sort slice is gone");
 });
 

@@ -92,7 +92,7 @@ test("A: profile counts equal the clicked row's canonical values", () => {
 });
 
 test("B: lead share divides by every manager, not a displayed subset", () => {
-  assert.match(profile, /buildManagers\(pop\.cohort, pop\.won\)/, "the whole team");
+  assert.match(profile, /buildManagers\(pop\.cohort, pop\.won, activeRoster\(context\.settings\)\)/, "the whole team");
   assert.match(profile, /team\.reduce\(\(sum, row\) => sum \+ row\.leads, 0\)/);
   assert.match(profile, /jamoa leadlaridan/);
   assert.doesNotMatch(profile, /slice\(0, 8\)/, "never a top-8 denominator");

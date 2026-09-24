@@ -321,7 +321,11 @@ function ManagerTable({ rows, onSelect, limit }: { rows: ManagerRow[]; onSelect:
       </tr>
     </thead>
     <tbody>{visibleRows.map((row) => <tr key={row.id} onClick={() => onSelect(row)}>
-      <td className="sticky-col"><div className="manager-cell"><span>{row.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span><strong>{row.name}</strong></div></td>
+      <td className="sticky-col"><div className="manager-cell"><span>{row.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span><strong>{row.name}</strong>
+        {/* A former Sales employee keeps the sales they made, but owns no current
+            open, Not Relevant or Sales Lost work — so the row is labelled. */}
+        {!row.activeRoster && <em className="manager-former" title="Sales ro‘yxatida yo‘q — tarixiy sotuvlar saqlanadi, joriy ish yuki unga tegishli emas">tarixiy</em>}
+      </div></td>
       <td><strong>{row.leads}</strong><small>{row.leadShare}% jamidan</small></td>
       <td><strong>{row.classified} / {row.leads}</strong><small>{row.classificationCoverage}%</small></td>
       <td><strong>{row.sql}</strong><small>{row.qualityAcceptedRate}% saralanganlardan</small></td>
