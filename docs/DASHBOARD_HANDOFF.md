@@ -10,10 +10,10 @@ detailed rules live in `docs/BUSINESS_RULES.md`, the runbooks in
 | | |
 | --- | --- |
 | Worker | `bitrix-deal-dashboard` (Cloudflare Workers, Paid — 30 s CPU) |
-| **Worker version** (what serves traffic) | `ee716970-f458-42e1-b42d-e24779aaa37c` |
-| **Deployed application SHA** (what that version was built from) | `83d73fc572431ad299349f9c3ac9f0b628531e39` |
+| **Worker version** (what serves traffic) | `be58b080-b832-48f1-8a5d-5805ea83c4fe` |
+| **Deployed application SHA** (what that version was built from) | `0d60464ffdeb6f887dd2148939ee0d4c48da39d8` |
 | **Release branch** | `release/meeting-2026-09-21` |
-| **Branch HEAD** (latest commit on that branch) | `9949c1c82ac7e628719daf9a462ef41106483261` |
+| **Branch HEAD** (latest commit on that branch) | `0d60464ffdeb6f887dd2148939ee0d4c48da39d8`, plus the documentation-only commit that records this deployment |
 | URL | `https://bitrix-deal-dashboard.lively-river-afba.workers.dev` (behind Cloudflare Access) |
 | D1 database | `ibox-dashboard-production`, id `281835a3-f1f4-4f92-be6c-818b05583a00` |
 | Latest accepted Full Sync | `2026-09-24T09:24:57.400Z` (14:24:57 Asia/Tashkent), run `2421c3e2-5762-4048-b53f-bad446536aa7`, analytics version 14 |
@@ -31,8 +31,8 @@ Three identities, deliberately listed apart:
   A branch HEAD ahead by application code means something is built but not
   deployed — check before assuming production has it.
 
-The previous accepted version was `05ae03ed-4623-418a-bf10-db97b2c31ae1`
-(SHA `216a0bc`), kept here only as the rollback target. Confirm the live identity
+The previous accepted version was `ee716970-f458-42e1-b42d-e24779aaa37c`
+(SHA `83d73fc`), kept here only as the rollback target. Confirm the live identity
 with `npx wrangler deployments status --name bitrix-deal-dashboard` and
 `git rev-parse origin/release/meeting-2026-09-21`, and update this table whenever a
 new version is accepted.
