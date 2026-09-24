@@ -1,5 +1,13 @@
 import { authError, requireAdmin } from "@/lib/auth/http";
-import { bitrixCall, getBitrixDomain, safeBitrixMessage } from "@/lib/bitrix";
+import { bitrixCall, bitrixList, getBitrixDomain, safeBitrixMessage } from "@/lib/bitrix";
+import { DEAL_OBSERVERS_FIELD, buildDealObserverRead, observerIdList } from "@/lib/deal-observers";
+import {
+  classifyLegacySalesOwner, evidenceStillHolds, isAutoConfirm, summarizeLegacySalesOwners,
+  type LegacySellerDecision,
+} from "@/lib/legacy-seller-autoconfirm";
+import { OWNER_APPROVED_SELLER_NAMES, directoryUsers, resolveRoster } from "@/lib/seller-roster";
+import { canonicalDealFieldKey } from "@/lib/crm-fields";
+import { employeeFieldValue } from "@/lib/seller-writeback";
 import { classifyBackfill, isWritable, summarizeBackfill, type BackfillDecision } from "@/lib/seller-backfill";
 import { OWNER_OVERRIDES } from "@/lib/seller-overrides";
 import { writeSalesOwnerAtWon } from "@/lib/seller-writeback";
@@ -138,6 +146,7 @@ export async function POST(request: Request) {
   const action = String(payload.action ?? "");
   try {
     if (action === "backfill") return await runBackfill(payload, actor);
+    if (action === "legacy-autoconfirm") return await legacyAutoconfirm(payload, actor);
     if (action === "confirm") return await confirmSeller(payload, actor);
     return Response.json({ error: "Amal noto‘g‘ri" }, { status: 400 });
   } catch (error) {
@@ -258,5 +267,197 @@ async function confirmSeller(payload: Record<string, unknown>, actor: string) {
     dealId, status: write.status, certified: true, sellerId, sellerName,
     certification: "OWNER_CONFIRMED", attribution: "MANUAL_CONFIRMATION",
     idempotent: write.status === "ALREADY_SET",
+  });
+}
+
+
+/* ------------------------------------------------- legacy observer auto-confirm */
+
+/** How many Deals one request may look at, and how many it may write. */
+const LEGACY_CANDIDATE_LIMIT = 600;
+const LEGACY_WRITE_LIMIT = 200;
+const LIVE_BATCH = 50;
+
+type LiveEvidence = { assignedManagerId: string; observerIds: string[]; salesOwnerAtWonId: string };
+
+/**
+ * Current observers, Responsible person and canonical field, read from Bitrix.
+ *
+ * Observers are NOT taken from the stored record: sync enriches that list only
+ * for Deals sitting in the post-sale funnel, so a stored empty list means
+ * "never fetched" as often as it means "no observers" — and RULE 3 would then
+ * credit the current Responsible person on no evidence at all.
+ */
+async function readLiveEvidence(dealIds: string[], field: string): Promise<Map<string, LiveEvidence>> {
+  const key = canonicalDealFieldKey(field);
+  const live = new Map<string, LiveEvidence>();
+  for (let index = 0; index < dealIds.length; index += LIVE_BATCH) {
+    const ids = dealIds.slice(index, index + LIVE_BATCH);
+    const deals = await bitrixList<Record<string, unknown>>("crm.deal.list", {
+      order: { ID: "ASC" }, filter: { "@ID": ids }, select: ["ID", "ASSIGNED_BY_ID", key],
+    }, { maxPages: 3 });
+    for (const deal of deals) {
+      const dealId = String(deal.ID ?? "");
+      if (!dealId) continue;
+      live.set(dealId, {
+        assignedManagerId: employeeFieldValue(deal.ASSIGNED_BY_ID),
+        salesOwnerAtWonId: employeeFieldValue(deal[key] ?? deal[field]),
+        observerIds: [],
+      });
+    }
+    const request = buildDealObserverRead(ids);
+    const items = await bitrixList<Record<string, unknown>>(request.method, request.params, {
+      maxPages: Math.ceil(ids.length / LIVE_BATCH) + 1,
+    });
+    for (const item of items) {
+      const dealId = String(item.id ?? "");
+      const entry = live.get(dealId);
+      if (entry) entry.observerIds = observerIdList(item[DEAL_OBSERVERS_FIELD]);
+    }
+  }
+  return live;
+}
+
+function legacyRow(record: AnalyticsRecord, live: LiveEvidence | undefined) {
+  return {
+    dealId: record.dealId, title: record.title, wonAt: record.wonAt, opportunity: record.opportunity,
+    currencyId: record.currencyId, salesStatus: record.salesStatus,
+    projectLeadMembership: record.projectLeadMembership ?? null, currentScope: record.currentScope ?? null,
+    assignedManagerId: live ? live.assignedManagerId : record.assignedManagerId,
+    observerIds: live ? live.observerIds : [],
+    salesOwnerAtWonId: live ? live.salesOwnerAtWonId : record.salesOwnerAtWonId ?? null,
+  };
+}
+
+/**
+ * RULE 1–4 classification over the legacy sale population, and RULE 5 writes.
+ *
+ * A Deal the Worker's own database does not hold is never classified from a
+ * caller-supplied claim: the candidate set is always this database's sale
+ * population, optionally narrowed by `dealIds`.
+ */
+async function legacyAutoconfirm(payload: Record<string, unknown>, actor: string) {
+  const apply = payload.mode === "apply";
+  const writeLimit = Math.max(1, Math.min(LEGACY_WRITE_LIMIT, Number(payload.limit ?? LEGACY_WRITE_LIMIT) || LEGACY_WRITE_LIMIT));
+  const allowlist = Array.isArray(payload.dealIds)
+    ? new Set((payload.dealIds as unknown[]).map(String).filter((id) => EMPLOYEE_ID.test(id)))
+    : null;
+
+  const [settings, records, userRows] = await Promise.all([
+    getSettings(), listAnalyticsRecords(), getDictionary<Record<string, unknown>[]>("users", []),
+  ]);
+  const field = normalizeSalesOwnerAtWonField(settings.salesOwnerAtWonField);
+  const users = userMap(userRows);
+  const roster = resolveRoster(OWNER_APPROVED_SELLER_NAMES, directoryUsers(userRows));
+  const rosterTable = roster.entries.map((entry) => ({
+    providedName: entry.providedName, status: entry.status, userId: entry.userId,
+    canonicalName: entry.canonicalName, matchKind: entry.matchKind,
+    candidates: entry.candidates.map((candidate) => ({ id: candidate.id, name: candidate.name })),
+  }));
+  if (!field) {
+    return Response.json({ error: "Sales Owner at Won maydoni sozlanmagan", roster: rosterTable }, { status: 400 });
+  }
+
+  // The legacy sale population: this project's sales, excluding another
+  // project's funnel and Deals Bitrix no longer serves.
+  const population = records.filter((record) =>
+    record.salesStatus === "WON" && record.wonAt
+    && record.projectLeadMembership !== "EXCLUDED"
+    && record.currentScope !== "DELETED" && record.currentScope !== "UNAVAILABLE"
+    && (!allowlist || allowlist.has(record.dealId)));
+  const candidates = population.slice(0, LEGACY_CANDIDATE_LIMIT);
+
+  const live = await readLiveEvidence(candidates.map((record) => record.dealId), field);
+  const byDeal = new Map(candidates.map((record) => [record.dealId, record]));
+  const decisions = candidates.map((record) =>
+    classifyLegacySalesOwner(legacyRow(record, live.get(record.dealId)), { approvedSellerIds: roster.approvedSellerIds }));
+  const summary = summarizeLegacySalesOwners(decisions);
+
+  const name = (id: string | null | undefined) => (id ? users.get(String(id)) ?? `Menejer #${id}` : null);
+  const row = (decision: LegacySellerDecision, writeResult: string | null = null, finalCertification: string | null = null) => {
+    const record = byDeal.get(decision.dealId);
+    return {
+      dealId: decision.dealId,
+      title: record?.title ?? null,
+      wonAt: record?.wonAt ?? null,
+      opportunity: record?.opportunity ?? 0,
+      currencyId: record?.currencyId ?? "UZS",
+      currentResponsibleId: decision.assignedManagerId,
+      currentResponsible: name(decision.assignedManagerId),
+      observers: decision.observerIds.map((id) => ({ id, name: name(id), roster: roster.approvedSellerIds.has(id) })),
+      sellerObserverCandidates: decision.sellerObserverCandidates.map((id) => ({ id, name: name(id) })),
+      existingOwnerId: decision.existingOwnerId,
+      existingOwner: name(decision.existingOwnerId),
+      chosenSellerId: decision.chosenSellerId,
+      chosenSeller: name(decision.chosenSellerId),
+      rule: decision.rule,
+      status: decision.status,
+      writeResult,
+      finalCertification,
+      needsManualReview: decision.needsManualReview,
+      reason: decision.reason,
+      outsideRoster: decision.outsideRoster.map((id) => ({ id, name: name(id) })),
+    };
+  };
+
+  if (!apply) {
+    return Response.json({
+      mode: "dry-run", applied: false, canonicalField: field,
+      roster: rosterTable, rosterMappingReview: roster.needsReview.length,
+      approvedSellerIds: [...roster.approvedSellerIds],
+      population: population.length, examined: candidates.length,
+      truncated: population.length > candidates.length,
+      summary, table: decisions.map((decision) => row(decision)),
+    });
+  }
+
+  // RULE 5: re-read each Deal immediately before its write and re-run the same
+  // classifier against what Bitrix says now. Anything that moved is skipped.
+  const results: ReturnType<typeof row>[] = [];
+  for (const decision of decisions.filter(isAutoConfirm).slice(0, writeLimit)) {
+    const record = byDeal.get(decision.dealId);
+    const fresh = await readLiveEvidence([decision.dealId], field);
+    const reclassified = classifyLegacySalesOwner(
+      legacyRow(record as AnalyticsRecord, fresh.get(decision.dealId)), { approvedSellerIds: roster.approvedSellerIds });
+    const guard = evidenceStillHolds(decision, reclassified);
+    if (!guard.ok) {
+      results.push({ ...row(decision, guard.reason, null) });
+      continue;
+    }
+    const write = await writeSalesOwnerAtWon(
+      { dealId: decision.dealId, sellerId: decision.chosenSellerId as string, field },
+      { call: bitrixCall, pauseMs: 250 },
+    );
+    // RULE 6: certify only after Bitrix confirms.
+    if (write.status === "WRITTEN" || write.status === "ALREADY_SET") {
+      await applyBackfilledOwner({
+        dealId: decision.dealId, sellerId: decision.chosenSellerId as string,
+        sellerName: name(decision.chosenSellerId),
+      });
+    }
+    results.push(row(decision, write.status, write.status === "WRITTEN" || write.status === "ALREADY_SET" ? "CERTIFIED" : "REVIEW_REQUIRED"));
+  }
+  await recordSellerAudit(results.map((result) => ({
+    dealId: result.dealId, actor, action: `LEGACY_AUTOCONFIRM_${result.writeResult ?? "SKIPPED"}`,
+    payload: {
+      rule: result.rule, status: result.status, chosenSellerId: result.chosenSellerId,
+      chosenSeller: result.chosenSeller, observerIds: result.observers.map((observer) => observer.id),
+      sellerObserverCandidates: result.sellerObserverCandidates.map((candidate) => candidate.id),
+      currentResponsibleId: result.currentResponsibleId, field, writeResult: result.writeResult,
+      finalCertification: result.finalCertification,
+    },
+  })));
+  const counted = (status: string) => results.filter((result) => result.writeResult === status).length;
+  return Response.json({
+    mode: "apply", applied: true, canonicalField: field, roster: rosterTable,
+    approvedSellerIds: [...roster.approvedSellerIds],
+    population: population.length, examined: candidates.length, summary,
+    writes: {
+      attempted: results.length, written: counted("WRITTEN"), alreadySet: counted("ALREADY_SET"),
+      skippedNotEmpty: counted("SKIPPED_NOT_EMPTY"), failed: counted("FAILED"),
+      skippedEvidenceChanged: results.filter((result) => String(result.writeResult ?? "").startsWith("SKIP_")).length,
+    },
+    table: results,
+    pending: Math.max(0, summary.autoConfirmTotal - results.length),
   });
 }

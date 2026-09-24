@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { buildDashboardMetrics } from "../lib/dashboard-metrics";
-import { isPreSqlClosed, isSalesLost, salesManagerKey } from "../lib/sales-logic";
+import { isPreSqlClosed, isSalesLost } from "../lib/sales-logic";
+import { funnelOwnerKey } from "../lib/funnel-owner";
 import {
   buildManagerProfile, medianOf, notRelevantRecords, notRelevantSemanticMismatches,
   reasonBreakdown, reasonTextMismatches, salesLostRecords, sourceFunnelRows, stageWorkloadRows, teamMedian,
@@ -31,8 +32,11 @@ function deal(over: Partial<AnalyticsRecord> = {}): AnalyticsRecord {
     stageHistoryCount: 1, ...over,
   } as unknown as AnalyticsRecord;
 }
-const ALI = { salesManagerId: "7", salesManager: "Ali" };
-const BOB = { salesManagerId: "9", salesManager: "Bob" };
+// Funnel ownership is by outcome (lib/funnel-owner.ts): a sale belongs to its
+// certified seller, open work to the Responsible person. These fixtures therefore
+// state both, so Bob's leads are Bob's.
+const ALI = { salesManagerId: "7", salesManager: "Ali", assignedManagerId: "7", assignedManager: "Ali" };
+const BOB = { salesManagerId: "9", salesManager: "Bob", assignedManagerId: "9", assignedManager: "Bob" };
 
 const COHORT = [
   deal({ dealId: "a1", ...ALI, qualified: true, stage: "ОБРАБОТКА" }),
@@ -79,7 +83,7 @@ test("unknown seller historical selector’da Unknown bo‘lib qoladi", () => {
 });
 
 test("A: profile counts equal the clicked row's canonical values", () => {
-  const rowMetrics = buildDashboardMetrics(COHORT.filter((r) => salesManagerKey(r) === "7"), WON.filter((r) => salesManagerKey(r) === "7"));
+  const rowMetrics = buildDashboardMetrics(COHORT.filter((r) => funnelOwnerKey(r) === "7"), WON.filter((r) => funnelOwnerKey(r) === "7"));
   assert.equal(metrics.counts.leads, rowMetrics.counts.leads);
   assert.equal(metrics.counts.sql, rowMetrics.counts.sql);
   assert.equal(metrics.counts.cohort_sales, rowMetrics.counts.cohort_sales);

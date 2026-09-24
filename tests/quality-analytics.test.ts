@@ -19,8 +19,11 @@ function deal(over: Partial<AnalyticsRecord> = {}): AnalyticsRecord {
   } as unknown as AnalyticsRecord;
 }
 
-const ALI = { salesManagerId: "a", salesManager: "Ali" };
-const BOB = { salesManagerId: "b", salesManager: "Bob" };
+// Funnel ownership is by outcome (lib/funnel-owner.ts): a sale belongs to its
+// certified seller, open work / Not Relevant / Sales Lost to the Responsible
+// person. Each persona therefore states both ids.
+const ALI = { salesManagerId: "a", salesManager: "Ali", assignedManagerId: "a", assignedManager: "Ali" };
+const BOB = { salesManagerId: "b", salesManager: "Bob", assignedManagerId: "b", assignedManager: "Bob" };
 
 const SQL_STAGE = "C3:UC_9SUEMM"; // real evidence marker for qualifiedStageId
 
@@ -46,16 +49,18 @@ const FIXTURE = [
   deal({ dealId: "b-nr", ...BOB, salesStatus: "LOW_QUALITY", lossReasonGroup: "MARKETING", lossReason: "Organic" }),
 
   // No classification evidence: both manager rates must stay unavailable.
-  deal({ dealId: "c-open", salesManagerId: "c", salesManager: "Cora" }),
+  deal({ dealId: "c-open", salesManagerId: "c", salesManager: "Cora", assignedManagerId: "c", assignedManager: "Cora" }),
 
   // SALES semantics win over misleading Bitrix reason text.
-  deal({ dealId: "unknown-sales", salesManagerId: null, salesManager: null, qualified: true, qualifiedStageId: SQL_STAGE,
+  deal({ dealId: "unknown-sales", salesManagerId: null, salesManager: null, assignedManagerId: undefined, assignedManager: undefined,
+    qualified: true, qualifiedStageId: SQL_STAGE,
     salesStatus: "LOST", lossReasonGroup: "SALES", lossReason: "Игнорить (Not relevant)" }),
-  deal({ dealId: "unknown-nr", salesManagerId: null, salesManager: null,
+  deal({ dealId: "unknown-nr", salesManagerId: null, salesManager: null, assignedManagerId: undefined, assignedManager: undefined,
     salesStatus: "LOW_QUALITY", lossReasonGroup: "MARKETING", lossReason: "" }),
 
   // Routing-only manager must be visible only in Routing diagnostics.
-  deal({ dealId: "route", salesManagerId: "route", salesManager: "Router", salesStatus: "LOST",
+  deal({ dealId: "route", salesManagerId: "route", salesManager: "Router",
+    assignedManagerId: "route", assignedManager: "Router", salesStatus: "LOST",
     lossReasonGroup: "ROUTING", lossReason: "Idokon" }),
 ];
 

@@ -10,7 +10,8 @@ import { buildQualityAnalytics, type QualityAnalytics } from "./quality-analytic
 import { dedupeByDealId, filterHistoricalRecords, historicalManagerOptions, type SalesFilterSelection } from "./record-filters";
 import { countClassificationConflicts, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isUnclassifiedLead, resolveProjectMembership } from "./sales-logic";
 import { countsCurrently, dealLifecycle, lifecycleBreakdown } from "./deal-lifecycle";
-import { SELLER_BUCKET_LABELS, certifyStoredAttribution, countsForScorecard, scorecardSellerKey } from "./seller-evidence";
+import { certifyStoredAttribution, countsForScorecard } from "./seller-evidence";
+import { FUNNEL_OWNER_LABELS, funnelOwnerBreakdown, funnelOwnerKey, resolveFunnelOwner } from "./funnel-owner";
 import { SLA_LABELS, resolveSlaState } from "./sla";
 import { TREND_METRICS, buildTrendSeriesSet, type TrendMetricId, type TrendPoint } from "./trend-series";
 import type { DashboardSettings, SyncProgressState } from "./types";
@@ -172,20 +173,27 @@ export function prepareSalesBase(rows: DashboardRecord[], settings: Pick<Dashboa
  * has none, `resolveProjectMembership` — never the bare legacy fallback.
  */
 export function projectScopedRecords<T extends Pick<DashboardRecord, "originCategoryId" | "categoryId" | "projectLeadMembership" | "lossReasonGroup" | "membershipBasis"> & Partial<Pick<DashboardRecord, "salesManagerId" | "salesManagerAttribution" | "sellerCertification">>>(
-  rows: T[], settings: Pick<DashboardSettings, "selectedPipelineIds" | "postSalePipelineIds">,
+  rows: T[], settings: Pick<DashboardSettings, "selectedPipelineIds" | "postSalePipelineIds" | "salesStaffIds">,
 ): T[] {
   const selectedOrigins = new Set(settings.selectedPipelineIds.map(String));
   const projectCategories = new Set([...settings.selectedPipelineIds, ...settings.postSalePipelineIds].map(String));
+  const postSaleCategoryIds = new Set(settings.postSalePipelineIds.map(String));
+  const roster = new Set((settings.salesStaffIds ?? []).map(String).filter(Boolean));
   return rows
     .filter((row) => !selectedOrigins.size || selectedOrigins.has(String(row.originCategoryId ?? row.categoryId)) || projectCategories.has(String(row.categoryId)))
     .map((row) => {
       const { membership, basis } = resolveProjectMembership(row, projectCategories);
+      // A record written before certification existed is judged by the same
+      // rule from what it does carry, so no scorecard credits an unproven
+      // attribution while waiting for the next Full Sync.
+      const sellerCertification = certifyStoredAttribution(row);
+      // Funnel ownership is a different question from sale attribution: a sale
+      // belongs to its certified seller, everything still in Sales belongs to the
+      // roster member working it now (lib/funnel-owner.ts).
+      const owner = resolveFunnelOwner({ ...row, sellerCertification }, { roster, postSaleCategoryIds });
       return {
-        ...row, projectLeadMembership: membership, membershipBasis: basis,
-        // A record written before certification existed is judged by the same
-        // rule from what it does carry, so no scorecard credits an unproven
-        // attribution while waiting for the next Full Sync.
-        sellerCertification: certifyStoredAttribution(row),
+        ...row, projectLeadMembership: membership, membershipBasis: basis, sellerCertification,
+        funnelOwnerId: owner.ownerId, funnelOwnerName: owner.ownerName, funnelOwnerBasis: owner.basis,
       };
     });
 }
@@ -277,11 +285,13 @@ export type ManagerRow = {
 export function buildManagers(records: DashboardRecord[], wonRecords: DashboardRecord[] = records.filter((row) => row.salesStatus === "WON")): ManagerRow[] {
   const cohortByManager = new Map<string, DashboardRecord[]>();
   const wonByManager = new Map<string, DashboardRecord[]>();
-  // Employee-sensitive: a sale reaches a person only when its attribution is
-  // proven (lib/seller-evidence.ts). Everything else lands in the review or
-  // unknown bucket, so the rows still sum to the KPI without crediting anyone.
+  // Employee-sensitive, and scoped by the Deal's own outcome: a sale reaches a
+  // person only when its attribution is proven, while open work, Not Relevant and
+  // Sales Lost belong to the roster member responsible for them
+  // (lib/funnel-owner.ts). Everything else lands in the review or unknown bucket,
+  // so the rows still sum to the KPI without crediting anyone.
   const add = (map: Map<string, DashboardRecord[]>, record: DashboardRecord) => {
-    const key = scorecardSellerKey(record);
+    const key = funnelOwnerKey(record);
     const rows = map.get(key);
     if (rows) rows.push(record); else map.set(key, [record]);
   };
@@ -294,9 +304,12 @@ export function buildManagers(records: DashboardRecord[], wonRecords: DashboardR
     const metrics = buildDashboardMetrics(cohort, won);
     return {
       id,
-      name: SELLER_BUCKET_LABELS[id]
+      // The owner's name comes from whichever evidence made them the owner: the
+      // certified seller on a sale, the Responsible person on open work.
+      name: FUNNEL_OWNER_LABELS[id]
+        ?? [...cohort, ...won].find((row) => row.funnelOwnerId === id && row.funnelOwnerName)?.funnelOwnerName
         ?? [...cohort, ...won].find((row) => countsForScorecard(row.sellerCertification) && row.salesManager)?.salesManager
-        ?? cohort[0]?.salesManager ?? won[0]?.salesManager ?? "Aniqlanmagan",
+        ?? cohort[0]?.assignedManager ?? won[0]?.salesManager ?? "Aniqlanmagan",
       leads: metrics.counts.leads,
       leadShare: 0,
       classified: metrics.counts.classified_leads,
@@ -609,6 +622,9 @@ export function diagnosticsDataSection(records: DashboardRecord[]) {
     recordCount: records.length, dataQuality: summarizeDataQuality(records), classification: classificationDiagnostics(records),
     membership: membershipDiagnostics(records), marketingChannel: marketingChannelDiagnostics(records),
     lifecycle: lifecycleBreakdown(records), sellerCertification: sellerCertificationDiagnostics(records),
+    // How each Deal earned its scorecard owner: the certified sale seller, the
+    // roster member responsible for open work, or review (lib/funnel-owner.ts).
+    funnelOwner: funnelOwnerBreakdown(records),
   };
 }
 

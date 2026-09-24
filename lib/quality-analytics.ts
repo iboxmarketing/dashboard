@@ -2,7 +2,7 @@ import { buildDashboardMetrics } from "./dashboard-metrics";
 import type { MetricRecord } from "./dashboard-record";
 import { notRelevantRecords, reasonBreakdown, salesLostRecords, type ReasonRow } from "./manager-profile";
 import { hasMissingLossReason } from "./sales-logic";
-import { scorecardSellerKey } from "./seller-evidence";
+import { funnelOwnerKey } from "./funnel-owner";
 
 /**
  * Lead Quality diagnostics over the selected created-at cohort.
@@ -74,7 +74,7 @@ export type QualityAnalytics = {
 function managerGroups(rows: MetricRecord[]) {
   const grouped = new Map<string, MetricRecord[]>();
   for (const row of rows) {
-    const id = scorecardSellerKey(row);
+    const id = funnelOwnerKey(row);
     const group = grouped.get(id);
     if (group) group.push(row); else grouped.set(id, [row]);
   }

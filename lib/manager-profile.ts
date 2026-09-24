@@ -1,7 +1,7 @@
 import { buildDashboardMetrics } from "./dashboard-metrics";
 import type { MetricRecord } from "./dashboard-record";
 import { isEligibleCohortDeal, isSalesLost, MISSING_LOSS_REASON } from "./sales-logic";
-import { scorecardSellerKey } from "./seller-evidence";
+import { funnelOwnerKey } from "./funnel-owner";
 
 /**
  * Individual seller profile.
@@ -20,7 +20,7 @@ export type ManagerProfile = ReturnType<typeof buildManagerProfile>;
  * bucket, never to the person whose name happens to sit on the card.
  */
 export function managerRecords(records: MetricRecord[], managerId: string) {
-  return records.filter((row) => scorecardSellerKey(row) === managerId);
+  return records.filter((row) => funnelOwnerKey(row) === managerId);
 }
 
 export function buildManagerProfile(cohortRecords: MetricRecord[], salesRecords: MetricRecord[], managerId: string) {

@@ -18,6 +18,7 @@ import { normalizePipelineName, pairPostSalePipeline, resolvePipelineSelection, 
 import { resolveSyncWindow } from "./sync-window";
 import { canonicalDealFieldKey, canonicalizeFieldOptions } from "./crm-fields";
 import { normalizeSafeStableSellerField, normalizeSalesOwnerAtWonField } from "./stable-seller-field";
+import { OWNER_APPROVED_SELLER_NAMES, directoryUsers, resolveRoster } from "./seller-roster";
 import { runPostSyncReconciliation } from "./post-sync-reconciliation";
 import { validMarketingChannelField } from "./source-authority";
 import {
@@ -515,6 +516,15 @@ async function lookupStep(job: StoredSyncJob) {
   await saveDictionary("users", users);
   await saveDictionary("statuses", statuses);
   await saveDictionary("pipelines", [...job.selectedPipelines, ...job.reportingPipelines]);
+  // The owner-approved Sales roster is a list of NAMES (lib/seller-roster.ts).
+  // Resolve it to Bitrix user ids once, here, where the fresh directory is in
+  // hand, and persist the ids: every attribution rule downstream compares ids
+  // only, and an ambiguous or missing name is simply left out.
+  if (users.length) {
+    const roster = resolveRoster(OWNER_APPROVED_SELLER_NAMES, directoryUsers(users));
+    await saveSettings({ ...(await getSettings()), salesStaffIds: [...roster.approvedSellerIds] });
+    await saveDictionary("salesRoster", roster.entries);
+  }
   return move({ ...job, permissions }, "analytics", "Dashboard ko‘rsatkichlari kichik paketlarda hisoblanmoqda…", job.counts.deals);
 }
 

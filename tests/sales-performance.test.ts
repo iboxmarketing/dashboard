@@ -6,6 +6,7 @@ import { markDuplicates } from "../lib/duplicates";
 import { elapsedSlaMinutes, resolveSlaState } from "../lib/sla";
 import { resolveProjectMembership } from "../lib/sales-logic";
 import { certifyStoredAttribution } from "../lib/seller-evidence";
+import { resolveFunnelOwner } from "../lib/funnel-owner";
 import {
   TREND_METRICS, buildTrendSeries, buildTrendSeriesSet,
 } from "../lib/trend-series";
@@ -82,11 +83,15 @@ function referencePrepare(rows: DashboardRecord[], settings: DashboardSettings, 
   const selectedOrigins = new Set(settings.selectedPipelineIds.map(String));
   const selectedProjectCategories = new Set([...settings.selectedPipelineIds, ...settings.postSalePipelineIds].map(String));
   const project = rows.map(hydrateRecord).filter((row) => !selectedOrigins.size || selectedOrigins.has(String(row.originCategoryId)) || selectedProjectCategories.has(String(row.categoryId)));
+  const roster = new Set((settings.salesStaffIds ?? []).map(String).filter(Boolean));
+  const postSaleCategoryIds = new Set(settings.postSalePipelineIds.map(String));
   const decided = project.map((row) => {
     const { membership, basis } = resolveProjectMembership(row, selectedProjectCategories);
+    const sellerCertification = certifyStoredAttribution(row);
+    const owner = resolveFunnelOwner({ ...row, sellerCertification }, { roster, postSaleCategoryIds });
     return {
-      ...row, projectLeadMembership: membership, membershipBasis: basis,
-      sellerCertification: certifyStoredAttribution(row),
+      ...row, projectLeadMembership: membership, membershipBasis: basis, sellerCertification,
+      funnelOwnerId: owner.ownerId, funnelOwnerName: owner.ownerName, funnelOwnerBasis: owner.basis,
     };
   });
   return markDuplicates(decided.map((row) => ({ ...row, slaStatus: referenceSla(row, settings, now) })));

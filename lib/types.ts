@@ -233,6 +233,15 @@ export type AnalyticsRecord = {
    */
   membershipBasis?: "RECORD" | "LEGACY_OTHER_PROJECT" | "LEGACY_ROUTING" | "LEGACY_NEEDS_REFRESH";
   /**
+   * Also read-side only: who this Deal belongs to on a manager scorecard, by its
+   * outcome — the certified sale seller for a sale, the roster member responsible
+   * for work still in Sales (lib/funnel-owner.ts). Never persisted, so the rule
+   * can change without a Full Sync.
+   */
+  funnelOwnerId?: string | null;
+  funnelOwnerName?: string | null;
+  funnelOwnerBasis?: import("./funnel-owner").FunnelOwnerBasis;
+  /**
    * Where the deal sits *now*, as opposed to which cohort it belongs to.
    * Additive and optional: absent means IN_SCOPE. A definitive move or deletion
    * overrides stored membership; ambiguous lookups leave this field untouched.
