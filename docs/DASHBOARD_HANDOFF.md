@@ -10,8 +10,8 @@ detailed rules live in `docs/BUSINESS_RULES.md`, the runbooks in
 | | |
 | --- | --- |
 | Worker | `bitrix-deal-dashboard` (Cloudflare Workers, Paid — 30 s CPU) |
-| Worker version | `05ae03ed-4623-418a-bf10-db97b2c31ae1` |
-| Release SHA | `216a0bc1513bcc4a522208e899ffdca7f9ad7668` |
+| Worker version (deployed) | `ee716970-f458-42e1-b42d-e24779aaa37c` |
+| Release SHA (deployed application) | `83d73fc572431ad299349f9c3ac9f0b628531e39` — this file's own identity update is the docs-only commit that follows it, and changes no application code |
 | Release branch | `release/meeting-2026-09-21` |
 | URL | `https://bitrix-deal-dashboard.lively-river-afba.workers.dev` (behind Cloudflare Access) |
 | D1 database | `ibox-dashboard-production`, id `281835a3-f1f4-4f92-be6c-818b05583a00` |
@@ -20,7 +20,9 @@ detailed rules live in `docs/BUSINESS_RULES.md`, the runbooks in
 | Cron | `*/15 * * * *`; it syncs only while `autoSyncMinutes > 0` (currently `0`, so sync is manual) |
 | Observability | deliberately OFF — public share tokens ride in the URL path and Workers Logs would retain them |
 
-The identity above is the accepted production release. Confirm it live with
+The identity above is what is running in production right now. The previous
+accepted version was `05ae03ed-4623-418a-bf10-db97b2c31ae1` (SHA `216a0bc`), kept
+here only as the rollback target. Confirm the live identity with
 `npx wrangler deployments status --name bitrix-deal-dashboard`, and update this
 table whenever a new version is accepted.
 
