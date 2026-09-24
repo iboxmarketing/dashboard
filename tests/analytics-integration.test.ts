@@ -72,7 +72,9 @@ test("approved Lead, quality, loss, sales and revenue references coexist after i
   const populations = selectPeriodPopulations(unfiltered, SEPTEMBER.from, SEPTEMBER.to);
   const metrics = buildDashboardMetrics(populations.cohort, populations.periodSales);
 
-  assert.equal(ANALYTICS_VERSION, 13);
+  // The approved KPI reference is unchanged by the canonical seller field: the
+  // version moves, every number below it does not.
+  assert.equal(ANALYTICS_VERSION, 14);
   assert.equal(metrics.counts.leads, 470);
   assert.equal(metrics.counts.sql, 209);
   assert.equal(metrics.counts.not_relevant, 230);
