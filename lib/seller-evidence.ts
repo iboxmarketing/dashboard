@@ -9,6 +9,14 @@ import type { SalesManagerAttribution } from "./types";
  * but NO actor — so "who was responsible at the moment of sale" cannot be
  * reconstructed from stage history alone. What remains is:
  *
+ *   SALES_OWNER_AT_WON  the canonical evidence going forward: a Bitrix robot
+ *                       writes the Responsible person into the Sales Owner at
+ *                       Won field when the Deal reaches payment and the field is
+ *                       still empty — i.e. before the operator handoff. It is
+ *                       captured at sale time, never overwritten, and outranks
+ *                       every inferred signal.
+ *   MANUAL_CONFIRMATION an admin named the seller in the review queue and the
+ *                       choice was written back to the same Bitrix field.
  *   OWNER_CONFIRMED     an explicit reviewed per-Deal decision (lib/seller-overrides.ts).
  *   POST_SALE_OBSERVER  the approved handoff evidence: a won Deal in the paired
  *                       post-sale funnel whose observer list holds exactly one
@@ -35,6 +43,8 @@ export type SellerCertification = "OWNER_CONFIRMED" | "CERTIFIED" | "REVIEW_REQU
 
 /** Why an attribution landed where it did — the audit trail's machine-readable reason. */
 export type SellerEvidenceReason =
+  | "SALES_OWNER_AT_WON_FIELD"
+  | "MANUAL_OWNER_CONFIRMATION"
   | "OWNER_REGISTRY"
   | "OBSERVER_HANDOFF"
   | "CONFIGURED_SELLER_FIELD"
@@ -85,6 +95,13 @@ export function certifySeller(input: SellerEvidenceInput): SellerEvidence {
   if (!sellerId) return { status: "UNKNOWN", reason: "NO_SELLER", outsideRoster: false };
   if (!VALID_ID.test(sellerId) || !input.knownUser) return { status: "UNKNOWN", reason: "UNKNOWN_USER", outsideRoster };
   if (input.attribution === "OWNER_CONFIRMED") return flag("OWNER_CONFIRMED", "OWNER_REGISTRY");
+  // An admin confirmation is an attested per-Deal fact, written back to Bitrix,
+  // so it ranks with an owner confirmation and the roster cannot demote it.
+  if (input.attribution === "MANUAL_CONFIRMATION") return flag("OWNER_CONFIRMED", "MANUAL_OWNER_CONFIRMATION");
+  // The robot-written field IS the seller at the moment of sale. It is never
+  // corroborated against anything else, because nothing else is stronger: not
+  // the current assignee, not the mover, not an observer, not a legacy snapshot.
+  if (input.attribution === "SALES_OWNER_AT_WON") return flag("CERTIFIED", "SALES_OWNER_AT_WON_FIELD");
   if (input.attribution === "POST_SALE_OBSERVER") return flag("CERTIFIED", "OBSERVER_HANDOFF");
 
   if (input.attribution === "CUSTOM_FIELD") {
@@ -146,6 +163,23 @@ export function certifyStoredAttribution(row: {
   if (row.sellerCertification) return row.sellerCertification;
   if (!row.salesManagerId) return "UNKNOWN";
   if (row.salesManagerAttribution === "OWNER_CONFIRMED") return "OWNER_CONFIRMED";
+  if (row.salesManagerAttribution === "MANUAL_CONFIRMATION") return "OWNER_CONFIRMED";
+  if (row.salesManagerAttribution === "SALES_OWNER_AT_WON") return "CERTIFIED";
   if (row.salesManagerAttribution === "POST_SALE_OBSERVER") return "CERTIFIED";
   return "REVIEW_REQUIRED";
+}
+
+/**
+ * Evidence strength, for the one question the snapshot writer and the backfill
+ * both ask: may this attribution replace that one? Ranks are deliberately
+ * coarse — an attested per-Deal fact, the canonical robot field, then everything
+ * inferred — and the SQL upsert in lib/sales-snapshots.ts mirrors them.
+ */
+export const ATTRIBUTION_RANK: Record<string, number> = {
+  OWNER_CONFIRMED: 3,
+  MANUAL_CONFIRMATION: 3,
+  SALES_OWNER_AT_WON: 2,
+};
+export function attributionRank(attribution: string | null | undefined) {
+  return ATTRIBUTION_RANK[String(attribution ?? "")] ?? 1;
 }

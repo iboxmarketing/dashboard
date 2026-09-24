@@ -6,7 +6,7 @@ import { stageIdList } from "./stage-config";
 import { resolveDashboardMetricIds } from "./dashboard-metrics";
 import { normalizeSafeStableSellerField } from "./stable-seller-field";
 import type { SalesCacheFingerprint } from "./sales-cache";
-import type { AnalyticsRecord, AnalyticsRuntimeDiagnostics, DashboardSettings, ProviderDiagnostic, SyncProgressState } from "./types";
+import type { AnalyticsRecord, AnalyticsRuntimeDiagnostics, DashboardSettings, ProviderDiagnostic, SellerConfirmationEvidence, SyncProgressState } from "./types";
 import type { StageHistoryDiagnostics, StageHistoryRetryState } from "./stage-history-retry";
 
 /**
@@ -46,6 +46,14 @@ async function createSchema(db: ReturnType<typeof getD1>) {
     db.prepare("CREATE INDEX IF NOT EXISTS raw_call_activity_idx ON raw_call_stats(activity_id)"),
     db.prepare("CREATE TABLE IF NOT EXISTS crm_dictionaries (key TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL)"),
     db.prepare("CREATE TABLE IF NOT EXISTS deal_sales_snapshots (deal_id TEXT PRIMARY KEY, won_at TEXT NOT NULL, manager_id TEXT, manager_name TEXT, attribution_source TEXT NOT NULL, created_at TEXT NOT NULL)"),
+    // Admin seller confirmations from the review queue. One row per Deal, and the
+    // Bitrix write-back result travels with it so a failed write can never look
+    // like a confirmed seller (see lib/seller-writeback.ts).
+    db.prepare("CREATE TABLE IF NOT EXISTS seller_confirmations (deal_id TEXT PRIMARY KEY, seller_id TEXT NOT NULL, seller_name TEXT, confirmed_by TEXT NOT NULL, confirmed_at TEXT NOT NULL, prior_evidence TEXT, bitrix_write_status TEXT, bitrix_write_at TEXT, bitrix_error_code TEXT)"),
+    // Append-only attribution history: nothing here is ever deleted, so the
+    // evidence a Deal used to carry survives every later correction.
+    db.prepare("CREATE TABLE IF NOT EXISTS seller_attribution_audit (row_key TEXT PRIMARY KEY, deal_id TEXT NOT NULL, recorded_at TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, payload TEXT NOT NULL)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS seller_audit_deal_idx ON seller_attribution_audit(deal_id)"),
   ]);
 }
 
@@ -348,6 +356,152 @@ export async function saveSalesSnapshots(records: AnalyticsRecord[]) {
       .bind(record.dealId, record.wonAt, record.salesManagerId, record.salesManager, record.salesManagerAttribution, new Date().toISOString()));
     if (statements.length) await db.batch(statements);
   }
+}
+
+// --------------------------------------------------------- seller confirmations
+
+/**
+ * Every admin confirmation, keyed by Deal.
+ *
+ * Only a confirmation whose Bitrix write-back succeeded is handed to the
+ * analytics builder: a failed write must never certify a seller, because the CRM
+ * would then disagree with the dashboard and the next Full Sync would undo it.
+ */
+export async function listSellerConfirmations(options: { includeFailed?: boolean } = {}) {
+  await ensureSchema();
+  const rows = await getD1()
+    .prepare("SELECT deal_id, seller_id, seller_name, confirmed_by, confirmed_at, prior_evidence, bitrix_write_status, bitrix_write_at, bitrix_error_code FROM seller_confirmations")
+    .all<Record<string, string | null>>();
+  const result = new Map<string, SellerConfirmationEvidence>();
+  for (const row of rows.results ?? []) {
+    const status = row.bitrix_write_status ? String(row.bitrix_write_status) : null;
+    if (!options.includeFailed && status !== "WRITTEN" && status !== "ALREADY_SET") continue;
+    result.set(String(row.deal_id), {
+      dealId: String(row.deal_id), sellerId: String(row.seller_id),
+      sellerName: row.seller_name ? String(row.seller_name) : null,
+      confirmedBy: String(row.confirmed_by), confirmedAt: String(row.confirmed_at),
+      priorEvidence: row.prior_evidence ? String(row.prior_evidence) : null,
+      bitrixWriteStatus: status,
+      bitrixWriteAt: row.bitrix_write_at ? String(row.bitrix_write_at) : null,
+      bitrixErrorCode: row.bitrix_error_code ? String(row.bitrix_error_code) : null,
+    });
+  }
+  return result;
+}
+
+/** Idempotent: confirming the same seller twice rewrites the same row. */
+export async function saveSellerConfirmation(entry: SellerConfirmationEvidence) {
+  await ensureSchema();
+  await getD1()
+    .prepare(`INSERT INTO seller_confirmations(deal_id, seller_id, seller_name, confirmed_by, confirmed_at, prior_evidence, bitrix_write_status, bitrix_write_at, bitrix_error_code)
+      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(deal_id) DO UPDATE SET
+        seller_id = excluded.seller_id, seller_name = excluded.seller_name,
+        confirmed_by = excluded.confirmed_by, confirmed_at = excluded.confirmed_at,
+        prior_evidence = COALESCE(seller_confirmations.prior_evidence, excluded.prior_evidence),
+        bitrix_write_status = excluded.bitrix_write_status,
+        bitrix_write_at = excluded.bitrix_write_at, bitrix_error_code = excluded.bitrix_error_code`)
+    .bind(entry.dealId, entry.sellerId, entry.sellerName, entry.confirmedBy, entry.confirmedAt,
+      entry.priorEvidence ?? null, entry.bitrixWriteStatus ?? null, entry.bitrixWriteAt ?? null, entry.bitrixErrorCode ?? null)
+    .run();
+}
+
+/** Append-only. Records both automatic backfills and manual confirmations. */
+export async function recordSellerAudit(entries: {
+  dealId: string; actor: string; action: string; payload: Record<string, unknown>;
+}[]) {
+  await ensureSchema();
+  if (!entries.length) return;
+  const db = getD1();
+  const now = new Date().toISOString();
+  for (let index = 0; index < entries.length; index += 40) {
+    const statements = entries.slice(index, index + 40).map((entry, offset) => db
+      .prepare("INSERT OR REPLACE INTO seller_attribution_audit(row_key, deal_id, recorded_at, actor, action, payload) VALUES(?, ?, ?, ?, ?, ?)")
+      .bind(`${entry.dealId}:${now}:${index + offset}`, entry.dealId, now, entry.actor, entry.action, JSON.stringify(entry.payload)));
+    if (statements.length) await db.batch(statements);
+  }
+}
+
+export async function listSellerAudit(dealId?: string, limit = 200) {
+  await ensureSchema();
+  const bounded = Math.max(1, Math.min(1000, Math.trunc(limit)));
+  const statement = dealId
+    ? getD1().prepare("SELECT deal_id, recorded_at, actor, action, payload FROM seller_attribution_audit WHERE deal_id = ? ORDER BY recorded_at DESC LIMIT ?").bind(dealId, bounded)
+    : getD1().prepare("SELECT deal_id, recorded_at, actor, action, payload FROM seller_attribution_audit ORDER BY recorded_at DESC LIMIT ?").bind(bounded);
+  const rows = await statement.all<Record<string, string>>();
+  return ((rows.results ?? []) as Record<string, string>[]).map((row) => ({
+    dealId: String(row.deal_id), recordedAt: String(row.recorded_at), actor: String(row.actor), action: String(row.action),
+    payload: (() => { try { return JSON.parse(String(row.payload)) as Record<string, unknown>; } catch { return {}; } })(),
+  }));
+}
+
+/**
+ * Apply a confirmed seller to the stored record and its snapshot, so the
+ * dashboard reflects the decision immediately instead of waiting for the next
+ * Full Sync — which then reproduces exactly the same values from the Bitrix
+ * field and this confirmation.
+ */
+export async function applyConfirmedSeller(entry: { dealId: string; sellerId: string; sellerName: string | null }) {
+  await ensureSchema();
+  const db = getD1();
+  const row = await db.prepare("SELECT payload FROM analytics_records WHERE deal_id = ?").bind(entry.dealId).first<{ payload: string }>();
+  let prior: Record<string, unknown> | null = null;
+  if (row) {
+    let record: Record<string, unknown>;
+    try { record = JSON.parse(row.payload) as Record<string, unknown>; } catch { record = {}; }
+    if (Object.keys(record).length) {
+      prior = {
+        salesManagerId: record.salesManagerId ?? null, salesManager: record.salesManager ?? null,
+        salesManagerAttribution: record.salesManagerAttribution ?? null,
+        sellerCertification: record.sellerCertification ?? null, sellerEvidenceReason: record.sellerEvidenceReason ?? null,
+      };
+      record.salesManagerId = entry.sellerId;
+      record.salesManager = entry.sellerName;
+      record.salesManagerAttribution = "MANUAL_CONFIRMATION";
+      record.sellerCertification = "OWNER_CONFIRMED";
+      record.sellerEvidenceReason = "MANUAL_OWNER_CONFIRMATION";
+      // `synced_at` is part of the Sales cache fingerprint, so bumping it makes
+      // the dashboard show the confirmation immediately instead of up to five
+      // minutes later (lib/sales-cache.ts).
+      await db.prepare("UPDATE analytics_records SET payload = ?, synced_at = ? WHERE deal_id = ?")
+        .bind(JSON.stringify(record), new Date().toISOString(), entry.dealId).run();
+    }
+  }
+  const snapshot = await db.prepare("SELECT won_at FROM deal_sales_snapshots WHERE deal_id = ?").bind(entry.dealId).first<{ won_at: string }>();
+  if (snapshot?.won_at) {
+    await db.prepare(SALES_SNAPSHOT_UPSERT)
+      .bind(entry.dealId, snapshot.won_at, entry.sellerId, entry.sellerName, "MANUAL_CONFIRMATION", new Date().toISOString())
+      .run();
+  }
+  return prior;
+}
+
+/**
+ * Record the canonical field value a backfill just wrote to Bitrix.
+ *
+ * The next Full Sync reads the same value from the CRM and reaches the same
+ * conclusion; this only removes the wait. An existing owner confirmation is left
+ * alone, because it is the stronger evidence.
+ */
+export async function applyBackfilledOwner(entry: { dealId: string; sellerId: string; sellerName: string | null }) {
+  await ensureSchema();
+  const db = getD1();
+  const row = await db.prepare("SELECT payload FROM analytics_records WHERE deal_id = ?").bind(entry.dealId).first<{ payload: string }>();
+  if (!row) return false;
+  let record: Record<string, unknown>;
+  try { record = JSON.parse(row.payload) as Record<string, unknown>; } catch { return false; }
+  record.salesOwnerAtWonId = entry.sellerId;
+  record.salesOwnerAtWonName = entry.sellerName;
+  if (record.sellerCertification !== "OWNER_CONFIRMED") {
+    record.salesManagerId = entry.sellerId;
+    record.salesManager = entry.sellerName;
+    record.salesManagerAttribution = "SALES_OWNER_AT_WON";
+    record.sellerCertification = "CERTIFIED";
+    record.sellerEvidenceReason = "SALES_OWNER_AT_WON_FIELD";
+  }
+  await db.prepare("UPDATE analytics_records SET payload = ?, synced_at = ? WHERE deal_id = ?")
+    .bind(JSON.stringify(record), new Date().toISOString(), entry.dealId).run();
+  return true;
 }
 
 export async function saveProviderDiagnostics(providers: ProviderDiagnostic[]) {

@@ -202,6 +202,31 @@ Period Sale created before the selected range.
 
 The goal is to attribute performance to the seller responsible at the sales outcome, not to a later support/customer-care assignee.
 
+### Sales Owner at Won — the canonical seller field
+
+Owner decision (2026-09-24): the seller of a Deal is the value of the Bitrix Deal
+field **`UF_CRM_1790230512` "Sales Owner at Won"** (Settings → *Sales Owner at Won
+maydoni*, `salesOwnerAtWonField`).
+
+A Bitrix automation fills it: when a Deal enters `Оплата получена` **and the field
+is still empty**, it writes the current Responsible person. That runs before the
+operator/onboarding reassignment, so the value is the seller at the moment of
+sale, it is captured once, and a later handoff — or a reopen and a second win —
+cannot move it. A populated field therefore outranks every inferred signal,
+including a frozen legacy snapshot: nothing in `ASSIGNED_BY_ID`, `MOVED_BY_ID`,
+the observer list, `FIRST_CALL` or a legacy custom field may override it.
+
+`UF_CRM_1740741551` "Первый sales" is **rejected** as seller evidence anywhere in
+the product (`REJECTED_SELLER_FIELDS`): the owner confirmed it carries no seller
+meaning, so it cannot be configured, suggested or backfilled from.
+
+Old sales whose field is empty are resolved in one of two ways, never by
+guessing: a one-time backfill writes the field only where existing evidence is
+already deterministic (`lib/seller-backfill.ts`), and everything else waits in the
+admin review queue for a human to name the seller. A confirmation there writes the
+same Bitrix field first and is only then certified, so the CRM and the dashboard
+can never disagree.
+
 ### Certification: no credit or blame without evidence
 
 This dashboard evaluates employees, so an attribution is either proven or it is
@@ -210,8 +235,8 @@ certification (`lib/seller-evidence.ts`):
 
 | Status | Meaning | Counts on a scorecard |
 | --- | --- | --- |
-| `OWNER_CONFIRMED` | explicit reviewed per-Deal owner decision | yes |
-| `CERTIFIED` | configured seller field, or the approved single post-sale observer handoff | yes |
+| `OWNER_CONFIRMED` | explicit reviewed per-Deal owner decision, or an admin confirmation written back to Bitrix (`MANUAL_CONFIRMATION`) | yes |
+| `CERTIFIED` | the Sales Owner at Won field (`SALES_OWNER_AT_WON`), a configured stable seller field, or the approved single post-sale observer handoff | yes |
 | `REVIEW_REQUIRED` | somebody is named, but the evidence does not prove they sold | no — shown for a human |
 | `UNKNOWN` | no seller evidence, or the id is not a real user | no |
 
@@ -247,17 +272,28 @@ leaves the company keeps their historical sales; job titles are never evidence.
 Priority order:
 
 1. `OWNER_CONFIRMED` — an explicit business-owner decision for one Deal,
-   recorded in the version-controlled registry `lib/seller-overrides.ts`;
-2. stored sale snapshot that resolved a seller from trustworthy evidence;
-3. configured Sales manager custom field (safe `UF_CRM_*` only);
-4. `MOVED_BY_ID` only while the Deal is currently in the payment stage, where
+   recorded in the version-controlled registry `lib/seller-overrides.ts`, or an
+   admin confirmation stored in `seller_confirmations` whose Bitrix write-back
+   succeeded (`MANUAL_CONFIRMATION`); a failed write certifies nothing;
+2. `SALES_OWNER_AT_WON` — the canonical field, when it names a known Bitrix user.
+   A value naming no known user is kept for audit and decides nothing;
+3. stored sale snapshot that resolved a seller from trustworthy evidence;
+4. configured legacy Sales manager custom field (safe `UF_CRM_*` only);
+5. `MOVED_BY_ID` only while the Deal is currently in the payment stage, where
    it is the actor for that sale transition;
-5. for a WON Deal currently in its paired post-sale funnel, the universal
+6. for a WON Deal currently in its paired post-sale funnel, the universal
    Bitrix `observers` user list only when it contains exactly one valid,
    non-zero observer and that user differs from current `ASSIGNED_BY_ID`;
-6. for a not-yet-won Deal still in the Sales funnel, current-stage mover and
+7. for a not-yet-won Deal still in the Sales funnel, current-stage mover and
    then current `ASSIGNED_BY_ID` may attribute the commercial workload;
-7. unknown.
+8. unknown.
+
+Snapshot writes follow the same strength order (`ATTRIBUTION_RANK`, mirrored by
+the SQL in `lib/sales-snapshots.ts`): an attested fact (3) may replace anything
+including another attested fact, the canonical field (2) may replace inferred
+evidence, and inferred evidence (1) can never overwrite either. The old
+attribution source is preserved in `seller_attribution_audit`, which is
+append-only — a correction never erases the evidence a Deal used to carry.
 
 Owner confirmations are per-Deal facts, never inferred rules. Nothing infers a
 seller from a job title or department: audits showed titles go

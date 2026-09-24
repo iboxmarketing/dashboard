@@ -30,7 +30,10 @@ import type { OwnerSellerOverride } from "../lib/seller-overrides";
 
 const IBOX = "3", POST_SALE = "13", SD = "5";
 const SELLER = "700", OPERATOR = "900", ONBOARDING = "901", SECOND = "702";
-const SELLER_FIELD = "UF_CRM_1740741551";
+// A neutral configured seller field. NOT `UF_CRM_1740741551` ("Первый sales"),
+// which the owner ruled out as seller evidence and the product now rejects —
+// tests/sales-owner-at-won.test.ts covers that rejection.
+const SELLER_FIELD = "UF_CRM_1700000001";
 
 const STAGES = new Map([
   ["C3:NEW", "РАСПРЕДЕЛЁННЫЕ СДЕЛКИ"], ["C3:SQL", "ОБРАБОТКА"], ["C3:WON", "Оплата получена"],

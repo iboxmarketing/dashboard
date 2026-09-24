@@ -2,7 +2,7 @@ import { defaultSettings } from "./business-time";
 import { resolveDashboardMetricIds } from "./dashboard-metrics";
 import { canonicalDealFieldKey } from "./crm-fields";
 import { stageIdList } from "./stage-config";
-import { normalizeSafeStableSellerField } from "./stable-seller-field";
+import { normalizeSafeStableSellerField, normalizeSalesOwnerAtWonField } from "./stable-seller-field";
 import type { DashboardSettings } from "./types";
 
 /**
@@ -78,6 +78,7 @@ export function mergeSettingsPayload(current: DashboardSettings, raw: unknown): 
     ...defaultSettings,
     ...current,
     salesManagerField: normalizeSafeStableSellerField(current.salesManagerField),
+    salesOwnerAtWonField: normalizeSalesOwnerAtWonField(current.salesOwnerAtWonField),
   };
 
   const schedule = has(payload, "schedule") && payload.schedule && typeof payload.schedule === "object" && !Array.isArray(payload.schedule)
@@ -109,6 +110,11 @@ export function mergeSettingsPayload(current: DashboardSettings, raw: unknown): 
     salesManagerField: has(payload, "salesManagerField")
       ? normalizeSafeStableSellerField(payload.salesManagerField)
       : base.salesManagerField,
+    // The canonical seller field is configurable but never silently cleared by
+    // an omitted property, and a rejected field (Первый sales) normalises away.
+    salesOwnerAtWonField: has(payload, "salesOwnerAtWonField")
+      ? normalizeSalesOwnerAtWonField(payload.salesOwnerAtWonField)
+      : base.salesOwnerAtWonField,
 
     failureReasonFieldByPipeline: has(payload, "failureReasonFieldByPipeline")
       && payload.failureReasonFieldByPipeline && typeof payload.failureReasonFieldByPipeline === "object"

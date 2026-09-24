@@ -1105,3 +1105,11 @@ button:focus-visible, a:focus-visible, summary:focus-visible,
 /* New filters loading while the previous figures are still on screen. */
 .section-refreshing { display: flex; align-items: center; gap: 7px; margin: 0 0 12px; color: var(--muted); font-size: 12px; }
 .page-notice > .notice-action { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; padding: 4px 9px; border: 1px solid currentColor; border-radius: 8px; font-weight: 600; cursor: pointer; }
+
+/* Seller review: the evidence a human judges, and the backfill controls. */
+.seller-evidence { display: grid; gap: 2px; font-size: 10.5px; color: var(--muted); }
+.seller-evidence strong { color: inherit; font-size: 11px; }
+.seller-evidence small { display: inline; margin-left: 4px; opacity: .75; }
+.seller-review-filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.seller-review-filters > * { min-width: 180px; flex: 0 1 240px; }
+.seller-backfill-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }

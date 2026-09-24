@@ -7,10 +7,10 @@ import { canonicalDealFieldKey } from "./crm-fields";
 import { resolveDealSource } from "./source-authority";
 import { certifySeller } from "./seller-evidence";
 import { decideCanonicalLeadMembership } from "./canonical-lead-membership.js";
-import { normalizeSafeStableSellerField } from "./stable-seller-field";
+import { normalizeSafeStableSellerField, normalizeSalesOwnerAtWonField } from "./stable-seller-field";
 import { DEAL_OBSERVERS_FIELD, observerIdList, singlePostSaleObserverId } from "./deal-observers";
 import type { SalesSnapshot } from "./storage";
-import type { AnalyticsRecord, DashboardSettings, ProcessingSource, SalesManagerAttribution } from "./types";
+import type { AnalyticsRecord, DashboardSettings, ProcessingSource, SalesManagerAttribution, SellerConfirmationEvidence } from "./types";
 
 /**
  * Bumped whenever persisted AnalyticsRecord semantics change, so the stale-data
@@ -68,8 +68,19 @@ import type { AnalyticsRecord, DashboardSettings, ProcessingSource, SalesManager
  *      the same rules; and the actors behind each decision (MOVED_BY_ID,
  *      observers, current assignee) are persisted for the audit trail. Lead,
  *      SQL, Not Relevant, Sales and Revenue membership are unchanged.
+ * 14 — Sales Owner at Won becomes the canonical seller source (owner decision).
+ *      A Bitrix robot writes the Responsible person into
+ *      `UF_CRM_1790230512` when a Deal reaches `Оплата получена` and the field
+ *      is still empty, i.e. before the operator handoff, so the value is the
+ *      seller at the moment of sale. Priority is now: an attested per-Deal fact
+ *      (reviewed owner registry, then an admin confirmation written back to that
+ *      same field), the field itself, then the already-approved deterministic
+ *      legacy evidence, then review/unknown. The field also supersedes a frozen
+ *      legacy snapshot, and `UF_CRM_1740741551` ("Первый sales") is rejected
+ *      everywhere. Lead, SQL, Not Relevant, Sales, Revenue and membership rules
+ *      are unchanged.
  */
-export const ANALYTICS_VERSION = 13;
+export const ANALYTICS_VERSION = 14;
 
 export type RawDeal = Record<string, unknown>;
 export type RawActivity = Record<string, unknown>;
@@ -145,6 +156,8 @@ export function buildAnalyticsRecords(input: {
   pipelines: Map<string, string>; stages: Map<string, string>; sources: Map<string, string>; fieldOptions?: Map<string, Map<string, string>>;
   stageMeta?: Map<string, StageMeta>;
   snapshots?: Map<string, SalesSnapshot>; domain: string | null; activitiesAvailable?: boolean; stageHistoryAvailable: boolean;
+  /** Admin confirmations from the review queue, written back to Bitrix (lib/storage.ts). */
+  confirmations?: Map<string, SellerConfirmationEvidence>;
   /** Reviewed per-Deal seller decisions. Default to the version-controlled registry, so every caller — Sync and Backfill — applies them. */
   ownerOverrides?: Map<string, OwnerSellerOverride>;
 }) {
@@ -276,6 +289,19 @@ export function buildAnalyticsRecords(input: {
       : histories.length ? "NO_PROCESSING" : "NO_PROCESSING_EVIDENCE";
 
     const snapshot = snapshots.get(dealId);
+    // The canonical seller field: a Bitrix robot writes the Responsible person
+    // into it when the Deal reaches payment and the field is still empty, so the
+    // value predates the operator/onboarding handoff. Stored separately from
+    // ASSIGNED_BY_ID, MOVED_BY_ID, the observer list and FIRST_CALL, and never
+    // confused with the legacy stable seller field.
+    const ownerAtWonField = normalizeSalesOwnerAtWonField(input.settings.salesOwnerAtWonField);
+    const ownerAtWonKey = ownerAtWonField ? canonicalDealFieldKey(ownerAtWonField) : "";
+    const salesOwnerAtWonId = ownerAtWonKey
+      ? employeeId(deal[ownerAtWonKey] ?? deal[ownerAtWonField as string])
+      : "";
+    // A value that names no known Bitrix user proves nothing, so it is recorded
+    // for audit but does not silence the legacy evidence chain.
+    const usableOwnerAtWonId = salesOwnerAtWonId && input.users.has(salesOwnerAtWonId) ? salesOwnerAtWonId : "";
     // Settings written before field canonicalization may still contain Bitrix's
     // camelCase spelling. Deal SELECT payloads use UF_CRM_*; read the canonical
     // key first while retaining the raw-key fallback for controlled fixtures and
@@ -311,12 +337,28 @@ export function buildAnalyticsRecords(input: {
     // manifests are deliberately not runtime attribution rules: a row omitted
     // from an invalidation manifest keeps its frozen snapshot normally.
     const ownerOverride = ownerOverrides.get(dealId);
-    const snapshotManagerId = ownerOverride ? "" : snapshot?.attributionSource === "CURRENT_RESPONSIBLE" ? "" : snapshot?.managerId ?? "";
+    const confirmation = input.confirmations?.get(dealId);
+    // One attested per-Deal fact, from the reviewed registry in git or from an
+    // admin confirmation that was written back to Bitrix. The registry is
+    // reviewable in version control, so it wins if both exist.
+    const attested: { sellerId: string; sellerName: string; attribution: SalesManagerAttribution } | null = ownerOverride
+      ? { sellerId: ownerOverride.sellerId, sellerName: ownerOverride.sellerName, attribution: "OWNER_CONFIRMED" }
+      : confirmation && /^[1-9]\d*$/.test(String(confirmation.sellerId ?? ""))
+        ? { sellerId: String(confirmation.sellerId), sellerName: confirmation.sellerName ?? "", attribution: "MANUAL_CONFIRMATION" }
+        : null;
+    // A populated canonical field also supersedes a frozen legacy snapshot: the
+    // snapshot froze an inference, the field recorded the seller at sale time.
+    const snapshotManagerId = attested || usableOwnerAtWonId
+      ? ""
+      : snapshot?.attributionSource === "CURRENT_RESPONSIBLE" ? "" : snapshot?.managerId ?? "";
     let salesManagerId = snapshotManagerId;
     let salesManager = snapshotManagerId ? snapshot?.managerName ?? "" : "";
     let salesManagerAttribution: SalesManagerAttribution = snapshotManagerId ? (snapshot?.attributionSource as SalesManagerAttribution) : "UNKNOWN";
-    const mayRecover = !ownerOverride && !snapshotManagerId;
-    if (ownerOverride) { salesManagerId = ownerOverride.sellerId; salesManager = ownerOverride.sellerName; salesManagerAttribution = "OWNER_CONFIRMED"; }
+    const mayRecover = !attested && !usableOwnerAtWonId && !snapshotManagerId;
+    if (attested) { salesManagerId = attested.sellerId; salesManager = attested.sellerName; salesManagerAttribution = attested.attribution; }
+    // Nothing below may override the canonical field: not the current assignee,
+    // not the stage mover, not an observer, not a legacy CUSTOM_FIELD value.
+    else if (usableOwnerAtWonId) { salesManagerId = usableOwnerAtWonId; salesManagerAttribution = "SALES_OWNER_AT_WON"; }
     else if (mayRecover && customManagerId) { salesManagerId = customManagerId; salesManagerAttribution = "CUSTOM_FIELD"; }
     // Bitrix stage history has stage/category/time but no historical actor.
     // MOVED_BY_ID is only the actor who moved the Deal into its CURRENT stage,
@@ -344,7 +386,7 @@ export function buildAnalyticsRecords(input: {
     const sellerEvidence = certifySeller({
       attribution: salesManagerAttribution,
       sellerId: salesManagerId,
-      fromSnapshot: Boolean(snapshotManagerId) && salesManagerId === snapshotManagerId && !ownerOverride,
+      fromSnapshot: Boolean(snapshotManagerId) && salesManagerId === snapshotManagerId && !attested,
       hasConfiguredSellerField: Boolean(salesManagerField),
       fieldSellerId: customManagerId,
       knownUser: Boolean(salesManagerId) && input.users.has(salesManagerId),
@@ -357,11 +399,11 @@ export function buildAnalyticsRecords(input: {
     // confirmation this stays UNKNOWN rather than blaming whoever is on the card
     // now. MOVED_BY_ID is recorded as audit evidence only.
     const lostOwnerId = lossReasonGroup === "SALES" && salesStatus === "LOST"
-      ? ownerOverride ? ownerOverride.sellerId : customManagerId || ""
+      ? attested ? attested.sellerId : customManagerId || ""
       : "";
     const lostOwnerEvidence = lossReasonGroup === "SALES" && salesStatus === "LOST"
       ? certifySeller({
-        attribution: ownerOverride ? "OWNER_CONFIRMED" : lostOwnerId ? "CUSTOM_FIELD" : "UNKNOWN",
+        attribution: attested ? attested.attribution : lostOwnerId ? "CUSTOM_FIELD" : "UNKNOWN",
         sellerId: lostOwnerId,
         fromSnapshot: false,
         hasConfiguredSellerField: Boolean(salesManagerField),
@@ -394,6 +436,8 @@ export function buildAnalyticsRecords(input: {
       wonAt: effectiveWonAt, salesCycleHours, opportunity: Number.isFinite(opportunity) ? opportunity : 0, currencyId: string(deal.CURRENCY_ID), lossReason: effectiveLossReason, lossReasonGroup,
       contactId: contactId || null, companyId: companyId || null, customerKey: contactId ? `contact:${contactId}` : companyId ? `company:${companyId}` : null, duplicateOfDealId: null, stageTimeline,
       salesManagerId: salesManagerId || null, salesManager: salesManager || null, salesManagerAttribution,
+      salesOwnerAtWonId: salesOwnerAtWonId || null,
+      salesOwnerAtWonName: salesOwnerAtWonId ? managerName(salesOwnerAtWonId, input.users) : null,
       sellerCertification: sellerEvidence.status, sellerEvidenceReason: sellerEvidence.reason, sellerOutsideRoster: sellerEvidence.outsideRoster,
       lostOwnerId: lostOwnerId || null,
       lostOwnerName: lostOwnerId ? managerName(lostOwnerId, input.users) : null,

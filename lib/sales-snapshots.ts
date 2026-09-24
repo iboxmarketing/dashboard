@@ -5,6 +5,16 @@
  * runs can also be exercised by tests; `lib/storage.ts` reaches D1 through
  * `cloudflare:workers` and cannot be loaded by the node test runner.
  *
+ * Evidence strength decides every write (lib/seller-evidence.ts ATTRIBUTION_RANK):
+ *
+ *   3  OWNER_CONFIRMED / MANUAL_CONFIRMATION — an attested per-Deal fact
+ *   2  SALES_OWNER_AT_WON — the robot-written canonical field
+ *   1  everything inferred (CUSTOM_FIELD, STAGE_MOVER, POST_SALE_OBSERVER, …)
+ *
+ * Stronger evidence may replace weaker, rank 3 may correct rank 3, and nothing
+ * weaker may ever overwrite what is already stored — which is what keeps a
+ * populated Sales Owner at Won from being undone by a later operator handoff.
+ *
  * Two different immutability rules are encoded here:
  *
  *  - `won_at` and `created_at` are never in the DO UPDATE SET list, so an
@@ -32,17 +42,26 @@ ON CONFLICT(deal_id) DO UPDATE SET
   manager_name = excluded.manager_name,
   attribution_source = excluded.attribution_source
 WHERE excluded.manager_id IS NOT NULL
+  AND NOT (
+    deal_sales_snapshots.manager_id IS excluded.manager_id
+    AND deal_sales_snapshots.manager_name IS excluded.manager_name
+    AND deal_sales_snapshots.attribution_source IS excluded.attribution_source
+  )
   AND (
-    (
-      excluded.attribution_source = 'OWNER_CONFIRMED'
-      AND NOT (
-        deal_sales_snapshots.attribution_source = 'OWNER_CONFIRMED'
-        AND deal_sales_snapshots.manager_id IS excluded.manager_id
-        AND deal_sales_snapshots.manager_name IS excluded.manager_name
-      )
-    )
+    CASE excluded.attribution_source
+      WHEN 'OWNER_CONFIRMED' THEN 3 WHEN 'MANUAL_CONFIRMATION' THEN 3
+      WHEN 'SALES_OWNER_AT_WON' THEN 2 ELSE 1 END > CASE deal_sales_snapshots.attribution_source
+      WHEN 'OWNER_CONFIRMED' THEN 3 WHEN 'MANUAL_CONFIRMATION' THEN 3
+      WHEN 'SALES_OWNER_AT_WON' THEN 2 ELSE 1 END
+    OR (CASE excluded.attribution_source
+      WHEN 'OWNER_CONFIRMED' THEN 3 WHEN 'MANUAL_CONFIRMATION' THEN 3
+      WHEN 'SALES_OWNER_AT_WON' THEN 2 ELSE 1 END = 3 AND CASE deal_sales_snapshots.attribution_source
+      WHEN 'OWNER_CONFIRMED' THEN 3 WHEN 'MANUAL_CONFIRMATION' THEN 3
+      WHEN 'SALES_OWNER_AT_WON' THEN 2 ELSE 1 END = 3)
     OR (
-      deal_sales_snapshots.attribution_source IS NOT 'OWNER_CONFIRMED'
+      CASE deal_sales_snapshots.attribution_source
+      WHEN 'OWNER_CONFIRMED' THEN 3 WHEN 'MANUAL_CONFIRMATION' THEN 3
+      WHEN 'SALES_OWNER_AT_WON' THEN 2 ELSE 1 END = 1
       AND (
         deal_sales_snapshots.manager_id IS NULL
         OR (

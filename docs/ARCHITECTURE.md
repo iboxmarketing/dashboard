@@ -16,6 +16,8 @@ The browser never receives the webhook URL. All Bitrix REST calls go through ser
 ```text
 Bitrix24 REST
   ├─ selected Sales + matching post-sale deals
+  ├─ Deal field `UF_CRM_1790230512` "Sales Owner at Won" — the canonical seller,
+  │  written by a Bitrix robot at the payment transition before any handoff
   ├─ universal Deal `observers` for current post-sale seller handoff evidence
   ├─ activities and outgoing calls
   ├─ stage history
@@ -88,9 +90,18 @@ Important tables:
 - `analytics_records` — flattened report records;
 - `deal_sales_snapshots` — stable won date and seller attribution, each carrying
   a certification on read (`lib/seller-evidence.ts`) that decides whether it may
-  appear on an employee scorecard; resolved
-  seller values are immutable, while legacy `CURRENT_RESPONSIBLE` guesses may
-  be upgraded only by stronger custom-field/current-payment evidence;
+  appear on an employee scorecard. Writes follow evidence strength
+  (`ATTRIBUTION_RANK`): an attested fact (owner registry, admin confirmation) may
+  replace anything, the canonical Sales Owner at Won field may replace inferred
+  evidence, and inferred evidence can never overwrite either — so a populated
+  canonical field survives every later operator handoff;
+- `seller_confirmations` — one row per admin-confirmed seller, with the Bitrix
+  write-back status. Only a row whose write succeeded (`WRITTEN`/`ALREADY_SET`)
+  is handed to the analytics builder, so a failed CRM write can never certify a
+  seller the CRM does not carry;
+- `seller_attribution_audit` — append-only history of every backfill and
+  confirmation (Deal, actor, action, prior evidence, chosen seller). Nothing here
+  is deleted, so a correction never erases what a Deal used to claim;
 - `sync_jobs`, `sync_state` — resumable job and visible progress;
 - `provider_rules`, `provider_diagnostics` — telephony filtering and diagnostics.
 

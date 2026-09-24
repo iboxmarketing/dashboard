@@ -142,6 +142,37 @@ post-sale transition scan remains. Candidate Deal IDs are deduplicated against
 the current run before Deal details and full history are fetched, so payment
 plus post-sale evidence does not multiply analytics rows.
 
+## Sales Owner at Won: canonical seller migration
+
+The seller of a new sale comes from the Bitrix Deal field `UF_CRM_1790230512`
+("Sales Owner at Won"), filled by a Bitrix automation on entry to
+`Оплата получена` while the field is empty. Settings → *Sales Owner at Won
+maydoni* holds the field code; it is required going forward, and
+`UF_CRM_1740741551` ("Первый sales") is rejected by the product.
+
+Old sales are closed out from **Sotuvchi tasdiqlash** (admin-only, the only screen
+in the product that writes to Bitrix):
+
+1. **Dry-run** — classifies every stored sale. `Avtomatik yozishga tayyor` counts
+   only deterministic evidence: an attested per-Deal fact, or a certification this
+   build produced (observer handoff, corroborated configured field). A legacy
+   `CUSTOM_FIELD`, `FIRST_CALL`, `STAGE_MOVER` or current-assignee value is never
+   in that set.
+2. **Apply** — writes `UF_CRM_1790230512` for those Deals only, at most 200 per
+   request, sequentially with a pause, retrying only Bitrix's rate limit. Each
+   Deal is read first: a field that already holds a value is left alone
+   (`SKIPPED_NOT_EMPTY`), and the same value reports `ALREADY_SET`, so re-running
+   the backfill is free. Nothing else on the Deal is ever included in the update.
+3. **Review queue** — every remaining sale, with the evidence that exists and the
+   reason it proves nothing. The admin picks the seller and confirms; the write
+   goes to Bitrix first and only a successful write certifies
+   (`MANUAL_CONFIRMATION` → `OWNER_CONFIRMED`). A failure is recorded in
+   `seller_confirmations` with its error code and the Deal stays in the queue.
+
+Every write and confirmation is appended to `seller_attribution_audit` with the
+prior evidence. A later Full Sync reproduces the same attribution from the CRM
+field and the confirmation table, so the screen only removes the wait.
+
 ## Repairing seller attribution semantics
 
 Seller attribution is stored in each analytics payload. Version 10's unsafe

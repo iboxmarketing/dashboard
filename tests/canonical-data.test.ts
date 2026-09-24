@@ -226,7 +226,8 @@ test("source is SOURCE_ID only; the Marketing channel is a separate dimension", 
   const sync = code("../lib/sync.ts");
   assert.doesNotMatch(sync, /marketing\.\*channel|маркет\.\*канал/, "the field is never detected by name");
   assert.match(sync, /marketingChannelField: validMarketingChannelField\(settings\.marketingChannelField, knownFieldKeys\)/);
-  assert.match(sync, /normalizeSafeStableSellerField\(settings\.salesManagerField\),\n    settings\.marketingChannelField,\n  \]\)\]/, "the Full Sync selects the configured field");
+  assert.match(sync, /normalizeSafeStableSellerField\(settings\.salesManagerField\),[\s\S]{0,400}?settings\.marketingChannelField,\n  \]\)\]/, "the Full Sync selects the configured field");
+  assert.match(sync, /normalizeSalesOwnerAtWonField\(settings\.salesOwnerAtWonField\),/, "and the canonical seller field");
 
   const records = buildAnalyticsRecords({
     deals: [{ ID: "1", TITLE: "T", DATE_CREATE: "2026-09-05T11:00:00+05:00", ASSIGNED_BY_ID: "7", CATEGORY_ID: "3", STAGE_ID: "C3:NEW", SOURCE_ID: "WEBFORM", UF_CRM_1784823646: "102" }],

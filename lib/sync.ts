@@ -4,7 +4,7 @@ import { buildAnalyticsRecords, type RawDeal, type RawStageHistory } from "./ana
 import { bitrixCall, bitrixList, bitrixPage, getBitrixDomain, SafeBitrixError, safeBitrixMessage } from "./bitrix";
 import {
   getDictionary, getSettings, getSyncJob,
-  getSyncState, getSalesSnapshots, saveDictionary, saveSalesSnapshots, saveSettings, saveSyncJob,
+  getSyncState, getSalesSnapshots, listSellerConfirmations, saveDictionary, saveSalesSnapshots, saveSettings, saveSyncJob,
   saveSyncState, setAnalyticsCurrentScope, upsertAnalyticsRecords, type StoredSyncJob,
 } from "./storage";
 import { getDealsByIds } from "./deal-lookup";
@@ -17,7 +17,7 @@ export { normalizePipelineName, resolvePipelineSelection } from "./pipelines";
 import { normalizePipelineName, pairPostSalePipeline, resolvePipelineSelection, resolvePostSalePipelines } from "./pipelines";
 import { resolveSyncWindow } from "./sync-window";
 import { canonicalDealFieldKey, canonicalizeFieldOptions } from "./crm-fields";
-import { normalizeSafeStableSellerField } from "./stable-seller-field";
+import { normalizeSafeStableSellerField, normalizeSalesOwnerAtWonField } from "./stable-seller-field";
 import { runPostSyncReconciliation } from "./post-sync-reconciliation";
 import { validMarketingChannelField } from "./source-authority";
 import {
@@ -292,6 +292,9 @@ export async function startSync(options: { days?: number; full?: boolean; pipeli
     // Configured only — never detected by name — and kept only while Bitrix
     // still lists the field (lib/source-authority.ts).
     marketingChannelField: validMarketingChannelField(settings.marketingChannelField, knownFieldKeys),
+    // Configured only, and kept even when a stale field dictionary does not list
+    // it: silently dropping it would decertify every seller at once.
+    salesOwnerAtWonField: normalizeSalesOwnerAtWonField(settings.salesOwnerAtWonField),
     salesManagerField: normalizeSafeStableSellerField(settings.salesManagerField)
       ?? normalizeSafeStableSellerField(detectField(
         crmFields.filter((field) => normalizeSafeStableSellerField(field.key)),
@@ -341,6 +344,10 @@ async function dealStep(job: StoredSyncJob) {
     settings.failureReasonField,
     ...Object.values(settings.failureReasonFieldByPipeline ?? {}),
     normalizeSafeStableSellerField(settings.salesManagerField),
+    // The canonical seller field must be on every Deal read, including the
+    // refresh scope: a sale that reached payment between syncs carries its
+    // seller only here.
+    normalizeSalesOwnerAtWonField(settings.salesOwnerAtWonField),
     settings.marketingChannelField,
   ])]
     .filter((field): field is string => Boolean(field)).map(canonicalDealFieldKey);
@@ -566,9 +573,13 @@ async function analyticsStep(job: StoredSyncJob) {
   const crmFields = await getDictionary<CrmFieldOption[]>("crmFields", []);
   const fieldOptions = buildFieldOptionMap(crmFields);
   const snapshots = await getSalesSnapshots(ids);
+  // Admin confirmations whose Bitrix write-back succeeded. A failed write is
+  // deliberately withheld, so the dashboard never certifies a seller the CRM
+  // does not carry.
+  const confirmations = await listSellerConfirmations();
   const records = buildAnalyticsRecords({
     deals: parseRows<RawDeal>(batchDeals), stageHistories: parseRows<RawStageHistory>(selectedHistories),
-    settings, users, pipelines, stages, sources, stageMeta, fieldOptions, snapshots, domain: getBitrixDomain(),
+    settings, users, pipelines, stages, sources, stageMeta, fieldOptions, snapshots, confirmations, domain: getBitrixDomain(),
     stageHistoryAvailable: job.permissions.stageHistory === "ok",
   });
   await upsertAnalyticsRecords(records);

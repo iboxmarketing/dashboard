@@ -63,6 +63,9 @@ export const DERIVED_VIEWS: Record<string, Permission> = {
   managerDetail: "managers",
   projectDetail: "projects",
   pageDetail: "pages",
+  // Seller review writes the canonical seller field back to Bitrix, so it rides
+  // the ADMIN-only `users` capability rather than any Sales section permission.
+  sellerReview: "users",
 };
 
 /** Normalises whatever the backend sends, dropping keys outside the contract. */

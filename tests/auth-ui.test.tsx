@@ -100,7 +100,12 @@ test("permission decisions never branch on an identity", () => {
 });
 
 test("derived views inherit their parent section's permission", () => {
-  assert.deepEqual(DERIVED_VIEWS, { managerDetail: "managers", projectDetail: "projects", pageDetail: "pages" });
+  assert.deepEqual(DERIVED_VIEWS, {
+    managerDetail: "managers", projectDetail: "projects", pageDetail: "pages",
+    // Seller review rides the ADMIN-only `users` capability: it writes the
+    // canonical seller field back to Bitrix (app/api/admin/seller-attribution).
+    sellerReview: "users",
+  });
   const member = user({ permissions: ["managers"] });
   assert.equal(canAccessView(member, "managerDetail"), true);
   assert.equal(canAccessView(member, "projectDetail"), false);

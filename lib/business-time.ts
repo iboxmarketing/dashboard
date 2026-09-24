@@ -1,3 +1,4 @@
+import { SALES_OWNER_AT_WON_FIELD } from "./stable-seller-field";
 import type { DashboardSettings } from "./types";
 
 type LocalParts = {
@@ -241,6 +242,7 @@ export const defaultSettings: DashboardSettings = {
   failureReasonFieldByPipeline: {},
   marketingChannelField: null,
   salesManagerField: null,
+  salesOwnerAtWonField: SALES_OWNER_AT_WON_FIELD,
   defaultStageLimitHours: 24,
   stageLimits: {},
   qualifiedStageIds: [],

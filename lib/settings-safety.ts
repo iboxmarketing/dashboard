@@ -1,7 +1,7 @@
 import { defaultSettings } from "./business-time";
 import { resolveDashboardMetricIds } from "./dashboard-metrics";
 import { stageIdList } from "./stage-config";
-import { normalizeSafeStableSellerField } from "./stable-seller-field";
+import { normalizeSafeStableSellerField, normalizeSalesOwnerAtWonField } from "./stable-seller-field";
 import type { DashboardSettings } from "./types";
 
 /**
@@ -26,6 +26,11 @@ export function normalizeSettings(raw: Partial<DashboardSettings> | null | undef
     salesManagerField: source.salesManagerField === undefined
       ? defaultSettings.salesManagerField
       : normalizeSafeStableSellerField(source.salesManagerField),
+    // The canonical seller field. An absent setting keeps the default rather
+        // than disabling seller certification for everybody.
+    salesOwnerAtWonField: source.salesOwnerAtWonField === undefined
+      ? defaultSettings.salesOwnerAtWonField
+      : normalizeSalesOwnerAtWonField(source.salesOwnerAtWonField),
     timezone: source.timezone || defaultSettings.timezone,
     schedule: { ...defaultSettings.schedule, ...(source.schedule ?? {}) },
     holidays: strings(source.holidays),

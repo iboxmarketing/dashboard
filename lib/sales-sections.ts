@@ -375,7 +375,16 @@ export type DashboardSection = Common & {
   /** Present only for a caller who also holds `managers`. */
   managers: ManagerRow[] | null;
 };
-export type ManagersSection = Common & { managers: ManagerRow[] };
+export type ManagersSection = Common & {
+  managers: ManagerRow[];
+  /**
+   * Certified against uncertified sales for the selected window, shown side by
+   * side so a reader can see how much of the period is actually attributable.
+   * Neither number credits or blames anybody: the uncertified sales stay in the
+   * visible review bucket (lib/seller-evidence.ts).
+   */
+  attribution: { sales: number; certified: number; certifiedRevenue: number; reviewRequired: number; reviewRevenue: number; unknown: number; unknownRevenue: number };
+};
 export type ManagerSection = Common & {
   manager: { id: string; name: string };
   metrics: PublicMetrics;
@@ -398,6 +407,7 @@ export const DEAL_ROW_FIELDS = [
   // Attribution audit trail: why this Deal counts, for whom, and on what
   // evidence — the questions an employee review has to be able to answer.
   "salesManagerId", "sellerCertification", "sellerEvidenceReason", "sellerOutsideRoster",
+  "salesOwnerAtWonId", "salesOwnerAtWonName",
   "lostOwnerName", "lostOwnerCertification", "lostOwnerEvidenceReason",
   "assignedManagerId", "movedById", "postSaleObserverId", "observerIds",
   "categoryId", "projectLeadMembership", "currentScope", "marketingChannel", "rawSource", "analyticsVersion",
@@ -428,7 +438,25 @@ export function dashboardSection(records: DashboardRecord[], query: SalesQuery, 
 
 export function managersSection(records: DashboardRecord[], query: SalesQuery, context: SectionContext): ManagersSection {
   const pop = salesPopulations(records, query);
-  return { ...common(records, query, context), managers: buildManagers(pop.cohort, pop.won) };
+  return {
+    ...common(records, query, context),
+    managers: buildManagers(pop.cohort, pop.won),
+    attribution: attributionSplit(pop.won),
+  };
+}
+
+/** Period sales split by whether an employee may be credited for them. */
+export function attributionSplit(won: DashboardRecord[]) {
+  const sum = (rows: DashboardRecord[]) => rows.reduce((total, row) => total + row.opportunity, 0);
+  const certified = won.filter((row) => countsForScorecard(row.sellerCertification));
+  const review = won.filter((row) => row.sellerCertification === "REVIEW_REQUIRED");
+  const unknown = won.filter((row) => !countsForScorecard(row.sellerCertification) && row.sellerCertification !== "REVIEW_REQUIRED");
+  return {
+    sales: won.length,
+    certified: certified.length, certifiedRevenue: sum(certified),
+    reviewRequired: review.length, reviewRevenue: sum(review),
+    unknown: unknown.length, unknownRevenue: sum(unknown),
+  };
 }
 
 export function managerSection(records: DashboardRecord[], query: SalesQuery, context: SectionContext): ManagerSection {
@@ -548,7 +576,9 @@ export function membershipDiagnostics(records: Pick<DashboardRecord, "membership
  * Attribution certification counts over the sales in view: what an employee
  * scorecard may count (CERTIFIED + OWNER_CONFIRMED) against what it may not.
  */
-export function sellerCertificationDiagnostics(records: Pick<DashboardRecord, "salesStatus" | "sellerCertification">[]) {
+export function sellerCertificationDiagnostics(
+  records: Pick<DashboardRecord, "salesStatus" | "sellerCertification" | "salesManagerAttribution" | "salesOwnerAtWonId">[],
+) {
   const sales = records.filter((row) => row.salesStatus === "WON");
   const count = (status: DashboardRecord["sellerCertification"]) => sales.filter((row) => row.sellerCertification === status).length;
   return {
@@ -557,6 +587,10 @@ export function sellerCertificationDiagnostics(records: Pick<DashboardRecord, "s
     ownerConfirmed: count("OWNER_CONFIRMED"),
     reviewRequired: count("REVIEW_REQUIRED"),
     unknown: sales.length - count("CERTIFIED") - count("OWNER_CONFIRMED") - count("REVIEW_REQUIRED"),
+    // Canonical-field coverage: how far the robot-written Sales Owner at Won has
+    // replaced inferred evidence. This is the migration's progress bar.
+    salesOwnerAtWon: sales.filter((row) => row.salesManagerAttribution === "SALES_OWNER_AT_WON").length,
+    fieldPopulated: sales.filter((row) => Boolean(row.salesOwnerAtWonId)).length,
   };
 }
 

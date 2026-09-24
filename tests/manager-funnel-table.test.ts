@@ -286,7 +286,9 @@ test("G: the Managers page passes no limit and shows every manager", () => {
   assert.match(client, /<ManagerTable rows=\{managers\} limit=\{8\} onSelect=\{onManager\} \/>/, "Dashboard limits to 8");
   assert.match(client, /<ManagerTable rows=\{managersSection\.data\.managers\} onSelect=/, "Managers page has no limit");
   // Rows are built once on the server by the canonical helper.
-  assert.match(client, /return \{ \.\.\.common\(records, query, context\), managers: buildManagers\(pop\.cohort, pop\.won\) \};/, "shared rows remain canonical");
+  // Rows come from the canonical helper with the whole populations — the
+  // attribution split beside them is a summary, never a second row source.
+  assert.match(client, /managers: buildManagers\(pop\.cohort, pop\.won\),?\n/, "shared rows remain canonical");
   assert.doesNotMatch(client, /managers\.slice\(0, 8\)/, "the pre-sort slice is gone");
 });
 

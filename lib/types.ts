@@ -18,6 +18,13 @@ export type DashboardSettings = {
   failureReasonFieldByPipeline: Record<string, string>;
   marketingChannelField: string | null;
   salesManagerField: string | null;
+  /**
+   * Canonical seller field: the Bitrix Deal field a robot fills with the
+   * Responsible person at the moment the Deal reaches payment
+   * (lib/stable-seller-field.ts). Required going forward; null disables it and
+   * leaves only legacy evidence, which is never certified on its own.
+   */
+  salesOwnerAtWonField?: string | null;
   defaultStageLimitHours: number;
   stageLimits: Record<string, number>;
   qualifiedStageIds: string[];
@@ -163,7 +170,36 @@ export type SlaStatus = "ON_TIME" | "LATE" | "PENDING" | "OVERDUE_UNPROCESSED" |
 export type CreationPeriod = "WORK_HOURS" | "AFTER_HOURS";
 export type SalesStatus = "ACTIVE" | "LOW_QUALITY" | "LOST" | "WON";
 export type LossReasonGroup = "MARKETING" | "SALES" | "ROUTING" | "NONE";
-export type SalesManagerAttribution = "OWNER_CONFIRMED" | "CUSTOM_FIELD" | "STAGE_MOVER" | "POST_SALE_OBSERVER" | "CURRENT_RESPONSIBLE" | "UNKNOWN";
+export type SalesManagerAttribution =
+  | "OWNER_CONFIRMED"
+  /** An admin named the seller in the dashboard review queue; written back to Bitrix. */
+  | "MANUAL_CONFIRMATION"
+  /** The canonical robot-written Sales Owner at Won field — see lib/stable-seller-field.ts. */
+  | "SALES_OWNER_AT_WON"
+  | "CUSTOM_FIELD"
+  | "STAGE_MOVER"
+  | "POST_SALE_OBSERVER"
+  | "CURRENT_RESPONSIBLE"
+  | "UNKNOWN";
+
+/**
+ * An admin's confirmation from the seller review queue.
+ *
+ * Stored in D1, written back to the canonical Bitrix field, and read by the
+ * analytics builder as an attested per-Deal fact. `priorEvidence` keeps what the
+ * record said before, so the audit history survives the correction.
+ */
+export type SellerConfirmationEvidence = {
+  dealId: string;
+  sellerId: string;
+  sellerName: string | null;
+  confirmedBy: string;
+  confirmedAt: string;
+  priorEvidence?: string | null;
+  bitrixWriteStatus?: string | null;
+  bitrixWriteAt?: string | null;
+  bitrixErrorCode?: string | null;
+};
 
 export type StageTimelineEntry = {
   categoryId: string;
@@ -235,6 +271,9 @@ export type AnalyticsRecord = {
   salesManagerId: string | null;
   salesManager: string | null;
   salesManagerAttribution: SalesManagerAttribution;
+  /** Raw value of the canonical Sales Owner at Won field, stored separately from every other actor. */
+  salesOwnerAtWonId?: string | null;
+  salesOwnerAtWonName?: string | null;
   /** Whether this attribution may appear on an employee scorecard — see lib/seller-evidence.ts. */
   sellerCertification?: "OWNER_CONFIRMED" | "CERTIFIED" | "REVIEW_REQUIRED" | "UNKNOWN";
   sellerEvidenceReason?: string;

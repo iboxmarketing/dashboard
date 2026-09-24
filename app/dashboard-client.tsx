@@ -4,7 +4,7 @@ import {
   Activity, AlertTriangle, ArrowLeft, BarChart3, CalendarDays, Check,
   ChevronDown, Clock3, Database, Download, ExternalLink, Gauge, LayoutDashboard,
   Loader2, Menu, RefreshCw, Search, Settings, ShieldCheck,
-  SlidersHorizontal, TimerReset, UserCog, Users, Wallet, X, XCircle, CircleDollarSign, ClipboardList, Layers3, GripVertical, ChevronUp
+  SlidersHorizontal, TimerReset, UserCheck, UserCog, Users, Wallet, X, XCircle, CircleDollarSign, ClipboardList, Layers3, GripVertical, ChevronUp
 } from "lucide-react";
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ErrorInfo, ReactNode } from "react";
@@ -28,7 +28,7 @@ import {
 import type { CrmFieldOption, CurrentStageRecord, DashboardSettings, PipelineOption, PipelineStageOption, StageReconciliation, SyncProgressState } from "@/lib/types";
 import { canonicalizeFieldOptions, normalizeCrmFields } from "@/lib/crm-fields";
 import { normalizeSettings } from "@/lib/settings-safety";
-import { isSafeStableSellerField } from "@/lib/stable-seller-field";
+import { isSafeStableSellerField, normalizeSalesOwnerAtWonField, SALES_OWNER_AT_WON_FIELD } from "@/lib/stable-seller-field";
 import {
   DEADLINE_STATES, deadlineState, filterProjects, isOverdue, latestUpdate, projectUpdates,
   statusBreakdown, statusOptions, summarizeProjects, wasEdited, type Project, type ProjectUpdate,
@@ -51,6 +51,7 @@ import { MultiSelect } from "./ui/multi-select";
 import { AuthGate, type AuthSession } from "./auth/auth-shell";
 import { ProfileMenu } from "./auth/profile-menu";
 import { UsersScreen } from "./auth/users-screen";
+import { SellerReviewScreen } from "./seller-review-screen";
 import { canAccessView } from "@/lib/auth-permissions";
 import { authFetch } from "@/lib/auth-fetch";
 import { EmptyCohortNotice, SectionStatus, useSalesSection, useSectionFetch, type SectionCommon, type SectionState } from "./sales-data";
@@ -77,7 +78,7 @@ import { hasPermission, type PermissionKey } from "@/lib/auth/permissions";
 /** Sales analytics views. Only these carry the global cohort filter bar. */
 const SALES_VIEWS = ["dashboard", "managers", "managerDetail", "leadFlow", "quality", "stages", "deals"] as const;
 /** Management views: no sales filters, no funnel/sync controls. */
-const MANAGEMENT_VIEWS = ["projects", "projectDetail", "pages", "pageDetail", "settings", "diagnostics", "finance", "users"] as const;
+const MANAGEMENT_VIEWS = ["projects", "projectDetail", "pages", "pageDetail", "settings", "diagnostics", "finance", "users", "sellerReview"] as const;
 /**
  * Finance is its own lane. It holds its own date filter and dataset and shares no
  * state with the Sales cohort filter, so opening Finance cannot move a Sales number.
@@ -86,7 +87,7 @@ export const isFinanceView = (view: string) => view === "finance";
 export const isSalesView = (view: string) => (SALES_VIEWS as readonly string[]).includes(view);
 export const isManagementView = (view: string) => (MANAGEMENT_VIEWS as readonly string[]).includes(view);
 
-type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "projects" | "projectDetail" | "pages" | "pageDetail" | "diagnostics" | "settings" | "finance" | "users";
+type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "projects" | "projectDetail" | "pages" | "pageDetail" | "diagnostics" | "settings" | "finance" | "users" | "sellerReview";
 type SyncState = SyncProgressState;
 type Filters = {
   range: "today" | "yesterday" | "7" | "30" | "month" | "lastMonth" | "custom";
@@ -122,6 +123,9 @@ const navItems: { id: View; label: string; icon: typeof LayoutDashboard; permiss
   { id: "diagnostics", label: "Diagnostika", icon: Activity, permission: "diagnostics" },
   { id: "settings", label: "Sozlamalar", icon: Settings, permission: "settings" },
   { id: "users", label: "Foydalanuvchilar", icon: UserCog, permission: "users" },
+  // Writes to Bitrix, so it rides the ADMIN-only `users` capability — the server
+  // refuses to grant that permission to anybody else, and the route re-checks it.
+  { id: "sellerReview", label: "Sotuvchi tasdiqlash", icon: UserCheck, permission: "users" },
 ];
 
 function pct(value: number, total: number) { return total ? Math.round((value / total) * 100) : 0; }
@@ -1495,8 +1499,16 @@ function SettingsView({ settings, syncing, lastSyncAt, onSave, onFullSync, onDir
         <div className={`field-discovery ${customFieldCount ? "ok" : "warning"}`}>{customFieldCount ? `${customFieldCount} ta maxsus maydon topildi. Nom yoki kod bo‘yicha qidiring.` : "Webhook maxsus maydon nomlarini bermadi. UF_CRM_... kodini qo‘lda kiritish mumkin."}</div>
         <datalist id="crm-field-options">{sellerFieldOptions}</datalist>
         <div className="config-fields">
-          <FormField label="Sotuvchi maydoni"
-            hint="Faqat barqaror UF_CRM_* employee maydoni. Bo‘sh bo‘lsa avtomatik attribution ishlaydi."
+          <FormField label="Sales Owner at Won maydoni"
+            hint="Kanonik sotuvchi maydoni: Bitrix roboti «Оплата получена» bosqichida, maydon bo‘sh bo‘lsa, joriy mas’ulni shu yerga yozadi. Faqat shu maydon va aniq tasdiq xodim hisobiga kiradi."
+            error={draft.salesOwnerAtWonField && !normalizeSalesOwnerAtWonField(draft.salesOwnerAtWonField)
+              ? "Faqat UF_CRM_* Deal maydoni; «Первый sales» (UF_CRM_1740741551) sotuvchi dalili sifatida rad etilgan."
+              : undefined}>
+            <TextInput list="crm-field-options" value={draft.salesOwnerAtWonField ?? ""} placeholder={SALES_OWNER_AT_WON_FIELD}
+              onChange={(event) => setDraft({ ...draft, salesOwnerAtWonField: event.target.value.trim() || null })} />
+          </FormField>
+          <FormField label="Eski sotuvchi maydoni (legacy)"
+            hint="Eski, ixtiyoriy barqaror sotuvchi maydoni. Sales Owner at Won undan ustun turadi; «Первый sales» qabul qilinmaydi."
             error={unsafeSellerField ? "Joriy owner/system maydoni tarixiy sotuvchi sifatida ishlatilmaydi; UF_CRM_* maydonini tanlang." : undefined}>
             <TextInput list="crm-field-options" value={draft.salesManagerField ?? ""} placeholder="Bo‘sh bo‘lsa avtomatik"
               onChange={(event) => setDraft({ ...draft, salesManagerField: event.target.value.trim() || null })} />
@@ -2449,7 +2461,14 @@ function DashboardApp({ session }: { session: AuthSession }) {
         {isSalesView(view) && view !== "stages" && activeSales && <SectionStatus state={activeSales} />}
         <ViewErrorBoundary onBack={() => setView(defaultView)}>
         {view === "dashboard" && dashboardSection.data && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{dashboardSection.data.leadCount} Leadlar</strong></div></div>{dashboardSection.data.leadCount === 0 && <EmptyCohortNotice />}<DashboardView section={dashboardSection.data} onManager={(manager) => { if (canManagers) { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); } }} /><TrendChart trend={dashboardSection.data.trend} /></>}
-        {view === "managers" && managersSection.data && <><div className="page-title"><div><p className="eyebrow">TEAM PERFORMANCE</p><h1>Menejerlar</h1><p>Lead, sifatsizlik, sales loss, sotuv soni va Opportunity kesimida.</p></div></div><section className="panel"><SectionHeader title="Menejerlar reytingi" subtitle="Lead va cohort konversiya — yaratilgan sana; davr sotuv — Oplata sanasi bo‘yicha" /><ManagerTable rows={managersSection.data.managers} onSelect={(manager) => { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); }} /></section></>}
+        {view === "managers" && managersSection.data && <><div className="page-title"><div><p className="eyebrow">TEAM PERFORMANCE</p><h1>Menejerlar</h1><p>Lead, sifatsizlik, sales loss, sotuv soni va Opportunity kesimida.</p></div></div>
+          <section className="dashboard-grid compact-kpis">
+            <div className="section-header"><div><h2>Sotuv atributsiyasi</h2><p>Faqat tasdiqlangan sotuv xodim hisobiga kiradi; qolgani ko‘rinadi, lekin hech kimga yozilmaydi</p></div></div>
+            <div><span>Tasdiqlangan sotuv</span><strong>{managersSection.data.attribution.certified}</strong><small className="card-note">{managersSection.data.attribution.certifiedRevenue.toLocaleString("uz-UZ")} — Sales Owner at Won yoki aniq tasdiq</small></div>
+            <div><span>Tekshiruv kerak</span><strong>{managersSection.data.attribution.reviewRequired}</strong><small className="card-note">{managersSection.data.attribution.reviewRevenue.toLocaleString("uz-UZ")} — dalil yetarli emas</small></div>
+            <div><span>Aniqlanmagan</span><strong>{managersSection.data.attribution.unknown}</strong><small className="card-note">{managersSection.data.attribution.unknownRevenue.toLocaleString("uz-UZ")} — sotuvchi dalili yo‘q</small></div>
+          </section>
+          <section className="panel"><SectionHeader title="Menejerlar reytingi" subtitle="Lead va cohort konversiya — yaratilgan sana; davr sotuv — Oplata sanasi bo‘yicha" /><ManagerTable rows={managersSection.data.managers} onSelect={(manager) => { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); }} /></section></>}
         {view === "managerDetail" && selectedManager && managerSection.data && <ManagerDetailView section={managerSection.data} currentStages={currentStageRecords} onBack={() => setView("managers")} />}
         {view === "leadFlow" && leadFlowSection.data && <>{leadFlowSection.data.flow.total === 0 && <EmptyCohortNotice />}<LeadFlowView flow={leadFlowSection.data.flow} /></>}
         {view === "quality" && qualitySection.data && <QualityView analytics={qualitySection.data.analytics} onManager={(managerId) => {
@@ -2523,6 +2542,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
         {view === "diagnostics" && <SectionStatus state={diagnostics} />}
         {view === "diagnostics" && diagnostics.data && <DiagnosticsView data={diagnostics.data} reconciliation={stageReconciliation} />}
         {view === "finance" && <FinanceView />}
+        {view === "sellerReview" && <SellerReviewScreen />}
         {view === "users" && <UsersScreen adapter={session.adapter} selfId={session.user.id} onSelfChanged={session.refresh} onSessionLost={session.sessionLost} />}
         {view === "settings" && settings && <SettingsView settings={settings} syncing={refreshing || sync.status === "running"} lastSyncAt={sync.lastSyncAt} onSave={saveSettings} onFullSync={saveAndFullSync} onDirtyChange={setSettingsDirty} />}
         </ViewErrorBoundary>
