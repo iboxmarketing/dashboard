@@ -12,6 +12,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
+import { defaultSettings } from "../lib/business-time";
 import { classifyBackfill, isWritable, summarizeBackfill } from "../lib/seller-backfill";
 import { OWNER_OVERRIDES } from "../lib/seller-overrides";
 import { normalizeSalesOwnerAtWonField } from "../lib/stable-seller-field";
@@ -32,7 +33,10 @@ function query<T>(sql: string): T[] {
 }
 
 const settingsRow = query<{ value: string }>("SELECT value FROM app_settings WHERE key = 'dashboard'")[0];
-const settings = (settingsRow ? JSON.parse(settingsRow.value) : {}) as Partial<DashboardSettings>;
+// The Worker reads settings through `getSettings()`, which merges the defaults —
+// so a stored row that predates the canonical field still runs with it.
+const stored = (settingsRow ? JSON.parse(settingsRow.value) : {}) as Partial<DashboardSettings>;
+const settings = { ...defaultSettings, ...stored } as DashboardSettings;
 const field = normalizeSalesOwnerAtWonField(settings.salesOwnerAtWonField);
 
 const records = query<{ payload: string }>("SELECT payload FROM analytics_records")
