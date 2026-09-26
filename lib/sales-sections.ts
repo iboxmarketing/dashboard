@@ -456,6 +456,9 @@ export const DEAL_ROW_FIELDS = [
   "salesManager", "salesManagerAttribution", "wonAt", "salesCycleHours", "opportunity", "currencyId",
   "lossReasonGroup", "lossReason", "source", "duplicateOfDealId", "processingAt", "processingSource",
   "processingBusinessMinutes", "slaStatus", "bitrixUrl",
+  // SLA evidence: when the Deal was distributed, which move stopped the clock,
+  // the working minutes between them and the calendar span beside it.
+  "slaStartAt", "slaStopStage", "slaBusinessMinutes", "slaElapsedMinutes",
   // Attribution audit trail: why this Deal counts, for whom, and on what
   // evidence — the questions an employee review has to be able to answer.
   "salesManagerId", "sellerCertification", "sellerEvidenceReason", "sellerOutsideRoster",

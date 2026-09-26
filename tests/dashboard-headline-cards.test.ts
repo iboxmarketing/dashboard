@@ -260,7 +260,7 @@ test("headline labels read as decisions, not raw metric names", () => {
   assert.equal(headlineCardLabel("classified_leads"), "Saralangan");
   assert.equal(headlineCardLabel("avg_check"), "Chek");
   assert.equal(headlineCardLabel("lead_to_sql"), "Funnel konversiyasi");
-  assert.equal(headlineCardLabel("avg_processing"), "Saralash tezligi");
+  assert.equal(headlineCardLabel("avg_processing"), "SLA — javob vaqti");
   // Everything else keeps its registry label.
   assert.equal(headlineCardLabel("leads"), "Leadlar");
   assert.equal(headlineCardLabel("sales_cycle"), "Savdo sikli");

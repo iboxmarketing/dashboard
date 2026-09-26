@@ -64,6 +64,7 @@ enter production KPI.
 | **Revenue** | sum of `OPPORTUNITY` over Period Sales, currency as Bitrix reports it (UZS). |
 | **Source** | the Bitrix `SOURCE_ID` label, and nothing else. Marketing Kanali (`UF_CRM_1784823646`) is a **separate dimension**, labelled "Marketing kanali" wherever it appears — never "Manba". |
 | **Stage workload** | Stage Control is a LIVE Bitrix snapshot of open Deals in the selected Sales funnel: deduplicated by Deal ID, with Not Relevant / closed-lost / payment stages excluded by stage semantics. It has no created-date bound, so **the date filter does not apply to it** — the page says so. |
+| **SLA — javob vaqti** | scheduled working minutes from entry into the distributed stage (`C3:NEW` РАСПРЕДЕЛЁННЫЕ СДЕЛКИ) to the **first** move out of it. `НЕТ ОТВЕТА`, `Первое касание` and `ОБРАБОТКА` all stop the clock. 10:00–18:00 Asia/Tashkent, Mon–Fri, holidays skipped; an off-hours response scores **0 minutes**, never negative. Team average = average over every completed Deal, never an average of seller averages; the median is shown beside it. Calls are never evidence. Time-to-qualification is a different measure and stays in the card's detail. |
 | **Deleted Deal lifecycle** | a Deal Bitrix no longer serves is marked `DELETED` by the refresh scope and leaves every current KPI and every scorecard. Its evidence is kept, never erased. |
 
 Core KPI totals are decided by these rules alone. Seller attribution can never

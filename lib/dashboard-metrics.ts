@@ -128,6 +128,8 @@ export function buildDashboardMetrics(cohortRecords: MetricRecord[], periodSales
   // Sotilmadi, and sits inside Saralanmagan because no verdict was reached.
   const preSqlClosed = eligible.filter(isPreSqlClosed);
   const productFit = eligible.filter(isProductFitOutcome);
+  // Completed SLA population: the Deal was distributed AND moved on.
+  const slaCompleted = eligible.filter((row) => typeof row.slaBusinessMinutes === "number");
   const unclassified = eligible.filter(isUnclassifiedLead);
   const sla = summarizeSla(eligible);
   // Duplicates are reported over both populations. The historical metric counts
@@ -213,6 +215,17 @@ export function buildDashboardMetrics(cohortRecords: MetricRecord[], periodSales
     timing: {
       avg_processing: average(eligible.map((row) => row.processingBusinessMinutes)),
       sales_cycle: average(periodSales.map((row) => row.salesCycleHours)),
+      /**
+       * Employee SLA in scheduled working minutes, averaged over EVERY completed
+       * Deal in this population — never an average of per-seller averages, which
+       * would weight a seller with three Deals like one with thirty. A manager row
+       * is this same function over that manager's Deals.
+       */
+      sla_avg: average(slaCompleted.map((row) => row.slaBusinessMinutes ?? null)),
+      sla_median: median(slaCompleted.map((row) => row.slaBusinessMinutes ?? null)),
+      sla_completed: slaCompleted.length,
+      /** Calendar span over the same Deals — a detail beside the SLA, never the SLA. */
+      sla_elapsed_avg: average(slaCompleted.map((row) => row.slaElapsedMinutes ?? null)),
     },
   };
 }

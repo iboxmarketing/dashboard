@@ -444,11 +444,40 @@ inventory.
 
 ## 6. Processing and SLA
 
+### 6.1 Employee SLA — distribution to first move (owner rule, 2026-09-26)
+
+The SLA answers one question: **how long did the lead wait for a human after it
+was handed to Sales?**
+
+| Element | Rule |
+| --- | --- |
+| Start | Entry into the distributed stage (`РАСПРЕДЕЛЁННЫЕ СДЕЛКИ`, `C3:NEW`). Configurable per funnel in Settings; otherwise the funnel's first stage by Bitrix SORT. |
+| Stop | The **first** transition to any other stage. `НЕТ ОТВЕТА`, `Первое касание` and `ОБРАБОТКА` all stop it equally — the seller acted. |
+| Re-entry | A second entry into the distributed stage neither restarts nor stops the clock; the first entry is the start. |
+| Unit | Scheduled working minutes only: 10:00–18:00 `Asia/Tashkent`, Mon–Fri, holidays and disabled days excluded. The clock pauses at 18:00 and resumes at 10:00 the next working day. |
+| Off-hours response | A seller who answers outside working hours (evening, Sunday, a holiday) scores **0 minutes**. Never a negative value, and never "wait for Monday and charge the gap". |
+| Still in distribution | No stop event yet: `PENDING` inside the target, `OVERDUE_UNPROCESSED` past it. No duration is invented. |
+| No distribution evidence | `UNKNOWN_EVIDENCE`, excluded from the rate. Qualification speed is **not** substituted — blending two measures into one rate is the defect this replaced. |
+| Calls | Never evidence, in either direction. Not every seller uses a corporate phone. |
+
+Canonical function: `businessSlaMinutes(startAt, stopAt, settings)`
+(`lib/business-time.ts`). Every SLA figure in the product comes from it.
+
+**Aggregation.** Team average SLA is the average over **every completed Deal**
+value, never the average of per-seller averages — a seller with three Deals must
+not weigh as much as one with thirty. A seller's average is the same function
+over that seller's own Deals. The median is reported beside the average because
+a handful of multi-day waits pull the mean. Calendar elapsed time is a detail
+shown next to the SLA; it is never the SLA and never the employee measure.
+
+### 6.2 Qualification speed (separate measure)
+
 - Processing event: the earliest entry into a configured SQL/Обработка or Not Relevant stage — the CRM-recorded result of the first real qualification conversation.
 - Calls never stop the processing timer. Not every seller has a Bitrix-connected phone, so call coverage is uneven and would bias manager and SLA comparisons.
 - Intermediate operational stages (No Answer, First Attempt) do not stop the timer.
 - Without stage history the current stage's `MOVED_TIME` is used only while that stage is itself SQL or Not Relevant; for a later stage the processing time is reported as unknown and never fabricated.
 - Working-time calculations use the configured weekly schedule, holidays and `Asia/Tashkent`.
+- Time-to-qualification is **not** the SLA: it measures the qualification verdict, not the response, and stays in the SLA card's detail line and the Deal report.
 - `NO_PROCESSING` is separate from late processing.
 - Stage limits are configured independently for each stage, with a default fallback.
 

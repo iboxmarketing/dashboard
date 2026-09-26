@@ -45,6 +45,7 @@ export function normalizeSettings(raw: Partial<DashboardSettings> | null | undef
     productFitStageIds: source.productFitStageIds === undefined
       ? defaultSettings.productFitStageIds
       : stageIdList(source.productFitStageIds),
+    distributionStageIds: stageIdList(source.distributionStageIds),
     routingReasonPatterns: strings(source.routingReasonPatterns),
     failureReasonFieldByPipeline: record(source.failureReasonFieldByPipeline),
     stageLimits: Object.fromEntries(

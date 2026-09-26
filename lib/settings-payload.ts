@@ -133,6 +133,7 @@ export function mergeSettingsPayload(current: DashboardSettings, raw: unknown): 
     paymentStageIds: has(payload, "paymentStageIds") && Array.isArray(payload.paymentStageIds) ? stageIdList(payload.paymentStageIds) : base.paymentStageIds,
     closedLostStageIds: has(payload, "closedLostStageIds") && Array.isArray(payload.closedLostStageIds) ? stageIdList(payload.closedLostStageIds) : base.closedLostStageIds,
     productFitStageIds: has(payload, "productFitStageIds") && Array.isArray(payload.productFitStageIds) ? stageIdList(payload.productFitStageIds) : base.productFitStageIds,
+    distributionStageIds: has(payload, "distributionStageIds") && Array.isArray(payload.distributionStageIds) ? stageIdList(payload.distributionStageIds) : base.distributionStageIds,
 
     routingReasonPatterns: has(payload, "routingReasonPatterns") && Array.isArray(payload.routingReasonPatterns)
       ? [...new Set((payload.routingReasonPatterns as unknown[]).map(String).map((value) => value.trim()).filter(Boolean))].slice(0, 30)

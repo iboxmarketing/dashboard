@@ -523,9 +523,16 @@ function DashboardView({ section, onManager }: { section: DashboardSection; onMa
       value: `${metrics.rates.lead_to_sql}%`,
       detail: <>Lead → SQL<small className="card-note">Lead → Sotuv {metrics.rates.lead_to_sale}% · SQL → Sotuv {metrics.rates.sql_to_sale}%</small></>,
       tone: "green", icon: Check },
+    // One card for the response-time group: the employee SLA in scheduled working
+    // minutes is the headline, the median and the on-time rate sit beside it, and
+    // the calendar span plus the time-to-qualification stay as details. No extra
+    // cards — the SLA metric is merged into this anchor (lib/dashboard-cards.ts).
     avg_processing: {
-      value: fmtMinutes(metrics.timing.avg_processing),
-      detail: <>SLA {metrics.rates.sla}%<small className="card-note">{metrics.sla.onTime} / {metrics.sla.denominator} · muddati aniqlangan lead</small></>,
+      value: fmtMinutes(metrics.timing.sla_avg),
+      detail: <>Median {fmtMinutes(metrics.timing.sla_median)} · SLA {metrics.rates.sla}%
+        <small className="card-note" title="Taqsimlangandan birinchi harakatgacha, faqat ish vaqti (10:00–18:00). Kalendar vaqti va saralash vaqti alohida.">
+          {metrics.sla.onTime} / {metrics.sla.denominator} muddatida · kalendar {fmtMinutes(metrics.timing.sla_elapsed_avg)} · saralash {fmtMinutes(metrics.timing.avg_processing)}
+        </small></>,
       tone: "indigo", icon: Clock3 },
     sales_cycle: {
       value: fmtHours(metrics.timing.sales_cycle),
@@ -702,8 +709,8 @@ function ManagerDetailView({ section, currentStages, onBack }: { section: Manage
         detail={<>{money(metrics.money.revenue)}<small className="card-note">Sotuv sanasi bo‘yicha</small></>} />
       <KpiCard label="Aktiv leadlar" icon={Layers3} tone="violet" value={String(metrics.counts.active_cohort)}
         detail="Tanlangan davrda kelib, hali yopilmagan" />
-      <KpiCard label="Saralash tezligi" icon={Clock3} tone="indigo" value={fmtMinutes(metrics.timing.avg_processing)}
-        detail={<>SLA {metrics.rates.sla}% · {metrics.sla.onTime} / {metrics.sla.denominator}<small className="card-note">{metrics.sla.overdue} ta ishlov muddati o‘tgan · {benchmark(metrics.timing.avg_processing, medianProcessing, "time", false)}{medianSla === null ? "" : ` · jamoa SLA medianasi ${Math.round(medianSla)}%`}</small></>} />
+      <KpiCard label="SLA — javob vaqti" icon={Clock3} tone="indigo" value={fmtMinutes(metrics.timing.sla_avg)}
+        detail={<>Median {fmtMinutes(metrics.timing.sla_median)} · SLA {metrics.rates.sla}% · {metrics.sla.onTime} / {metrics.sla.denominator}<small className="card-note">{metrics.sla.overdue} ta ishlov muddati o‘tgan · saralash {fmtMinutes(metrics.timing.avg_processing)} · {benchmark(metrics.timing.avg_processing, medianProcessing, "time", false)}{medianSla === null ? "" : ` · jamoa SLA medianasi ${Math.round(medianSla)}%`}</small></>} />
       <KpiCard label="Savdo sikli" icon={TimerReset} tone="violet" value={fmtHours(metrics.timing.sales_cycle)}
         detail={<>Lead kelganidan sotuvgacha<small className="card-note">{medianCycle === null ? "" : `Jamoa medianasi ${fmtHours(medianCycle)}`}</small></>} />
     </section>
@@ -848,21 +855,21 @@ function LeadFlowView({ flow }: { flow: LeadFlow }) {
 
 function DealsTable({ records }: { records: DealRow[] }) {
   const [page, setPage] = useState(1);
-  const [sort, setSort] = useState<"createdAt" | "processingBusinessMinutes">("createdAt");
+  const [sort, setSort] = useState<"createdAt" | "slaBusinessMinutes">("createdAt");
   const perPage = 20;
-  const sorted = useMemo(() => [...records].sort((a, b) => sort === "createdAt" ? b.createdAt.localeCompare(a.createdAt) : Number(a.processingBusinessMinutes ?? Infinity) - Number(b.processingBusinessMinutes ?? Infinity)), [records, sort]);
+  const sorted = useMemo(() => [...records].sort((a, b) => sort === "createdAt" ? b.createdAt.localeCompare(a.createdAt) : Number(a.slaBusinessMinutes ?? Infinity) - Number(b.slaBusinessMinutes ?? Infinity)), [records, sort]);
   const pages = Math.max(1, Math.ceil(sorted.length / perPage));
   const safePage = Math.min(page, pages);
   const rows = sorted.slice((safePage - 1) * perPage, safePage * perPage);
   function exportCsv() {
-    const headers = ["Deal ID", "Deal nomi", "Yaratilgan vaqt", "Deal mas’uli", "Sales pipeline", "Current pipeline", "Current stage", "Stage age hours", "Stage limit hours", "Sales status", "SQL at", "Sales manager", "Seller attribution", "Won at", "Sales cycle hours", "Opportunity", "Currency", "Failure group", "Failure reason", "Source (SOURCE_ID)", "Marketing kanali", "Duplicate of", "First processing at", "Processing source", "Processing business minutes", "SLA status"];
+    const headers = ["Deal ID", "Deal nomi", "Yaratilgan vaqt", "Deal mas’uli", "Sales pipeline", "Current pipeline", "Current stage", "Stage age hours", "Stage limit hours", "Sales status", "SQL at", "Sales manager", "Seller attribution", "Won at", "Sales cycle hours", "Opportunity", "Currency", "Failure group", "Failure reason", "Source (SOURCE_ID)", "Marketing kanali", "Duplicate of", "First processing at", "Processing source", "Processing business minutes", "SLA status", "Taqsimlangan vaqt", "SLA to‘xtagan stage", "SLA ish daqiqasi", "SLA kalendar daqiqasi"];
     const quote = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
-    const lines: unknown[][] = [headers, ...sorted.map((row) => [row.dealId, row.title, row.createdAt, row.assignedManager, row.originPipeline, row.pipeline, row.stage, row.stageAgeHours, row.stageLimitHours, row.salesStatus, row.qualifiedAt, row.salesManager, row.salesManagerAttribution, row.wonAt, row.salesCycleHours, row.opportunity, row.currencyId, row.lossReasonGroup, row.lossReason, row.source, row.marketingChannel ?? "", row.duplicateOfDealId, row.processingAt, row.processingSource, row.processingBusinessMinutes, row.slaStatus])];
+    const lines: unknown[][] = [headers, ...sorted.map((row) => [row.dealId, row.title, row.createdAt, row.assignedManager, row.originPipeline, row.pipeline, row.stage, row.stageAgeHours, row.stageLimitHours, row.salesStatus, row.qualifiedAt, row.salesManager, row.salesManagerAttribution, row.wonAt, row.salesCycleHours, row.opportunity, row.currencyId, row.lossReasonGroup, row.lossReason, row.source, row.marketingChannel ?? "", row.duplicateOfDealId, row.processingAt, row.processingSource, row.processingBusinessMinutes, row.slaStatus, row.slaStartAt, row.slaStopStage, row.slaBusinessMinutes, row.slaElapsedMinutes])];
     const blob = new Blob(["\ufeff", lines.map((line) => line.map(quote).join(",")).join("\n")], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob); const link = document.createElement("a");
     link.href = url; link.download = `bitrix-deals-${new Date().toISOString().slice(0, 10)}.csv`; link.click(); URL.revokeObjectURL(url);
   }
-  return <section className="panel deals-panel"><SectionHeader title="Detailed Deal report" subtitle={`${records.length} ta Deal`} action={<div className="table-actions"><Select label="Saralash" value={sort} onChange={(value) => setSort(value as typeof sort)}><option value="createdAt">Yangi Deal</option><option value="processingBusinessMinutes">Eng tez obrabotka</option></Select><button className="button small secondary" onClick={exportCsv}><Download size={16} />CSV export</button></div>} />
+  return <section className="panel deals-panel"><SectionHeader title="Detailed Deal report" subtitle={`${records.length} ta Deal`} action={<div className="table-actions"><Select label="Saralash" value={sort} onChange={(value) => setSort(value as typeof sort)}><option value="createdAt">Yangi Deal</option><option value="slaBusinessMinutes">Eng tez javob (SLA)</option></Select><button className="button small secondary" onClick={exportCsv}><Download size={16} />CSV export</button></div>} />
     <div className="table-wrap"><table className="data-table deal-table"><thead><tr><th>Deal</th><th>Sotuv holati</th><th>Mas’ul / sotuvchi</th><th>Pipeline / Stage</th><th>Stage yoshi</th><th title="Bitrix SOURCE_ID">Manba (SOURCE_ID)</th><th>Birinchi ishlov</th><th>SLA</th></tr></thead><tbody>{rows.map((row) => { const outcome = dealOutcomeLabel(row); return <tr key={row.dealId}>
       <td><div className="deal-name"><strong>{row.title}</strong>{row.bitrixUrl ? <a href={row.bitrixUrl} target="_blank" rel="noreferrer">#{row.dealId}<ExternalLink size={12} /></a> : <small>#{row.dealId}</small>}</div></td>
       <td><span className={`pill ${outcome.tone}`}>{outcome.label}</span><small>{row.wonAt ? fmtDate(row.wonAt) : fmtDate(row.createdAt)}{row.duplicateOfDealId ? ` · duplicate #${row.duplicateOfDealId}` : ""}</small></td>
@@ -873,7 +880,11 @@ function DealsTable({ records }: { records: DealRow[] }) {
         {row.marketingChannel && <small className="channel-note">Marketing kanali: {row.marketingChannel}</small>}
         <small>{row.lossReasonGroup !== "NONE" ? `${row.lossReasonGroup} · ${row.lossReason}` : row.lossReason || "—"}</small></td>
       <td><span className="source-pill">{row.processingSource === "QUALIFICATION_STAGE" ? "✅ Ishlov" : row.processingSource === "NO_PROCESSING_EVIDENCE" ? "❔ Noma’lum" : "⚠️ Yo‘q"}</span><small>{fmtMinutes(row.processingBusinessMinutes)}</small></td>
-      <td><span className={`pill ${SLA_TONES[row.slaStatus]}`}>{SLA_LABELS[row.slaStatus]}</span></td>
+      <td><span className={`pill ${SLA_TONES[row.slaStatus]}`}>{SLA_LABELS[row.slaStatus]}</span>
+        {/* The evidence behind the verdict: working minutes from distribution to the
+            first move out of it, with the calendar span shown as a detail only. */}
+        <small title={row.slaStartAt ? `Taqsimlangan: ${fmtDate(row.slaStartAt)}${row.slaElapsedMinutes === null || row.slaElapsedMinutes === undefined ? "" : ` · kalendar ${fmtMinutes(row.slaElapsedMinutes ?? null)}`}` : "Taqsimlash dalili yo‘q"}>
+          {fmtMinutes(row.slaBusinessMinutes ?? null)}{row.slaStopStage ? ` · ${row.slaStopStage}` : ""}</small></td>
     </tr>; })}</tbody></table>{!rows.length && <div className="empty-table">Tanlangan filtr bo‘yicha Deal topilmadi.</div>}</div>
     <div className="pagination"><span>{safePage} / {pages} sahifa</span><div><button disabled={safePage <= 1} onClick={() => setPage((value) => value - 1)}>Oldingi</button><button disabled={safePage >= pages} onClick={() => setPage((value) => value + 1)}>Keyingi</button></div></div>
   </section>;
@@ -1251,8 +1262,11 @@ function DiagnosticsView({ data, reconciliation }: { data: DiagnosticsData; reco
   </>;
 }
 
-type StageSemanticKey = "qualifiedStageIds" | "lowQualityStageIds" | "paymentStageIds" | "closedLostStageIds" | "productFitStageIds";
+type StageSemanticKey = "qualifiedStageIds" | "lowQualityStageIds" | "paymentStageIds" | "closedLostStageIds" | "productFitStageIds" | "distributionStageIds";
 const stageSemanticFields: { key: StageSemanticKey; title: string; hint: string }[] = [
+  // Left empty, the SLA starts at the funnel's first stage by Bitrix SORT, which
+  // is what "distributed" means in every Bitrix Sales funnel.
+  { key: "distributionStageIds", title: "Taqsimlangan bosqichi (SLA boshlanishi)", hint: "РАСПРЕДЕЛЁННЫЕ СДЕЛКИ — SLA shu bosqichga kirgan paytdan boshlanadi va bu bosqichdan birinchi chiqishda to‘xtaydi. Bo‘sh qoldirilsa funnelning SORT bo‘yicha birinchi bosqichi olinadi" },
   { key: "qualifiedStageIds", title: "SQL bosqichi", hint: "Obrabotka — sifatli deb qabul qilingan lead" },
   { key: "productFitStageIds", title: "Programma mos emas bosqichi", hint: "Mijoz real, lekin programma mos emas. SQL, Not Relevant va Sotilmadi'ga kirmaydi; Leadlarda va Saralanmaganda qoladi" },
   { key: "lowQualityStageIds", title: "Not Relevant bosqichi", hint: "Marketing sifatsizligi; Sotilmadi’ga qo‘shilmaydi" },

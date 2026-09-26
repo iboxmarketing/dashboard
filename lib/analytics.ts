@@ -1,8 +1,8 @@
-import { calculateBusinessMinutes, getSlaStart, isInsideWorkingTime } from "./business-time";
+import { businessSlaMinutes, calculateBusinessMinutes, elapsedCalendarMinutes, getSlaStart, isInsideWorkingTime } from "./business-time";
 import { OWNER_OVERRIDES, type OwnerSellerOverride } from "./seller-overrides";
 import { resolveSlaState } from "./sla";
 import { classifyLossReasonGroup, MISSING_LOSS_REASON, classifySalesStatus, fieldDisplayValue, isLowQualityStage, isPaymentStage, isSqlOrDownstreamStage } from "./sales-logic";
-import { sqlThresholdsByCategory, type StageMeta, type StageSemantics } from "./stage-config";
+import { distributionStageId, sqlThresholdsByCategory, type StageMeta, type StageSemantics } from "./stage-config";
 import { canonicalDealFieldKey } from "./crm-fields";
 import { resolveDealSource } from "./source-authority";
 import { certifySeller } from "./seller-evidence";
@@ -90,7 +90,7 @@ import type { AnalyticsRecord, DashboardSettings, ProcessingSource, SalesManager
  *      defect that made one such Deal count as SQL + Sotilmadi. A version 14
  *      record reports the old classification for those Deals until rebuilt.
  */
-export const ANALYTICS_VERSION = 15;
+export const ANALYTICS_VERSION = 16;
 
 export type RawDeal = Record<string, unknown>;
 export type RawActivity = Record<string, unknown>;
@@ -272,6 +272,27 @@ export function buildAnalyticsRecords(input: {
     // the diagnostic that reads exactly this gap.
     const effectiveQualifiedEvent = qualified ? qualifiedEvent ?? null : null;
     const qualifiedAt = effectiveQualifiedEvent?.enteredAt ?? null;
+
+    // ---- Employee SLA evidence: distribution -> first move out of it ----------
+    // The clock starts when the Deal enters the distributed stage and stops on the
+    // FIRST transition to any other stage — Нет ответа and Первое касание stop it
+    // exactly as Обработка does. Calls are not evidence: not every seller has a
+    // Bitrix-connected phone (owner rule, 2026-09-26).
+    const distributionStage = distributionStageId(originCategoryId, input.stageMeta, stageSemantics);
+    const distributionEntry = distributionStage
+      ? histories.find((row) => string(row.STAGE_ID) === distributionStage && Boolean(timestamp(row.CREATED_TIME)))
+      : undefined;
+    const slaStartAt = distributionEntry ? timestamp(distributionEntry.CREATED_TIME) : null;
+    const slaStopEntry = slaStartAt
+      ? histories.find((row) => {
+        const at = timestamp(row.CREATED_TIME);
+        return Boolean(at) && (at as Date) > slaStartAt && string(row.STAGE_ID) !== distributionStage;
+      })
+      : undefined;
+    const slaStopAt = slaStopEntry ? timestamp(slaStopEntry.CREATED_TIME) : null;
+    const slaStopStageId = slaStopEntry ? string(slaStopEntry.STAGE_ID) : null;
+    const slaBusinessMinutes = businessSlaMinutes(slaStartAt, slaStopAt, input.settings);
+    const slaElapsedMinutes = elapsedCalendarMinutes(slaStartAt, slaStopAt);
 
     const assignedManagerId = string(deal.ASSIGNED_BY_ID);
     const stageChange = firstStageChange(deal, histories); const slaStart = getSlaStart(created, input.settings);
@@ -471,7 +492,14 @@ export function buildAnalyticsRecords(input: {
       stageChangedBeforeCall: false, stageAttributionInferred: Boolean(stageChange), processingSource, processingAt: processingAt?.toISOString() ?? null, processingBusinessMinutes: processingMinutes,
       // Point-in-time snapshot; the dashboard re-resolves it live so a lead can
       // cross its deadline without needing another sync.
-      slaStatus: resolveSlaState({ processingBusinessMinutes: processingMinutes, processingSource, slaStart: slaStart.toISOString() }, input.settings),
+      slaStartAt: slaStartAt?.toISOString() ?? null,
+      slaStopAt: slaStopAt?.toISOString() ?? null,
+      slaStopStageId, slaStopStage: slaStopStageId ? stageName(slaStopStageId, input.stages) : null,
+      slaBusinessMinutes, slaElapsedMinutes,
+      slaStatus: resolveSlaState({
+        slaStartAt: slaStartAt?.toISOString() ?? null, slaBusinessMinutes,
+        processingBusinessMinutes: processingMinutes, processingSource, slaStart: slaStart.toISOString(),
+      }, input.settings),
       outgoingCallCount: 0, answeredCallCount: 0, unansweredCallCount: 0, latestCallOutcome: "Noma’lum",
       dataUnavailable: !input.stageHistoryAvailable && !processingAt,
       bitrixUrl: input.domain ? `https://${input.domain}/crm/deal/details/${encodeURIComponent(dealId)}/` : null,

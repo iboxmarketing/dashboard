@@ -19,6 +19,8 @@ function build(o: {
   stageId: string; stageName?: string; movedTime?: string;
   history?: { stageId: string; clock: string }[]; calls?: string[];
   config?: Partial<DashboardSettings>; stages?: [string, string][];
+  /** Stage SORT/category metadata — supplied when a test exercises the SLA clock. */
+  stageMeta?: [string, { sort: number; categoryId: string }][];
 }) {
   return buildAnalyticsRecords({
     deals: [{ ID: "1", TITLE: "T", DATE_CREATE: CREATED, ASSIGNED_BY_ID: "7", CATEGORY_ID: MAIN, STAGE_ID: o.stageId, ...(o.movedTime ? { MOVED_TIME: at(o.movedTime) } : {}) }],
@@ -29,6 +31,7 @@ function build(o: {
     users: new Map([["7", "Aziz"], ["5", "Call operator"]]), pipelines: new Map([[MAIN, "IBOX Sales"]]),
     stages: new Map<string, string>([[SQL_ID, "Обработка"], [NR_ID, "Not Relevant"], [NOANSWER_ID, "No Answer"], [MEETING_ID, "Uchrashuv"], ...(o.stages ?? [])]),
     sources: new Map(), domain: null, activitiesAvailable: true, stageHistoryAvailable: true,
+    ...(o.stageMeta ? { stageMeta: new Map(o.stageMeta) } : {}),
   })[0];
 }
 const minutes = (clock: string) => calculateBusinessMinutes(getSlaStart(new Date(CREATED), defaultSettings), new Date(at(clock)), defaultSettings);
@@ -109,12 +112,21 @@ test("10: ish vaqti, bayram va Asia/Tashkent qoidalari saqlanadi", () => {
   assert.equal(holiday.processingBusinessMinutes, 0, "bayram kuni ish minutlari hisoblanmaydi");
 });
 
-test("11: SLA endi SQL bosqichiga ko‘ra hisoblanadi", () => {
-  // Call at minute 2, SQL at minute 15, SLA target 10.
-  const row = build({ stageId: SQL_ID, calls: ["10:02"], history: [{ stageId: "NEW", clock: "10:00" }, { stageId: SQL_ID, clock: "10:15" }] });
-  assert.equal(row.processingBusinessMinutes, 15);
+test("11: SLA taqsimlashdan birinchi harakatgacha o‘lchanadi, qo‘ng‘iroq esa uni to‘xtatmaydi", () => {
+  // Distributed 10:00, call at 10:02, first move out at 10:15; SLA target 10.
+  const row = build({
+    stageId: SQL_ID, calls: ["10:02"],
+    history: [{ stageId: "NEW", clock: "10:00" }, { stageId: SQL_ID, clock: "10:15" }],
+    stageMeta: [["NEW", { sort: 10, categoryId: MAIN }], [SQL_ID, { sort: 50, categoryId: MAIN }]],
+  });
+  assert.equal(row.processingBusinessMinutes, 15, "saralash vaqti alohida o‘lcham bo‘lib qoladi");
+  assert.equal(row.slaBusinessMinutes, 15, "taqsimlashdan Обработка’gacha 15 ish daqiqasi");
   assert.equal(row.slaStatus, "LATE", "eski call-priority mantiqi ON_TIME ko‘rsatar edi");
   assert.equal(minutes("10:02"), 2, "qo‘ng‘iroq vaqti hali ham hisoblanadi, lekin SLA’ni to‘xtatmaydi");
+  // Without distribution evidence the Deal is unmeasurable, never blamed.
+  const noEvidence = build({ stageId: SQL_ID, history: [{ stageId: SQL_ID, clock: "10:15" }] });
+  assert.equal(noEvidence.slaBusinessMinutes, null);
+  assert.equal(noEvidence.slaStatus, "UNKNOWN_EVIDENCE");
 });
 
 test("12: qo‘ng‘iroq endi sotuvchi atributsiyasiga ta’sir qilmaydi", () => {

@@ -93,12 +93,19 @@ test("10: qo‘ng‘iroq SLA’ga ta’sir qilmaydi (Sprint 10 qoidasi)", () => 
   const record = buildAnalyticsRecords({
     deals: [{ ID: "1", TITLE: "T", DATE_CREATE: at("10:00"), ASSIGNED_BY_ID: "7", CATEGORY_ID: "3", STAGE_ID: "UC_SQL" }],
     activities: [{ ID: "9", OWNER_ID: "1", OWNER_TYPE_ID: "2", BINDINGS: [{ OWNER_ID: "1", OWNER_TYPE_ID: "2" }], TYPE_ID: "2", PROVIDER_ID: "VOXIMPLANT_CALL", DIRECTION: "2", START_TIME: at("10:02"), CREATED: at("10:02"), RESPONSIBLE_ID: "5" }],
-    callStats: [], stageHistories: [{ OWNER_ID: "1", CATEGORY_ID: "3", STAGE_ID: "UC_SQL", CREATED_TIME: at("10:15") }],
+    callStats: [], stageHistories: [
+      { OWNER_ID: "1", CATEGORY_ID: "3", STAGE_ID: "C3:NEW", CREATED_TIME: at("10:00") },
+      { OWNER_ID: "1", CATEGORY_ID: "3", STAGE_ID: "UC_SQL", CREATED_TIME: at("10:15") },
+    ],
     providerRules: {}, settings: SETTINGS, users: new Map(), pipelines: new Map([["3", "IBOX Sales"]]),
-    stages: new Map([["UC_SQL", "Обработка"]]), sources: new Map(), domain: null,
+    stages: new Map([["UC_SQL", "Обработка"], ["C3:NEW", "РАСПРЕДЕЛЁННЫЕ СДЕЛКИ"]]), sources: new Map(), domain: null,
+    stageMeta: new Map([["C3:NEW", { sort: 10, categoryId: "3" }], ["UC_SQL", { sort: 50, categoryId: "3" }]]),
     activitiesAvailable: true, stageHistoryAvailable: true,
   })[0];
   assert.equal(record.processingBusinessMinutes, 15);
+  // The clock runs from distribution to the first move out of it; the 10:02 call
+  // is not evidence of either end.
+  assert.equal(record.slaBusinessMinutes, 15);
   assert.equal(record.slaStatus, "LATE");
 });
 

@@ -33,6 +33,8 @@ export type DashboardSettings = {
   closedLostStageIds: string[];
   /** Stages whose closure is a product-fit outcome — see StageSemantics. */
   productFitStageIds: string[];
+  /** Where the SLA clock starts; empty means the funnel's first stage — see StageSemantics. */
+  distributionStageIds: string[];
   routingReasonPatterns: string[];
   /**
    * Approved Sales staff, for validation only: an attribution naming somebody
@@ -301,6 +303,19 @@ export type AnalyticsRecord = {
   sellerCertification?: "OWNER_CONFIRMED" | "CERTIFIED" | "REVIEW_REQUIRED" | "UNKNOWN";
   sellerEvidenceReason?: string;
   sellerOutsideRoster?: boolean;
+  /**
+   * Employee SLA evidence: when the Deal was distributed, when a seller first
+   * moved it out of that stage, and the scheduled working minutes between them
+   * (lib/business-time.ts businessSlaMinutes). `slaElapsedMinutes` is the calendar
+   * span, reported beside the SLA and never as it. All null while the Deal has not
+   * been moved yet — a pending SLA is never a completed duration.
+   */
+  slaStartAt?: string | null;
+  slaStopAt?: string | null;
+  slaStopStageId?: string | null;
+  slaStopStage?: string | null;
+  slaBusinessMinutes?: number | null;
+  slaElapsedMinutes?: number | null;
   /** Ordinary Sales loss ownership, under the same evidence rules. */
   lostOwnerId?: string | null;
   lostOwnerName?: string | null;

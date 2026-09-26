@@ -14,6 +14,13 @@ export type StageSemantics = {
   closedLostStageIds?: string[];
   qualifiedStageIds?: string[];
   /**
+   * The stage a Deal lands in when it is distributed to a seller — "РАСПРЕДЕЛЁННЫЕ
+   * СДЕЛКИ" on production. The SLA clock starts when a Deal enters it and stops on
+   * the first move out of it. Left empty, the funnel's own first stage (lowest
+   * Bitrix SORT) is used, so a new funnel needs no configuration.
+   */
+  distributionStageIds?: string[];
+  /**
    * Stages whose closure means "the client is real, our programme does not fit"
    * — neither a marketing-quality rejection nor a seller's failure to close
    * (owner decision, 2026-09-24). Configured per stage id only: a product-fit
@@ -53,7 +60,32 @@ export const STAGE_SEMANTIC_GROUPS = [
  */
 export const OPTIONAL_STAGE_SEMANTIC_GROUPS = [
   { key: "productFitStageIds", label: "Programma mos emas" },
+  { key: "distributionStageIds", label: "Taqsimlangan (SLA boshlanishi)" },
 ] as const;
+
+/**
+ * The stage where the SLA clock starts for one funnel.
+ *
+ * Configuration wins; otherwise it is the funnel's first stage by Bitrix SORT,
+ * which is what "distributed" means in every Bitrix Sales funnel. Never a name
+ * match: the label is editable, the id and the SORT are not.
+ */
+export function distributionStageId(
+  categoryId: string,
+  stageMeta: Map<string, StageMeta> | undefined,
+  config: StageSemantics = {},
+) {
+  const configured = stageIdList(config.distributionStageIds)
+    .find((stageId) => !stageMeta || (stageMeta.get(stageId)?.categoryId ?? categoryId) === categoryId);
+  if (configured) return configured;
+  if (!stageMeta) return "";
+  let best = ""; let bestSort = Number.POSITIVE_INFINITY;
+  for (const [stageId, meta] of stageMeta) {
+    if (meta.categoryId !== categoryId) continue;
+    if (meta.sort < bestSort) { best = stageId; bestSort = meta.sort; }
+  }
+  return best;
+}
 
 /**
  * Stage ids configured into more than one semantic group. Classification still

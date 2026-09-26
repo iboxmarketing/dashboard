@@ -18,11 +18,16 @@ treats anything below the current version as stale and prompts for a rebuild.
 | Version | Semantics |
 | --- | --- |
 | ≤ 3 | pre-Sprint-10: call-priority first processing |
-| 4 | Sprint 10/11: qualification-based processing, strict SLA |
-| **5 (current)** | Sprint 15/16: `SOURCE_ID` source, per-funnel failure reason, downstream-stage qualification, no call-derived attribution |
+| 4 | qualification-based processing, strict SLA |
+| 5 | `SOURCE_ID` source, per-funnel failure reason, downstream-stage qualification, no call-derived attribution |
+| 12 | certified seller attribution |
+| 13 | Sales Owner at Won read from Bitrix |
+| 14 | funnel ownership by Deal outcome |
+| 15 | `PRODUCT_FIT` outcome; a Bitrix `SEMANTICS=F` stage is never SQL evidence |
+| **16 (current)** | employee SLA measured from the distributed stage to the first move out of it, in scheduled working minutes |
 
-A record already written as version 4 is **not** current under Sprint 15/16 and
-must be rebuilt by the pending full sync.
+Any record below the current version is stale and must be rebuilt by a full
+sync; the single source of truth is `ANALYTICS_VERSION` in `lib/analytics.ts`.
 
 ## Populations
 
@@ -168,8 +173,11 @@ with no trustworthy `wonAt` counts in Cohort sotuv and is invisible to every
 
 | Metric | Definition |
 | --- | --- |
-| Birinchi ishlov vaqti | Business minutes from `slaStart` to the earliest entry into a SQL-or-downstream stage **or** the Not Relevant stage. |
-| SLA % | `ON_TIME / (ON_TIME + LATE + OVERDUE_UNPROCESSED)` |
+| **SLA — javob vaqti** (`timing.sla_avg`) | Average scheduled working minutes from entry into the distributed stage to the **first** move out of it, over every completed Deal in the population. Never an average of per-seller averages. |
+| **Median SLA** (`timing.sla_median`) | Median of the same per-Deal values; shown beside the average. |
+| Kalendar elapsed (`timing.sla_elapsed_avg`) | Average wall-clock minutes over the same Deals — a detail, never the SLA. |
+| SLA % | `ON_TIME / (ON_TIME + LATE + OVERDUE_UNPROCESSED)`, where a completed SLA is `ON_TIME` when `slaBusinessMinutes ≤ slaMinutes`. |
+| Birinchi ishlov vaqti (`timing.avg_processing`) | Business minutes from `slaStart` to the earliest entry into a SQL-or-downstream stage **or** the Not Relevant stage — qualification speed, a separate measure from the SLA. |
 
 Calls never stop the timer: call coverage is uneven across sellers, so it would
 bias every comparison. Intermediate stages (No Answer, First Attempt) do not stop
@@ -177,10 +185,12 @@ it either. Without stage history, the current stage's `MOVED_TIME` is used only
 while that stage is itself a qualification outcome; for a later stage the time is
 reported unknown and never fabricated.
 
-SLA states: `ON_TIME` (≤ target), `LATE` (> target), `PENDING` (unprocessed,
-inside target — excluded), `OVERDUE_UNPROCESSED` (unprocessed, past target —
-counts against), `UNKNOWN_EVIDENCE` (history missing — excluded). Business time
-uses `Asia/Tashkent`, the configured schedule and holidays.
+SLA states: `ON_TIME` (≤ target), `LATE` (> target), `PENDING` (still in
+distribution, inside target — excluded), `OVERDUE_UNPROCESSED` (still in
+distribution, past target — counts against), `UNKNOWN_EVIDENCE` (no distribution
+evidence — excluded). Business time uses `Asia/Tashkent`, the configured schedule
+and holidays; a response outside working hours scores 0 minutes. Full rules:
+`docs/BUSINESS_RULES.md` §6.1.
 
 ## Source and failure reason
 

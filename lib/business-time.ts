@@ -199,6 +199,51 @@ function businessMilliseconds(
   return milliseconds;
 }
 
+/**
+ * The canonical employee SLA measure: scheduled working minutes between the
+ * moment a Deal was distributed and the moment a seller first moved it.
+ *
+ * Owner rule (2026-09-26):
+ *  - only scheduled working minutes count — the clock pauses at the end of the
+ *    working day, resumes at its start on the next working day, and skips
+ *    non-working days and holidays entirely;
+ *  - a Deal handled OUTSIDE working hours closes at **0 minutes**, never a
+ *    negative value and never "wait for Monday and charge the gap": a seller who
+ *    answers on a Sunday afternoon has beaten the clock, not missed it;
+ *  - the start is the real distribution timestamp. It is deliberately NOT rolled
+ *    forward to the next working period, because rolling it forward and then
+ *    measuring to an off-hours stop produces a nonsense interval.
+ *
+ * Returns `null` when either timestamp is missing or unparseable — no duration is
+ * fabricated for a Deal whose evidence is incomplete.
+ */
+export function businessSlaMinutes(
+  startValue: Date | string | null | undefined,
+  stopValue: Date | string | null | undefined,
+  settings: DashboardSettings,
+): number | null {
+  if (startValue === null || startValue === undefined || stopValue === null || stopValue === undefined) return null;
+  const start = startValue instanceof Date ? startValue : new Date(startValue);
+  const stop = stopValue instanceof Date ? stopValue : new Date(stopValue);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(stop.getTime())) return null;
+  // A stop at or before the start (clock skew, a re-entry recorded out of order)
+  // is a zero-length response, never a negative one.
+  if (stop <= start) return 0;
+  return calculateBusinessMinutes(start, stop, settings);
+}
+
+/** Calendar minutes between the same two instants — reported beside the SLA, never as it. */
+export function elapsedCalendarMinutes(
+  startValue: Date | string | null | undefined,
+  stopValue: Date | string | null | undefined,
+): number | null {
+  if (startValue === null || startValue === undefined || stopValue === null || stopValue === undefined) return null;
+  const start = startValue instanceof Date ? startValue : new Date(startValue);
+  const stop = stopValue instanceof Date ? stopValue : new Date(stopValue);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(stop.getTime())) return null;
+  return Math.max(0, Math.floor((stop.getTime() - start.getTime()) / 60_000));
+}
+
 export function calculateBusinessMinutes(
   startValue: Date | string,
   endValue: Date | string,
@@ -253,6 +298,9 @@ export const defaultSettings: DashboardSettings = {
   // Owner decision 2026-09-24: "Klient lekin programma nepodxodit" is a
   // product-fit outcome, not a Sales loss (docs/BUSINESS_RULES.md §3).
   productFitStageIds: [PRODUCT_FIT_STAGE],
+  // Empty on purpose: the funnel's first stage by Bitrix SORT is the distributed
+  // stage, so no portal-specific id is baked in (lib/stage-config.ts).
+  distributionStageIds: [],
   routingReasonPatterns: ["idoko", "sd", "передан", "перевод", "routing", "yo'naltir", "yo‘naltir", "o'tkaz", "o‘tkaz"],
   salesStaffIds: [],
   autoSyncMinutes: 15,

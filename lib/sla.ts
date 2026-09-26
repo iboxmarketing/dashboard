@@ -16,6 +16,14 @@ import type { DashboardSettings, ProcessingSource, SlaStatus } from "./types";
  */
 
 export type SlaInput = {
+  /**
+   * The canonical employee SLA: scheduled working minutes from distribution to the
+   * seller's first move out of that stage. `null` while the Deal has not been
+   * moved, which is a pending SLA rather than a completed one.
+   */
+  slaBusinessMinutes?: number | null;
+  /** When the Deal was distributed — the origin a pending SLA is measured from. */
+  slaStartAt?: string | null;
   processingBusinessMinutes: number | null;
   processingSource: ProcessingSource;
   slaStart?: string | null;
@@ -24,18 +32,29 @@ export type SlaInput = {
 
 /** Business-time elapsed since the SLA clock started, for an unprocessed lead. */
 export function elapsedSlaMinutes(row: SlaInput, settings: DashboardSettings, now: Date = new Date()) {
-  // slaStart already rolls an after-hours lead forward to the next working
-  // period, and processingBusinessMinutes is measured from it, so pending and
-  // overdue must use the same origin to stay comparable.
-  const start = row.slaStart ?? row.createdAt;
+  // Distribution is the SLA origin, so a pending Deal's elapsed time is measured
+  // from exactly where a completed one would be. Records written before the SLA
+  // evidence existed fall back to their stored slaStart/createdAt.
+  const start = row.slaStartAt ?? row.slaStart ?? row.createdAt;
   if (!start) return 0;
   return calculateBusinessMinutes(start, now, settings);
 }
 
 export function resolveSlaState(row: SlaInput, settings: DashboardSettings, now: Date = new Date()): SlaStatus {
-  if (row.processingBusinessMinutes !== null) {
+  // The Deal was moved out of distribution: the SLA is settled, on working time.
+  if (row.slaBusinessMinutes !== null && row.slaBusinessMinutes !== undefined) {
+    return row.slaBusinessMinutes <= settings.slaMinutes ? "ON_TIME" : "LATE";
+  }
+  // A record written before the SLA evidence existed still answers with what it
+  // has, so a legacy row is not reported as missing evidence until it is rebuilt.
+  if (row.slaStartAt === undefined && row.processingBusinessMinutes !== null) {
     return row.processingBusinessMinutes <= settings.slaMinutes ? "ON_TIME" : "LATE";
   }
+  // Distribution evidence itself is missing: there is no SLA start to measure
+  // from. The Deal's qualification speed is NOT substituted here — blending two
+  // different measures into one rate is exactly the defect this SLA replaced — so
+  // the Deal is reported as unmeasurable and stays out of the denominator.
+  if (row.slaStartAt === null) return "UNKNOWN_EVIDENCE";
   // History is missing and the deal already sits past qualification: it was
   // very likely processed, we simply cannot date it. Never a seller failure.
   if (row.processingSource === "NO_PROCESSING_EVIDENCE") return "UNKNOWN_EVIDENCE";
@@ -48,7 +67,7 @@ export function resolveSlaState(row: SlaInput, settings: DashboardSettings, now:
  * as soon as the limit is passed.
  */
 function elapsedSlaExceeds(row: SlaInput, settings: DashboardSettings, now: Date) {
-  const start = row.slaStart ?? row.createdAt;
+  const start = row.slaStartAt ?? row.slaStart ?? row.createdAt;
   if (!start) return 0 > settings.slaMinutes;
   return businessMinutesExceed(start, now, settings, settings.slaMinutes);
 }

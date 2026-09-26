@@ -104,7 +104,10 @@ const HEADLINE_LABELS: Partial<Record<HeadlineCardId, string>> = {
   classified_leads: "Saralangan",
   avg_check: "Chek",
   lead_to_sql: "Funnel konversiyasi",
-  avg_processing: "Saralash tezligi",
+  // This card carries the response-time group (the SLA metric is merged into it),
+  // and its value is the employee SLA in working minutes — so it is labelled for
+  // what it shows. Time-to-qualification stays in the card's detail line.
+  avg_processing: "SLA — javob vaqti",
 };
 
 export function headlineCardLabel(id: HeadlineCardId) {
