@@ -1,4 +1,5 @@
 import { countDuplicates } from "./duplicates";
+import { formatDurationMinutes } from "./format-duration";
 import { countsAsOperational } from "./stale-resolution";
 import { countClassificationConflicts, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isProductFitOutcome, isSalesLost, isUnclassifiedLead } from "./sales-logic";
 import { summarizeSla } from "./sla";
@@ -34,7 +35,8 @@ export type DashboardMetricId =
   | "sla" | "avg_check" | "median_check" | "sales_cycle" | "duplicates" | "active_cohort"
   | "classified_leads" | "unclassified_leads" | "classification_coverage"
   | "quality_accepted_rate" | "low_quality_rate" | "not_relevant_of_leads"
-  | "duplicates_eligible" | "unique_ish_leads" | "pre_sql_closed" | "product_fit";
+  | "duplicates_eligible" | "unique_ish_leads" | "pre_sql_closed" | "product_fit"
+  | "sla_avg" | "sla_elapsed";
 
 /** Stable ids; user-facing labels may change without breaking saved settings. */
 export const DASHBOARD_METRICS: { id: DashboardMetricId; label: string }[] = [
@@ -67,6 +69,11 @@ export const DASHBOARD_METRICS: { id: DashboardMetricId; label: string }[] = [
   { id: "unique_ish_leads", label: "Takrorsiz lead (taxminiy)" },
   { id: "pre_sql_closed", label: "SQLgacha yopilgan" },
   { id: "product_fit", label: "Programma mos emas" },
+  // The response-time group, split into one question per card: how long the lead
+  // waited in working time, how long it waited on the wall clock, and how long
+  // the qualification verdict took (`avg_processing`).
+  { id: "sla_avg", label: "SLA — javob vaqti" },
+  { id: "sla_elapsed", label: "Kalendar javob vaqti" },
 ];
 
 export const DEFAULT_DASHBOARD_METRIC_IDS: DashboardMetricId[] = [
@@ -264,7 +271,11 @@ export function resolveDashboardMetric(metrics: DashboardMetrics, id: DashboardM
     case "revenue": return { label, value: metrics.money.revenue.toLocaleString("uz-UZ") };
     case "avg_check": return { label, value: number(metrics.money.avg_check) };
     case "median_check": return { label, value: number(metrics.money.median_check) };
-    case "avg_processing": return { label, value: number(metrics.timing.avg_processing) };
+    // Durations read in the product's own format wherever they appear, including
+    // Custom Pages and Diagnostics, not as bare minute counts.
+    case "avg_processing": return { label, value: formatDurationMinutes(metrics.timing.avg_processing) };
+    case "sla_avg": return { label, value: formatDurationMinutes(metrics.timing.sla_avg) };
+    case "sla_elapsed": return { label, value: formatDurationMinutes(metrics.timing.sla_elapsed_avg) };
     case "sales_cycle": return { label, value: number(metrics.timing.sales_cycle) };
     default: return { label, value: "—" };
   }

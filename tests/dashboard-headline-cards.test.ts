@@ -121,12 +121,23 @@ test("G/H/I: check, funnel and processing keep their formulas and travel togethe
   const client = code("../app/dashboard-client.tsx") + "\n" + code("../lib/sales-sections.ts");
   const check = client.slice(client.indexOf("    avg_check: {"), client.indexOf("    lead_to_sql: {"));
   assert.match(check, /median_check/, "median rides along with the average");
-  const funnel = client.slice(client.indexOf("    lead_to_sql: {"), client.indexOf("    avg_processing: {"));
+  const funnel = client.slice(client.indexOf("    lead_to_sql: {"), client.indexOf("    sla_avg: {"));
   for (const rate of ["lead_to_sql", "lead_to_sale", "sql_to_sale"]) assert.match(funnel, new RegExp(rate));
+  // The response-time group is three cards, one question each. The SLA card
+  // carries the working-time average, its median and the hit rate — and neither
+  // the calendar span nor the qualification time.
+  const sla = client.slice(client.indexOf("    sla_avg: {"), client.indexOf("    sla_elapsed: {"));
+  assert.match(sla, /timing\.sla_avg/);
+  assert.match(sla, /timing\.sla_median/);
+  assert.match(sla, /rates\.sla/);
+  assert.match(sla, /sla\.onTime/);
+  assert.doesNotMatch(sla, /sla_elapsed_avg|timing\.avg_processing/, "no calendar or qualification clutter");
+  const calendar = client.slice(client.indexOf("    sla_elapsed: {"), client.indexOf("    avg_processing: {"));
+  assert.match(calendar, /timing\.sla_elapsed_avg/);
+  assert.doesNotMatch(calendar, /rates\.sla|timing\.sla_avg/, "informational only — never part of the SLA score");
   const processing = client.slice(client.indexOf("    avg_processing: {"), client.indexOf("    sales_cycle: {"));
   assert.match(processing, /timing\.avg_processing/);
-  assert.match(processing, /rates\.sla/);
-  assert.match(processing, /sla\.onTime/);
+  assert.doesNotMatch(processing, /rates\.sla|sla_elapsed_avg/, "qualification speed stands alone");
 });
 
 test("J/O: merged and diagnostic metrics are absent from the headline selector", () => {
@@ -141,8 +152,8 @@ test("J/O: merged and diagnostic metrics are absent from the headline selector",
     assert.equal(typeof resolved.value, "string");
     assert.ok(resolved.label.length > 0);
   }
-  assert.equal(DASHBOARD_HEADLINE_CARD_IDS.length, 12);
-  assert.equal(DEFAULT_HEADLINE_CARD_IDS.length, 11);
+  assert.equal(DASHBOARD_HEADLINE_CARD_IDS.length, 14);
+  assert.equal(DEFAULT_HEADLINE_CARD_IDS.length, 13);
   assert.equal(DEFAULT_HEADLINE_CARD_IDS.includes("active_cohort" as never), false, "optional, not default");
 });
 
@@ -164,7 +175,12 @@ test("K: the untouched legacy 26-card default migrates to the curated headline l
   assert.deepEqual(resolveHeadlineCardIds(["period_sales", "revenue"]), ["period_sales"]);
   assert.deepEqual(resolveHeadlineCardIds(["revenue", "period_sales"]), ["period_sales"]);
   assert.deepEqual(resolveHeadlineCardIds(["avg_check", "median_check"]), ["avg_check"]);
-  assert.deepEqual(resolveHeadlineCardIds(["avg_processing", "sla"]), ["avg_processing"]);
+  // The old single response-time card becomes the three that replaced it, in the
+  // slot it occupied, whichever half of it the saved layout asked for.
+  assert.deepEqual(resolveHeadlineCardIds(["avg_processing", "sla"]), ["sla_avg", "sla_elapsed", "avg_processing"]);
+  assert.deepEqual(resolveHeadlineCardIds(["sla"]), ["sla_avg", "sla_elapsed", "avg_processing"]);
+  assert.deepEqual(resolveHeadlineCardIds(["leads", "avg_processing", "sales_cycle"]),
+    ["leads", "sla_avg", "sla_elapsed", "avg_processing", "sales_cycle"]);
   assert.deepEqual(resolveHeadlineCardIds(["lead_to_sql", "lead_to_sale", "sql_to_sale"]), ["lead_to_sql"]);
   assert.deepEqual(resolveHeadlineCardIds(["sql", "quality_accepted_rate"]), ["sql"]);
   assert.deepEqual(resolveHeadlineCardIds(["not_relevant", "low_quality_rate", "not_relevant_of_leads"]), ["not_relevant"]);
@@ -260,7 +276,9 @@ test("headline labels read as decisions, not raw metric names", () => {
   assert.equal(headlineCardLabel("classified_leads"), "Saralangan");
   assert.equal(headlineCardLabel("avg_check"), "Chek");
   assert.equal(headlineCardLabel("lead_to_sql"), "Funnel konversiyasi");
-  assert.equal(headlineCardLabel("avg_processing"), "SLA — javob vaqti");
+  assert.equal(headlineCardLabel("avg_processing"), "Saralash vaqti");
+  assert.equal(headlineCardLabel("sla_avg"), "SLA — javob vaqti");
+  assert.equal(headlineCardLabel("sla_elapsed"), "Kalendar javob vaqti");
   // Everything else keeps its registry label.
   assert.equal(headlineCardLabel("leads"), "Leadlar");
   assert.equal(headlineCardLabel("sales_cycle"), "Savdo sikli");

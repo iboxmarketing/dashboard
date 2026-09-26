@@ -4,8 +4,10 @@ import {
   Activity, AlertTriangle, ArrowLeft, BarChart3, CalendarDays, Check,
   ChevronDown, Clock3, Database, Download, ExternalLink, Gauge, LayoutDashboard,
   Loader2, Menu, RefreshCw, Search, Settings, ShieldCheck,
-  SlidersHorizontal, TimerReset, UserCheck, UserCog, Users, Wallet, X, XCircle, CircleDollarSign, ClipboardList, Layers3, GripVertical, ChevronUp
+  SlidersHorizontal, TimerReset, UserCheck, UserCog, Users, Wallet, X, XCircle, CircleDollarSign, ClipboardList, Layers3, GripVertical, ChevronUp,
+  CalendarClock, HelpCircle
 } from "lucide-react";
+import { formatDurationMinutes, teamComparisonLabel } from "@/lib/format-duration";
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ErrorInfo, ReactNode } from "react";
 import type { StageFunnelRecord } from "@/lib/dashboard-record";
@@ -129,11 +131,10 @@ const navItems: { id: View; label: string; icon: typeof LayoutDashboard; permiss
 ];
 
 function pct(value: number, total: number) { return total ? Math.round((value / total) * 100) : 0; }
-function fmtMinutes(value: number | null) {
-  if (value === null || !Number.isFinite(value)) return "—";
-  if (value < 60) return `${Math.round(value)} min`;
-  return `${Math.floor(value / 60)} s ${Math.round(value % 60)} min`;
-}
+/** The product-wide duration format lives in lib/ so it can be tested alone. */
+const fmtMinutes = formatDurationMinutes;
+/** One wording for how the SLA is measured, shared by every SLA card. */
+const SLA_WORK_TIME_HINT = "Faqat rasmiy ish vaqti 10:00–18:00 hisoblanadi. Dam olish va ish vaqtidan tashqari vaqt SLAga qo‘shilmaydi.";
 function fmtHours(value: number | null) {
   if (value === null || !Number.isFinite(value)) return "—";
   if (value < 24) return `${Math.round(value * 10) / 10} soat`;
@@ -245,8 +246,10 @@ function SetupScreen({ configured, sync, syncing, externalError, onStart, onPaus
   </main>;
 }
 
-function KpiCard({ label, value, detail, tone = "blue", icon: Icon, valueClassName = "" }: { label: string; value: string; detail: React.ReactNode; tone?: string; icon: typeof Activity; valueClassName?: string }) {
-  return <article className={`kpi-card ${tone}`}><div className="kpi-top"><span>{label}</span><div className="kpi-icon"><Icon size={18} /></div></div><strong className={valueClassName}>{value}</strong><small>{detail}</small></article>;
+function KpiCard({ label, value, detail, tone = "blue", icon: Icon, valueClassName = "", hint }: { label: string; value: string; detail: React.ReactNode; tone?: string; icon: typeof Activity; valueClassName?: string; hint?: string }) {
+  // `hint` explains how a number is measured. It is a tooltip, never a fourth
+  // line of text on the card.
+  return <article className={`kpi-card ${tone}`} title={hint}><div className="kpi-top"><span>{label}{hint ? <HelpCircle size={13} className="kpi-hint" /> : null}</span><div className="kpi-icon"><Icon size={18} /></div></div><strong className={valueClassName}>{value}</strong><small>{detail}</small></article>;
 }
 function MetricDelta({ current, previous }: { current: number; previous: number }) {
   if (!previous && !current) return <span className="delta-inline neutral">o‘tgan davr bilan teng</span>;
@@ -486,7 +489,7 @@ function DashboardView({ section, onManager }: { section: DashboardSection; onMa
    * own it is now the secondary line of the card that answers the same
    * question — no formula changed, only where the number is shown.
    */
-  const cards: Record<HeadlineCardId, { value: string; detail: React.ReactNode; tone: string; icon: typeof Activity }> = {
+  const cards: Record<HeadlineCardId, { value: string; detail: React.ReactNode; tone: string; icon: typeof Activity; hint?: string }> = {
     leads: {
       value: String(metrics.counts.leads),
       detail: <><MetricDelta current={metrics.counts.leads} previous={previousMetrics.counts.leads} /> · canonical IBOX a’zoligi</>,
@@ -523,17 +526,24 @@ function DashboardView({ section, onManager }: { section: DashboardSection; onMa
       value: `${metrics.rates.lead_to_sql}%`,
       detail: <>Lead → SQL<small className="card-note">Lead → Sotuv {metrics.rates.lead_to_sale}% · SQL → Sotuv {metrics.rates.sql_to_sale}%</small></>,
       tone: "green", icon: Check },
-    // One card for the response-time group: the employee SLA in scheduled working
-    // minutes is the headline, the median and the on-time rate sit beside it, and
-    // the calendar span plus the time-to-qualification stay as details. No extra
-    // cards — the SLA metric is merged into this anchor (lib/dashboard-cards.ts).
-    avg_processing: {
+    // The response-time group is three cards, one question each: how long the
+    // lead waited in working time, how long it waited on the clock, and how long
+    // the qualification verdict took. They are deliberately not merged again.
+    sla_avg: {
       value: fmtMinutes(metrics.timing.sla_avg),
-      detail: <>Median {fmtMinutes(metrics.timing.sla_median)} · SLA {metrics.rates.sla}%
-        <small className="card-note" title="Taqsimlangandan birinchi harakatgacha, faqat ish vaqti (10:00–18:00). Kalendar vaqti va saralash vaqti alohida.">
-          {metrics.sla.onTime} / {metrics.sla.denominator} muddatida · kalendar {fmtMinutes(metrics.timing.sla_elapsed_avg)} · saralash {fmtMinutes(metrics.timing.avg_processing)}
-        </small></>,
+      detail: <>Median {fmtMinutes(metrics.timing.sla_median)} · SLA ichida {metrics.rates.sla}% ({metrics.sla.onTime}/{metrics.sla.denominator})</>,
+      hint: SLA_WORK_TIME_HINT,
       tone: "indigo", icon: Clock3 },
+    sla_elapsed: {
+      value: fmtMinutes(metrics.timing.sla_elapsed_avg),
+      detail: "Real o‘tgan vaqt · tun va dam olish kunlari ham kiradi",
+      hint: "Ma’lumot uchun. Bu ko‘rsatkich SLA bahosiga va xodimlar reytingiga ta’sir qilmaydi.",
+      tone: "cyan", icon: CalendarClock },
+    avg_processing: {
+      value: fmtMinutes(metrics.timing.avg_processing),
+      detail: "Leaddan sifat bo‘yicha qarorgacha",
+      hint: "Lead kelganidan SQL yoki Not Relevant qaroriga qadar ketgan ish vaqti. SLA emas.",
+      tone: "violet", icon: ClipboardList },
     sales_cycle: {
       value: fmtHours(metrics.timing.sales_cycle),
       detail: "Lead kelganidan sotuvgacha",
@@ -548,7 +558,7 @@ function DashboardView({ section, onManager }: { section: DashboardSection; onMa
       {/* Driven by the saved order, not the registry order. */}
       {selected.map((id) => {
         const card = cards[id];
-        return <KpiCard key={id} label={headlineCardLabel(id)} value={card.value} detail={card.detail} tone={card.tone} icon={card.icon} />;
+        return <KpiCard key={id} label={headlineCardLabel(id)} value={card.value} detail={card.detail} tone={card.tone} icon={card.icon} hint={card.hint} />;
       })}
     </section>
     {/* Only with `managers`: the server sends no manager rows otherwise. */}
@@ -635,7 +645,7 @@ function TrendChart({ trend }: { trend: DashboardSection["trend"] }) {
 function ManagerDetailView({ section, currentStages, onBack }: { section: ManagerSection; currentStages: CurrentStageRecord[] | null; onBack: () => void }) {
   // Profile, team lead total and team medians are computed on the server from
   // the same helpers; only the finished figures arrive here.
-  const { manager, metrics, teamLeads, medians, activeRoster: isActiveSales, historical } = section;
+  const { manager, metrics, teamLeads, teamSla, medians, activeRoster: isActiveSales, historical } = section;
 
   const money = (value: number) => `${Math.round(value).toLocaleString("uz-UZ")} ${metrics.money.currency || "UZS"}`;
   const number = (value: number | null) => (value === null ? "—" : Math.round(value).toLocaleString("uz-UZ"));
@@ -654,7 +664,6 @@ function ManagerDetailView({ section, currentStages, onBack }: { section: Manage
   const medianSqlToSale = medians.sqlToSale;
   const medianSalesLostRate = medians.salesLostRate;
   const medianProcessing = medians.processing;
-  const medianSla = medians.sla;
   const medianCycle = medians.cycle;
 
   // Live workload comes from Stage Control's own data, present only for a
@@ -709,8 +718,17 @@ function ManagerDetailView({ section, currentStages, onBack }: { section: Manage
         detail={<>{money(metrics.money.revenue)}<small className="card-note">Sotuv sanasi bo‘yicha</small></>} />
       <KpiCard label="Aktiv leadlar" icon={Layers3} tone="violet" value={String(metrics.counts.active_cohort)}
         detail="Tanlangan davrda kelib, hali yopilmagan" />
-      <KpiCard label="SLA — javob vaqti" icon={Clock3} tone="indigo" value={fmtMinutes(metrics.timing.sla_avg)}
-        detail={<>Median {fmtMinutes(metrics.timing.sla_median)} · SLA {metrics.rates.sla}% · {metrics.sla.onTime} / {metrics.sla.denominator}<small className="card-note">{metrics.sla.overdue} ta ishlov muddati o‘tgan · saralash {fmtMinutes(metrics.timing.avg_processing)} · {benchmark(metrics.timing.avg_processing, medianProcessing, "time", false)}{medianSla === null ? "" : ` · jamoa SLA medianasi ${Math.round(medianSla)}%`}</small></>} />
+      {/* The same three response-time cards as the team dashboard, in the same
+          order and with the same wording. The SLA card carries exactly ONE team
+          comparison; Calendar and Saralash carry none. */}
+      <KpiCard label="SLA — javob vaqti" icon={Clock3} tone="indigo" value={fmtMinutes(metrics.timing.sla_avg)} hint={SLA_WORK_TIME_HINT}
+        detail={<>Median {fmtMinutes(metrics.timing.sla_median)} · SLA ichida {metrics.rates.sla}% ({metrics.sla.onTime}/{metrics.sla.denominator})<small className="card-note">{teamComparisonLabel(metrics.timing.sla_avg, teamSla.avg) ?? "Jamoa avg: —"}</small></>} />
+      <KpiCard label="Kalendar javob vaqti" icon={CalendarClock} tone="cyan" value={fmtMinutes(metrics.timing.sla_elapsed_avg)}
+        hint="Ma’lumot uchun. Bu ko‘rsatkich SLA bahosiga va xodimlar reytingiga ta’sir qilmaydi."
+        detail="Real o‘tgan vaqt · tun va dam olish kunlari ham kiradi" />
+      <KpiCard label="Saralash vaqti" icon={ClipboardList} tone="violet" value={fmtMinutes(metrics.timing.avg_processing)}
+        hint="Lead kelganidan SQL yoki Not Relevant qaroriga qadar ketgan ish vaqti. SLA emas."
+        detail={<>Leaddan sifat bo‘yicha qarorgacha<small className="card-note">{benchmark(metrics.timing.avg_processing, medianProcessing, "time", false)}</small></>} />
       <KpiCard label="Savdo sikli" icon={TimerReset} tone="violet" value={fmtHours(metrics.timing.sales_cycle)}
         detail={<>Lead kelganidan sotuvgacha<small className="card-note">{medianCycle === null ? "" : `Jamoa medianasi ${fmtHours(medianCycle)}`}</small></>} />
     </section>

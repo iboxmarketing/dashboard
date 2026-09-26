@@ -124,7 +124,10 @@ test("F/G/H/I/J/K/L: result, workload and speed cards are canonical", () => {
   assert.equal(typeof metrics.timing.avg_processing, "number");
   assert.equal(metrics.sla.overdue, 1);
   assert.equal(metrics.timing.sales_cycle, 24);
-  for (const source of ["counts.active_cohort", "timing.avg_processing", "rates.sla", "sla.onTime", "sla.denominator", "sla.overdue", "timing.sales_cycle", "money.revenue", "money.cohort_revenue"])
+  // `sla.overdue` left the profile SLA card when the response-time group was split
+  // into three single-question cards; every figure still shown comes from the
+  // canonical metrics rather than being recomputed in the UI.
+  for (const source of ["counts.active_cohort", "timing.avg_processing", "timing.sla_avg", "timing.sla_median", "timing.sla_elapsed_avg", "rates.sla", "sla.onTime", "sla.denominator", "timing.sales_cycle", "money.revenue", "money.cohort_revenue"])
     assert.ok(profile.includes(`metrics.${source}`), `${source} must come from the canonical metrics`);
 });
 

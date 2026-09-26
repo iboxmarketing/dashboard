@@ -209,7 +209,12 @@ test("28: yangi metrik id'lar additive va eski id'lar saqlanadi", () => {
   assert.deepEqual(resolveDashboardMetricIds(["sql", "not_relevant"]), ["sql", "not_relevant"]);
   // Give it a period sale so the money/timing cards have a value to render;
   // with no sales they legitimately show "—".
-  const sold = deal({ dealId: "w", qualified: true, salesStatus: "WON", wonAt: "2026-08-10T09:00:00.000Z", opportunity: 250, salesCycleHours: 12 });
+  // SLA evidence too, so the response-time cards have a value to render: with no
+  // distribution evidence they legitimately show "—".
+  const sold = deal({
+    dealId: "w", qualified: true, salesStatus: "WON", wonAt: "2026-08-10T09:00:00.000Z", opportunity: 250, salesCycleHours: 12,
+    slaStartAt: "2026-08-03T05:00:00.000Z", slaBusinessMinutes: 15, slaElapsedMinutes: 40,
+  });
   const metrics = buildDashboardMetrics([sold], [sold]);
   for (const id of ids) {
     const resolved = resolveDashboardMetric(metrics, id);

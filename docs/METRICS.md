@@ -185,6 +185,15 @@ it either. Without stage history, the current stage's `MOVED_TIME` is used only
 while that stage is itself a qualification outcome; for a later stage the time is
 reported unknown and never fabricated.
 
+On the Dashboard and on every seller profile these are **three separate cards** —
+*SLA — javob vaqti*, *Kalendar javob vaqti*, *Saralash vaqti* — in that order, one
+question each. A saved card layout that still asks for the old combined
+response-time card resolves to all three (`SPLIT_INTO_HEADLINE` in
+`lib/dashboard-cards.ts`). The seller SLA card carries exactly one comparison
+line, `Jamoa avg: <team average> · <gap> tezroq|sekinroq`, against the team's own
+Deal-weighted average. Durations are formatted by `formatDurationMinutes`
+(`42 min`, `1 s 18 min`, `1 kun 3 s 20 min`).
+
 SLA states: `ON_TIME` (≤ target), `LATE` (> target), `PENDING` (still in
 distribution, inside target — excluded), `OVERDUE_UNPROCESSED` (still in
 distribution, past target — counts against), `UNKNOWN_EVIDENCE` (no distribution

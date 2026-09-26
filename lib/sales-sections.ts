@@ -441,6 +441,12 @@ export type ManagerSection = Common & {
   };
   metrics: PublicMetrics;
   teamLeads: number;
+  /**
+   * The team's own Deal-weighted SLA average and median — the same figures the
+   * team dashboard shows, so a seller's single comparison line is against the
+   * real team number and never against an average of seller averages.
+   */
+  teamSla: { avg: number | null; median: number | null };
   medians: { sqlToSale: number | null; salesLostRate: number | null; processing: number | null; sla: number | null; cycle: number | null };
   sources: SourceFunnelRow[];
   notRelevant: { count: number; reasons: ReasonRow[] };
@@ -553,6 +559,8 @@ export function managerSection(records: DashboardRecord[], query: SalesQuery, co
   }
   const { cohort, metrics } = buildManagerProfile(pop.cohort, pop.won, managerId);
   const team = buildManagers(pop.cohort, pop.won, activeRoster(context.settings));
+  // Deal-weighted over the whole team population, exactly as the dashboard card.
+  const teamMetrics = buildDashboardMetrics(pop.cohort, pop.won);
   const benchmarkTeam = team.filter((row) => row.id !== "unknown");
   const withSql = (row: ManagerRow) => row.sql > 0;
   const own = team.find((row) => row.id === managerId);
@@ -574,6 +582,7 @@ export function managerSection(records: DashboardRecord[], query: SalesQuery, co
     },
     metrics: publicMetrics(metrics),
     teamLeads: team.reduce((sum, row) => sum + row.leads, 0),
+    teamSla: { avg: teamMetrics.timing.sla_avg, median: teamMetrics.timing.sla_median },
     medians: {
       sqlToSale: teamMedian(benchmarkTeam, (row) => row.sqlToSale, withSql),
       salesLostRate: teamMedian(benchmarkTeam, (row) => row.salesLostRate, withSql),

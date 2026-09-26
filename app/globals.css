@@ -277,6 +277,9 @@ aside nav button i { margin-left: auto; width: 7px; height: 7px; border-radius: 
 .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 11px; }
 .kpi-card { min-height: 123px; padding: 15px; border: 1px solid var(--line); border-radius: 13px; background: white; box-shadow: var(--shadow); overflow: hidden; }
 .kpi-top { display: flex; align-items: center; justify-content: space-between; color: #748095; font-size: 10px; font-weight: 700; }
+/* The label's help marker: the explanation itself is the card's native tooltip. */
+.kpi-top > span { display: inline-flex; align-items: center; gap: 4px; }
+.kpi-hint { color: #b4bccb; flex: none; }
 .kpi-icon { width: 31px; height: 31px; border-radius: 9px; display: grid; place-items: center; background: #edf3ff; color: var(--blue); }
 .kpi-card > strong { display: block; margin-top: 11px; color: var(--navy); font-size: 24px; line-height: 1; letter-spacing: -.03em; }
 .kpi-card > small { display: block; margin-top: 7px; color: #939cad; font-size: 9px; }

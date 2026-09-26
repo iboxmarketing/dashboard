@@ -13,7 +13,7 @@ import { DASHBOARD_METRICS, type DashboardMetricId } from "./dashboard-metrics";
 export const DASHBOARD_HEADLINE_CARD_IDS = [
   "leads", "classified_leads", "sql", "not_relevant", "sales_lost",
   "cohort_sales", "period_sales", "avg_check", "lead_to_sql",
-  "avg_processing", "sales_cycle", "active_cohort",
+  "sla_avg", "sla_elapsed", "avg_processing", "sales_cycle", "active_cohort",
 ] as const satisfies readonly DashboardMetricId[];
 
 export type HeadlineCardId = (typeof DASHBOARD_HEADLINE_CARD_IDS)[number];
@@ -22,7 +22,7 @@ export type HeadlineCardId = (typeof DASHBOARD_HEADLINE_CARD_IDS)[number];
 export const DEFAULT_HEADLINE_CARD_IDS: HeadlineCardId[] = [
   "leads", "classified_leads", "sql", "not_relevant", "sales_lost",
   "cohort_sales", "period_sales", "avg_check", "lead_to_sql",
-  "avg_processing", "sales_cycle",
+  "sla_avg", "sla_elapsed", "avg_processing", "sales_cycle",
 ];
 
 /**
@@ -35,7 +35,7 @@ export const DEFAULT_HEADLINE_CARD_IDS: HeadlineCardId[] = [
 export const MERGED_INTO_HEADLINE: Partial<Record<DashboardMetricId, HeadlineCardId>> = {
   revenue: "period_sales",
   median_check: "avg_check",
-  sla: "avg_processing",
+  sla: "sla_avg",
   lead_to_sale: "lead_to_sql",
   sql_to_sale: "lead_to_sql",
   classification_coverage: "classified_leads",
@@ -84,6 +84,21 @@ export const LEGACY_DEFAULT_METRIC_IDS: readonly string[] = [
   "unique_ish_leads", "pre_sql_closed",
 ] as const;
 
+/**
+ * A saved id that now renders several cards.
+ *
+ * The response-time card carried the SLA average, its median, the hit rate, the
+ * calendar span AND the qualification time at once, which nobody could read. It
+ * is now three cards — response SLA, calendar response, qualification — and a
+ * layout that asked for the old single card gets all three, in this order, in
+ * the slot it already occupied. Saved settings are never rewritten for this.
+ */
+const RESPONSE_TIME_CARDS: HeadlineCardId[] = ["sla_avg", "sla_elapsed", "avg_processing"];
+export const SPLIT_INTO_HEADLINE: Partial<Record<DashboardMetricId, HeadlineCardId[]>> = {
+  avg_processing: RESPONSE_TIME_CARDS,
+  sla: RESPONSE_TIME_CARDS,
+};
+
 export function resolveHeadlineCardIds(saved: unknown): HeadlineCardId[] {
   const raw = Array.isArray(saved) ? saved.map(String) : [];
   const legacyDefault = LEGACY_DEFAULT_METRIC_IDS;
@@ -91,6 +106,8 @@ export function resolveHeadlineCardIds(saved: unknown): HeadlineCardId[] {
     return DEFAULT_HEADLINE_CARD_IDS;
   }
   const mapped = raw.flatMap((value) => {
+    const split = SPLIT_INTO_HEADLINE[value as DashboardMetricId];
+    if (split) return split;
     if (isHeadlineCardId(value)) return [value];
     const anchor = MERGED_INTO_HEADLINE[value as DashboardMetricId];
     return anchor ? [anchor] : [];
@@ -104,10 +121,7 @@ const HEADLINE_LABELS: Partial<Record<HeadlineCardId, string>> = {
   classified_leads: "Saralangan",
   avg_check: "Chek",
   lead_to_sql: "Funnel konversiyasi",
-  // This card carries the response-time group (the SLA metric is merged into it),
-  // and its value is the employee SLA in working minutes — so it is labelled for
-  // what it shows. Time-to-qualification stays in the card's detail line.
-  avg_processing: "SLA — javob vaqti",
+  avg_processing: "Saralash vaqti",
 };
 
 export function headlineCardLabel(id: HeadlineCardId) {
