@@ -66,6 +66,12 @@ export type FinanceTransaction = {
   sourceCurrencyCode: string | null;
   destinationAmountMinor: number | null;
   destinationCurrencyCode: string | null;
+  /**
+   * Transfer commission, in the SOURCE account's currency. `null` on Income and
+   * Expense rows, and on transfers recorded before commissions existed — both
+   * read as no fee. See lib/finance/transfer.ts for the accounting rule.
+   */
+  feeAmountMinor: number | null;
   createdAt: string;
   updatedAt: string;
 };

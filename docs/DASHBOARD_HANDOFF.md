@@ -135,6 +135,15 @@ and does not touch Sales KPI. Money is stored and computed in **minor units**
 (integers), formatted only at the edge, so no rounding drift accumulates; the
 currency is per entry and totals never mix currencies.
 
+An account-to-account **transfer** is one row with an explicit sent amount, an
+explicit received amount and an optional commission. The transfer itself is
+neither income nor expense; the commission is an expense in the sending account's
+currency, reported under **Bank komissiyasi**. The sending account pays the
+amount plus the commission, the receiving account is credited exactly what
+arrived, and a cross-currency transfer's exchange rate is *derived from the two
+entered amounts for display only* — never fetched, never persisted, never used to
+reconstruct a balance. Details and the rate convention: `docs/FINANCE.md`.
+
 ## Operations
 
 | Task | How |

@@ -98,6 +98,9 @@ export function validateTransactionInput(payload: unknown): ValidationResult<Tra
       ...common, accountId, amountMinor: input.amountMinor as number, currencyCode, categoryId,
       fromAccountId: null, toAccountId: null, sourceAmountMinor: null, sourceCurrencyCode: null,
       destinationAmountMinor: null, destinationCurrencyCode: null,
+      // A commission belongs to a transfer. An Income or Expense carries its own
+      // amount, so a fee here would be a second, invisible amount.
+      feeAmountMinor: null,
     } };
   }
 
@@ -115,10 +118,18 @@ export function validateTransactionInput(payload: unknown): ValidationResult<Tra
   if (sourceCurrencyCode === destinationCurrencyCode && input.sourceAmountMinor !== input.destinationAmountMinor) {
     return { ok: false, error: "Same-currency transfer amounts must match" };
   }
+  // The commission is optional and denominated in the SOURCE currency — there is
+  // deliberately no fee-currency selector. Absent, null and 0 all mean no fee; a
+  // negative or fractional fee is rejected rather than rounded.
+  const feeRaw = input.feeAmountMinor;
+  const feeAmountMinor = feeRaw === undefined || feeRaw === null || feeRaw === "" ? 0 : feeRaw;
+  if (!isSafeMinor(feeAmountMinor)) return { ok: false, error: "Transfer commission must be integer minor units" };
+  if ((feeAmountMinor as number) < 0) return { ok: false, error: "Transfer commission cannot be negative" };
   return { ok: true, value: {
     ...common, accountId: null, amountMinor: null, currencyCode: null, categoryId: null,
     fromAccountId, toAccountId, sourceAmountMinor: input.sourceAmountMinor as number, sourceCurrencyCode,
     destinationAmountMinor: input.destinationAmountMinor as number, destinationCurrencyCode,
+    feeAmountMinor: feeAmountMinor as number,
   } };
 }
 

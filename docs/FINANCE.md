@@ -14,6 +14,56 @@ metadata for input precision and display; it does not hardcode a decimal step.
 Cross-currency transfers store both user-entered amounts and never store or infer
 an authoritative FX rate.
 
+## Transfers, commission and the displayed rate
+
+A transfer is one row with an explicit source and destination amount, plus an
+optional commission:
+
+| Field | Meaning |
+| --- | --- |
+| `sourceAmountMinor` / `sourceCurrencyCode` | what left the sending account, as entered |
+| `destinationAmountMinor` / `destinationCurrencyCode` | what the receiving account was credited, as entered |
+| `feeAmountMinor` | the commission, **in the source account's currency**. `null` (historical rows) and `0` both mean none. There is deliberately no fee-currency selector. |
+
+**Accounting rule.** The transfer itself is neither Income nor Expense. The
+commission **is** an Expense.
+
+```
+source account       -(sourceAmountMinor + feeAmountMinor)
+destination account  +destinationAmountMinor
+expense              feeAmountMinor, in the source currency
+```
+
+The commission is never subtracted from the destination amount: what arrived is
+what the receiving bank credited, and it is entered as its own number.
+
+The fee is carried on the transfer row, not as a second transaction, and the
+summary derives it from that row on every read (`lib/finance/summary.ts`). It
+therefore cannot be double-counted by repeated reads, cannot be orphaned from its
+transfer, and an edit replaces it exactly once. In reporting it lands under one
+deterministic, system-owned bucket — id `system:transfer-fee`, name
+**Bank komissiyasi** (`lib/finance/transfer.ts`). That bucket is not a
+`finance_categories` row: nobody can rename it, archive it, or select it for an
+ordinary expense, and a transfer still carries no Category.
+
+**Displayed rate.** A rate is never persisted and never fetched from a market.
+It is derived, on render, from the two exact amounts and the runtime currency
+`minorUnit` metadata, in integer arithmetic (BigInt), and it is display/audit
+data only — balances are never reconstructed from it. There is no FX gain/loss
+accounting in this MVP. The convention, locked by `tests/finance-transfer.test.ts`:
+
+- a same-currency transfer shows **no rate**;
+- when UZS is one side of the pair the rate always reads `1 <foreign> = X UZS`,
+  whichever direction the money moved (`1 USD = 12 500 UZS`), because that is how
+  a rate is quoted here;
+- otherwise it reads `1 <source> = X <destination>` (`1 USD = 0.925 EUR`);
+- at most six decimals, trailing zeros trimmed, thousands grouped as everywhere
+  else in Finance.
+
+A same-currency transfer must have equal source and destination amounts; the API
+rejects anything else, along with a negative or fractional commission, a zero or
+negative amount, the same account on both sides, and a Category on a transfer.
+
 ## Balances and reporting
 
 An Account stores its opening balance, never a mutable current balance. Current
@@ -87,7 +137,7 @@ is available:
 3. inspect `wrangler.generated.jsonc` and confirm it names only the staging
    Worker and staging D1;
 4. apply only the new migration with
-   `npx wrangler d1 execute DB --remote --config wrangler.generated.jsonc --file drizzle/0007_finance_core.sql --yes`;
+   `npx wrangler d1 execute DB --remote --config wrangler.generated.jsonc --file drizzle/<migration>.sql --yes`;
 5. query `sqlite_master` and `finance_currencies` through the same reviewed
    config, confirming all six Finance tables plus UZS/USD/EUR/KZT;
 6. deploy the reviewed commit with the same staging environment using
@@ -103,3 +153,13 @@ file, while staging needs only migration `0007`.
 
 Migration `0007_finance_core.sql` is additive. No CRM resync or Analytics
 Backfill is required because no existing analytics table or payload changes.
+
+### Migration 0012: transfer commission
+
+`drizzle/0012_transfer_fee.sql` adds one nullable column,
+`finance_transactions.fee_amount_minor`. It is additive: no row is rewritten,
+nothing is dropped, existing transfers read as fee 0, and no exchange rate is
+invented for past transfers. SQLite has no `ADD COLUMN IF NOT EXISTS`, so apply
+it exactly once per database, and apply it **before** deploying the release that
+writes the column — the previous build ignores the extra column, while the new
+build's INSERT requires it.

@@ -14,6 +14,7 @@ import {
 } from "./finance-primitives";
 import { AccountDrawer, CategoryDrawer, ProjectDrawer, SubscriptionDrawer, TransactionDrawer } from "./finance-drawers";
 import { createFinanceAdapter, emptyDataset, type FinanceAdapter, type FinanceSource } from "@/lib/finance-adapter";
+import { transferRate, transferSettlement } from "@/lib/finance/transfer";
 import {
   accountBalanceGroups, accountCurrentBalanceMinor, addDays, cadenceMonths, categoryAmountRows, categoryTree,
   filterTransactions, operatingMaps, projectAmountRows, subscriptionBuckets, type FinanceFilters,
@@ -21,7 +22,7 @@ import {
 import {
   ACCOUNT_TYPE_LABELS, CADENCE_LABELS, CURRENCIES, TRANSACTION_TYPES, TRANSACTION_TYPE_LABELS,
   type CategoryKind, type Currency, type FinanceAccount, type FinanceCategory, type FinanceDataset,
-  type FinanceProject, type FinanceSubscription, type TransactionType,
+  type FinanceProject, type FinanceSubscription, type FinanceTransaction, type TransactionType,
 } from "@/lib/finance-types";
 
 /**
@@ -275,6 +276,28 @@ function ProjectTable({ rows }: { rows: ReturnType<typeof projectAmountRows> }) 
 
 // -------------------------------------------------------------- transactions ---
 
+/**
+ * A transfer, read as one movement: what was sent, what arrived, the rate the two
+ * amounts imply, and the commission. The rate is shown only when the currencies
+ * differ, and it is derived here — nothing about it is stored.
+ */
+function TransferCell({ row, currencies }: { row: FinanceTransaction; currencies: FinanceDataset["currencies"] }) {
+  const settlement = transferSettlement(row);
+  if (!settlement) return null;
+  const rate = transferRate(row, currencies);
+  return (
+    <>
+      <br />
+      <small className="fin-cross">→ <Money amountMinor={settlement.destinationAmountMinor} currency={settlement.destinationCurrencyCode as Currency} /></small>
+      {rate && <><br /><small className="fin-rate-inline">{rate.label}</small></>}
+      <br />
+      {settlement.feeMinor
+        ? <small className="fin-fee">Komissiya <Money amountMinor={settlement.feeMinor} currency={settlement.sourceCurrencyCode as Currency} tone="expense" /></small>
+        : <small className="fin-fee muted">Komissiya yo‘q</small>}
+    </>
+  );
+}
+
 function TransactionsTab({ dataset, range, onAdd }: {
   dataset: FinanceDataset; range: FinanceRange; onAdd: (type: TransactionType) => void;
 }) {
@@ -345,9 +368,9 @@ function TransactionsTab({ dataset, range, onAdd }: {
                     <Money amountMinor={(row.type === "TRANSFER" ? row.sourceAmountMinor : row.amountMinor) ?? 0}
                       currency={(row.type === "TRANSFER" ? row.sourceCurrencyCode : row.currencyCode) as Currency}
                       tone={row.type === "INCOME" ? "income" : row.type === "EXPENSE" ? "expense" : "neutral"} />
-                    {row.type === "TRANSFER" && row.destinationAmountMinor !== null && row.destinationCurrencyCode !== null && (
-                      <><br /><small className="fin-cross">→ <Money amountMinor={row.destinationAmountMinor} currency={row.destinationCurrencyCode as Currency} /></small></>
-                    )}
+                    {/* A transfer reads as what was sent, what arrived, the rate the two
+                        amounts imply (cross-currency only) and the commission charged. */}
+                    {row.type === "TRANSFER" && <TransferCell row={row} currencies={dataset.currencies} />}
                   </td>
                 </tr>
               ))}

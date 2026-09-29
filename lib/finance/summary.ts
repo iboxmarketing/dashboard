@@ -1,4 +1,5 @@
 import { addMinor } from "./money";
+import { TRANSFER_FEE_CATEGORY_ID, TRANSFER_FEE_CATEGORY_NAME, transferFeeMinor } from "./transfer";
 import type {
   FinanceAccount, FinanceCategory, FinanceDateRange, FinanceProject,
   FinanceSubscription, FinanceSummary, FinanceTransaction,
@@ -29,7 +30,11 @@ export function filterFinanceTransactions(
 function accountDelta(transaction: FinanceTransaction, accountId: string) {
   if (transaction.type === "INCOME" && transaction.accountId === accountId) return transaction.amountMinor ?? 0;
   if (transaction.type === "EXPENSE" && transaction.accountId === accountId) return -(transaction.amountMinor ?? 0);
-  if (transaction.type === "TRANSFER" && transaction.fromAccountId === accountId) return -(transaction.sourceAmountMinor ?? 0);
+  // The commission leaves the SOURCE account with the transfer, in the source
+  // currency. It is never deducted from what the destination received.
+  if (transaction.type === "TRANSFER" && transaction.fromAccountId === accountId) {
+    return -((transaction.sourceAmountMinor ?? 0) + transferFeeMinor(transaction));
+  }
   if (transaction.type === "TRANSFER" && transaction.toAccountId === accountId) return transaction.destinationAmountMinor ?? 0;
   return 0;
 }
@@ -61,7 +66,19 @@ export function buildFinanceSummary(input: {
   const projectExpense = new Map<string, number>();
 
   for (const transaction of ranged) {
-    if (transaction.type === "TRANSFER") continue;
+    if (transaction.type === "TRANSFER") {
+      // The transfer itself is neither Income nor Expense. Its commission is an
+      // Expense, in the source currency, under one deterministic system bucket —
+      // derived from this row on every read, so it can never be double-counted
+      // and an edit can never leave a stale fee behind.
+      const feeMinor = transferFeeMinor(transaction);
+      if (!feeMinor || !transaction.sourceCurrencyCode) continue;
+      const feeCurrency = transaction.sourceCurrencyCode;
+      addTo(expense, feeCurrency, feeMinor);
+      addTo(categoryExpense, `${feeCurrency}\u0000${TRANSFER_FEE_CATEGORY_ID}`, feeMinor);
+      addTo(projectExpense, `${feeCurrency}\u0000${transaction.projectId ?? ""}`, feeMinor);
+      continue;
+    }
     const currencyCode = transaction.currencyCode!;
     const amount = transaction.amountMinor!;
     const categoryKey = `${currencyCode}\u0000${transaction.categoryId}`;
@@ -99,6 +116,11 @@ export function buildFinanceSummary(input: {
 
   const categoryRows = (totals: Map<string, number>) => [...totals.entries()].map(([key, amountMinor]) => {
     const [currencyCode, categoryId] = key.split("\u0000");
+    // The transfer-fee bucket is system-owned: it has no finance_categories row,
+    // so its name comes from the one constant that defines it.
+    if (categoryId === TRANSFER_FEE_CATEGORY_ID) {
+      return { currencyCode, categoryId, categoryName: TRANSFER_FEE_CATEGORY_NAME, parentId: null, amountMinor };
+    }
     const category = categories.get(categoryId);
     return { currencyCode, categoryId, categoryName: category?.name ?? "Unknown", parentId: category?.parentId ?? null, amountMinor };
   }).sort((left, right) => right.amountMinor - left.amountMinor || left.categoryName.localeCompare(right.categoryName));

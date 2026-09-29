@@ -92,6 +92,7 @@ test("cross-currency transaction POST sends both explicit integer minor amounts"
     accountId: null, amountMinor: null, currencyCode: null, categoryId: null,
     fromAccountId: "uzs", toAccountId: "usd", sourceAmountMinor: 1_250_000,
     sourceCurrencyCode: "UZS", destinationAmountMinor: 100, destinationCurrencyCode: "USD",
+    feeAmountMinor: 0,
   });
   const body = calls[0].body as Record<string, unknown>;
   assert.equal(calls[0].url, FINANCE_ENDPOINTS.transactions);

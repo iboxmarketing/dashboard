@@ -193,6 +193,8 @@ export type TransactionDraft = {
   toAccountId: string | null;
   amountMinor: number | null;
   destinationAmountMinor: number | null;
+  /** Transfer commission in the SOURCE account currency. Absent or null means none. */
+  feeAmountMinor?: number | null;
   categoryId: string | null;
   projectId: string | null;
 };
@@ -211,6 +213,12 @@ export function validateTransaction(draft: TransactionDraft, accounts: readonly 
   const shape = transferShape(from, to);
   if (shape.sameAccount) return { ok: false, error: "Hisoblar bir xil bo‘lmasligi kerak" };
   if (shape.crossCurrency && (draft.destinationAmountMinor === null || draft.destinationAmountMinor <= 0)) return { ok: false, error: "Har ikki summani kiriting" };
+  // The commission is optional; entered, it must be a real non-negative amount in
+  // the source currency. 0 and "not entered" are the same thing.
+  const fee = draft.feeAmountMinor;
+  if (fee !== undefined && fee !== null && (!Number.isSafeInteger(fee) || fee < 0)) {
+    return { ok: false, error: "Komissiyani to‘g‘ri kiriting" };
+  }
   return { ok: true, error: null };
 }
 
@@ -223,6 +231,7 @@ export function buildTransactionBody(draft: TransactionDraft, accounts: readonly
       accountId: from.id, amountMinor: draft.amountMinor!, currencyCode: from.currencyCode,
       categoryId: draft.categoryId, fromAccountId: null, toAccountId: null,
       sourceAmountMinor: null, sourceCurrencyCode: null, destinationAmountMinor: null, destinationCurrencyCode: null,
+      feeAmountMinor: null,
     };
   }
   const crossCurrency = from.currencyCode !== to!.currencyCode;
@@ -231,7 +240,10 @@ export function buildTransactionBody(draft: TransactionDraft, accounts: readonly
     accountId: null, amountMinor: null, currencyCode: null, categoryId: null,
     fromAccountId: from.id, toAccountId: to!.id,
     sourceAmountMinor: draft.amountMinor!, sourceCurrencyCode: from.currencyCode,
+    // Same currency: the destination mirrors the sent amount, so the two can never
+    // drift apart. The commission is charged on top, never taken out of what arrived.
     destinationAmountMinor: crossCurrency ? draft.destinationAmountMinor! : draft.amountMinor!,
     destinationCurrencyCode: to!.currencyCode,
+    feeAmountMinor: typeof draft.feeAmountMinor === "number" && draft.feeAmountMinor > 0 ? draft.feeAmountMinor : 0,
   };
 }

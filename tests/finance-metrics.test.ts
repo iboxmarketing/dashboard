@@ -18,7 +18,7 @@ const tx = (over: Partial<FinanceTransaction> = {}): FinanceTransaction => ({
   id: "t1", date: "2026-09-10", type: "EXPENSE", note: "", projectId: null,
   accountId: "a1", amountMinor: 10_000, currencyCode: "UZS", categoryId: "cat-ex-1",
   fromAccountId: null, toAccountId: null, sourceAmountMinor: null, sourceCurrencyCode: null,
-  destinationAmountMinor: null, destinationCurrencyCode: null,
+  destinationAmountMinor: null, destinationCurrencyCode: null, feeAmountMinor: null,
   createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z", ...over,
 });
 
@@ -95,13 +95,21 @@ test("income and expense require a category while Finance Project remains option
   assert.deepEqual(validateTransaction({ ...base, categoryId: "cat-ex-1" }, accounts), { ok: true, error: null });
 });
 
-test("server summary remains the authority and excludes transfers from operating totals", () => {
+test("server summary remains the authority: transfer amounts stay out, their commission is an expense", () => {
   const fixture = cloneFixtures();
   const summary = buildFinanceSummary({ ...fixture, range: { from: "2026-09-01", to: "2026-09-30" }, asOf: "2026-09-20" });
   const maps = operatingMaps(summary);
   assert.deepEqual(maps.income, { UZS: 4_200_000_000, USD: 180_000 });
-  assert.deepEqual(maps.expense, { UZS: 4_445_000_000, USD: 64_000 });
-  assert.deepEqual(maps.net, { UZS: -245_000_000, USD: 116_000 });
+  // 4 445 000 000 of ordinary expenses, plus the two transfers' commissions
+  // (1 000 000 + 5 000 000) — and none of the transferred amounts themselves.
+  assert.deepEqual(maps.expense, { UZS: 4_451_000_000, USD: 64_000 });
+  assert.deepEqual(maps.net, { UZS: -251_000_000, USD: 116_000 });
+  // Proof that only the commission entered: zero the fees and the expense total
+  // returns to the ordinary expenses, with the transferred amounts still absent.
+  const withoutFees = cloneFixtures();
+  for (const row of withoutFees.transactions) if (row.type === "TRANSFER") row.feeAmountMinor = 0;
+  const noFeeSummary = buildFinanceSummary({ ...withoutFees, range: { from: "2026-09-01", to: "2026-09-30" }, asOf: "2026-09-20" });
+  assert.deepEqual(operatingMaps(noFeeSummary).expense, { UZS: 4_445_000_000, USD: 64_000 });
 });
 
 test("server account balances are grouped by currency without blending", () => {

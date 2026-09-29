@@ -36,6 +36,9 @@ const transactionRow = (row: Record<string, unknown>): FinanceTransaction => ({
   fromAccountId: nullable(row.from_account_id), toAccountId: nullable(row.to_account_id),
   sourceAmountMinor: numberOrNull(row.source_amount_minor), sourceCurrencyCode: nullable(row.source_currency_code),
   destinationAmountMinor: numberOrNull(row.destination_amount_minor), destinationCurrencyCode: nullable(row.destination_currency_code),
+  // A database that has not yet run migration 0012 has no column here; the row
+  // then reads as no commission rather than failing to load.
+  feeAmountMinor: numberOrNull(row.fee_amount_minor),
   createdAt: String(row.created_at), updatedAt: String(row.updated_at),
 });
 
@@ -207,7 +210,7 @@ async function assertTransactionReferences(input: TransactionInput) {
 const transactionValues = (input: TransactionInput) => [
   input.date, input.type, input.note, input.projectId, input.accountId, input.amountMinor, input.currencyCode, input.categoryId,
   input.fromAccountId, input.toAccountId, input.sourceAmountMinor, input.sourceCurrencyCode,
-  input.destinationAmountMinor, input.destinationCurrencyCode,
+  input.destinationAmountMinor, input.destinationCurrencyCode, input.feeAmountMinor,
 ];
 
 export async function createFinanceTransaction(input: TransactionInput) {
@@ -217,8 +220,8 @@ export async function createFinanceTransaction(input: TransactionInput) {
   await getD1().prepare(`INSERT INTO finance_transactions(
     id, date, type, note, project_id, account_id, amount_minor, currency_code, category_id,
     from_account_id, to_account_id, source_amount_minor, source_currency_code,
-    destination_amount_minor, destination_currency_code, created_at, updated_at
-  ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    destination_amount_minor, destination_currency_code, fee_amount_minor, created_at, updated_at
+  ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(id, ...transactionValues(input), now, now).run();
   return id;
 }
@@ -229,7 +232,7 @@ export async function updateFinanceTransaction(id: string, input: TransactionInp
   await getD1().prepare(`UPDATE finance_transactions SET
     date = ?, type = ?, note = ?, project_id = ?, account_id = ?, amount_minor = ?, currency_code = ?, category_id = ?,
     from_account_id = ?, to_account_id = ?, source_amount_minor = ?, source_currency_code = ?,
-    destination_amount_minor = ?, destination_currency_code = ?, updated_at = ? WHERE id = ?`)
+    destination_amount_minor = ?, destination_currency_code = ?, fee_amount_minor = ?, updated_at = ? WHERE id = ?`)
     .bind(...transactionValues(input), new Date().toISOString(), id).run();
 }
 

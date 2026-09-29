@@ -4,9 +4,10 @@ import { useMemo, useState } from "react";
 
 import { Drawer } from "../ui/drawer";
 import { DateInput, FormField, NumberInput, SelectInput, TextInput, Textarea } from "../ui/form";
-import { useFinanceCurrency } from "./finance-primitives";
+import { Money, useFinanceCurrency } from "./finance-primitives";
 import { formatMoney, moneyInputStep, moneyInputValue, parseMoneyInput } from "@/lib/finance-money";
 import { buildTransactionBody, cadenceMonths, selectableCategories, transferShape, validateTransaction } from "@/lib/finance-metrics";
+import { transferRate, transferSettlement } from "@/lib/finance/transfer";
 import { validateSubscriptionInput } from "@/lib/finance/validation";
 import {
   ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, CADENCES, CADENCE_LABELS, CURRENCIES,
@@ -57,6 +58,7 @@ export function TransactionDrawer({ open, dataset, initialType = "EXPENSE", onCl
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
   const [toAmount, setToAmount] = useState("");
+  const [fee, setFee] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -65,12 +67,35 @@ export function TransactionDrawer({ open, dataset, initialType = "EXPENSE", onCl
   const fromCurrency = useFinanceCurrency(from?.currencyCode);
   const toCurrency = useFinanceCurrency(to?.currencyCode);
   const crossCurrency = type === "TRANSFER" && transferShape(from, to).crossCurrency;
+  /**
+   * The settlement this transfer will produce, recomputed from what is typed so
+   * far. It uses the same canonical helpers as the ledger and the summary, so the
+   * preview cannot disagree with what gets saved.
+   */
+  const preview = useMemo(() => {
+    if (type !== "TRANSFER" || !from || !to || !fromCurrency || !toCurrency) return null;
+    const sourceAmountMinor = amount === "" ? null : parseMoneyInput(amount, fromCurrency);
+    if (sourceAmountMinor === null || sourceAmountMinor <= 0) return null;
+    const entered = toAmount === "" ? null : parseMoneyInput(toAmount, toCurrency);
+    const destinationAmountMinor = crossCurrency ? entered : sourceAmountMinor;
+    if (destinationAmountMinor === null || destinationAmountMinor <= 0) return null;
+    const feeMinor = fee === "" ? 0 : parseMoneyInput(fee, fromCurrency);
+    if (feeMinor === null || feeMinor < 0) return null;
+    const row = {
+      type: "TRANSFER" as const,
+      sourceAmountMinor, sourceCurrencyCode: from.currencyCode,
+      destinationAmountMinor, destinationCurrencyCode: to.currencyCode,
+      feeAmountMinor: feeMinor,
+    };
+    const settlement = transferSettlement(row);
+    return settlement ? { settlement, rate: transferRate(row, dataset.currencies) } : null;
+  }, [type, from, to, fromCurrency, toCurrency, amount, toAmount, fee, crossCurrency, dataset.currencies]);
   const categories = useMemo(() => selectableCategories(dataset.categories, type), [dataset.categories, type]);
   const dirty = Boolean(accountId || amount || description);
 
   const reset = () => {
     setType(initialType); setDate(today()); setAccountId(""); setToAccountId("");
-    setCategoryId(""); setProjectId(""); setDescription(""); setAmount(""); setToAmount(""); setError(null);
+    setCategoryId(""); setProjectId(""); setDescription(""); setAmount(""); setToAmount(""); setFee(""); setError(null);
   };
 
   const save = async () => {
@@ -80,6 +105,8 @@ export function TransactionDrawer({ open, dataset, initialType = "EXPENSE", onCl
       type, date, accountId, toAccountId: toAccountId || null,
       amountMinor: fromCurrency && amount !== "" ? parseMoneyInput(amount, fromCurrency) : null,
       destinationAmountMinor: toCurrency && toAmount !== "" ? parseMoneyInput(toAmount, toCurrency) : null,
+      // The commission is entered in the SOURCE account currency; empty means none.
+      feeAmountMinor: fromCurrency && fee !== "" ? parseMoneyInput(fee, fromCurrency) : 0,
       categoryId: categoryId || null, projectId: projectId || null,
     };
     const check = validateTransaction(draft, accounts);
@@ -99,7 +126,7 @@ export function TransactionDrawer({ open, dataset, initialType = "EXPENSE", onCl
       <div className="fin-type-switch" role="group" aria-label="Yozuv turi">
         {TRANSACTION_TYPES.map((option) => (
           <button key={option} type="button" className={type === option ? "active" : ""}
-            onClick={() => { setType(option); setCategoryId(""); setToAccountId(""); setToAmount(""); }}>
+            onClick={() => { setType(option); setCategoryId(""); setToAccountId(""); setToAmount(""); setFee(""); }}>
             {TRANSACTION_TYPE_LABELS[option]}
           </button>
         ))}
@@ -137,6 +164,32 @@ export function TransactionDrawer({ open, dataset, initialType = "EXPENSE", onCl
           <NumberInput value={toAmount} min="0" step={toCurrency ? moneyInputStep(toCurrency) : "any"}
             onChange={(event) => setToAmount(event.target.value)} />
         </FormField>
+      )}
+
+      {type === "TRANSFER" && (
+        <FormField label={`Komissiya (${from?.currencyCode ?? "manba valyutasi"})`}
+          hint="Ixtiyoriy. Bank komissiyasi yuboruvchi hisobdan qo‘shimcha yechiladi va Chiqim sifatida hisoblanadi. Tushadigan summadan ayirilmaydi.">
+          <NumberInput value={fee} min="0" step={fromCurrency ? moneyInputStep(fromCurrency) : "any"}
+            onChange={(event) => setFee(event.target.value)} />
+        </FormField>
+      )}
+
+      {/* Rate and settlement: derived from the two entered amounts, never from a
+          market rate, and never persisted as the financial truth. */}
+      {type === "TRANSFER" && preview && (
+        <div className="fin-transfer-preview">
+          {preview.rate && <p className="fin-rate"><span>Kurs</span><strong>{preview.rate.label}</strong></p>}
+          <dl>
+            <div><dt>{from?.name ?? "Yuboruvchi hisob"}</dt>
+              <dd><Money amountMinor={preview.settlement.sourceDeltaMinor} currency={preview.settlement.sourceCurrencyCode as Currency} tone="expense" /></dd></div>
+            <div><dt>{to?.name ?? "Qabul qiluvchi hisob"}</dt>
+              <dd><Money amountMinor={preview.settlement.destinationDeltaMinor} currency={preview.settlement.destinationCurrencyCode as Currency} tone="income" /></dd></div>
+            <div><dt>Komissiya</dt>
+              <dd>{preview.settlement.feeMinor
+                ? <Money amountMinor={preview.settlement.feeMinor} currency={preview.settlement.sourceCurrencyCode as Currency} tone="expense" />
+                : <span className="fin-money muted">Komissiya yo‘q</span>}</dd></div>
+          </dl>
+        </div>
       )}
 
       {type !== "TRANSFER" && (
