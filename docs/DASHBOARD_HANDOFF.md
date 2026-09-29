@@ -10,10 +10,10 @@ detailed rules live in `docs/BUSINESS_RULES.md`, the runbooks in
 | | |
 | --- | --- |
 | Worker | `bitrix-deal-dashboard` (Cloudflare Workers, Paid — 30 s CPU) |
-| **Worker version** (what serves traffic) | `037633b2-1948-4485-bb04-c45a09ee9680` (deployed 2026-09-26T11:39Z) |
-| **Deployed application SHA** (what that version was built from) | `37c1fa9` — analytics version 16 |
+| **Worker version** (what serves traffic) | `930ccd1d-fdc5-470a-a67c-6b52aa562c20` (deployed 2026-09-29T12:10Z) |
+| **Deployed application SHA** (what that version was built from) | `b84588f` — analytics version 16, Finance migration `0012_transfer_fee` applied |
 | **Release branch** | `release/meeting-2026-09-21` |
-| **Branch HEAD** (latest commit on that branch) | `37c1fa9`, plus the documentation-only commit that records this deployment |
+| **Branch HEAD** (latest commit on that branch) | `b84588f`, plus the documentation-only commit that records this deployment |
 | URL | `https://bitrix-deal-dashboard.lively-river-afba.workers.dev` (behind Cloudflare Access) |
 | D1 database | `ibox-dashboard-production`, id `281835a3-f1f4-4f92-be6c-818b05583a00` |
 | Latest Full Sync | `2026-09-24T09:24:57.400Z` (14:24:57 Asia/Tashkent), run `2421c3e2-5762-4048-b53f-bad446536aa7`, analytics version 14 — **a new Full Sync is required** for version 16 records (product-fit outcome and SLA evidence). Until it runs, the stale-data banner asks for the rebuild and the SLA card's average and median read `—`, because no stored record carries SLA evidence yet. |
@@ -31,11 +31,15 @@ Three identities, deliberately listed apart:
   A branch HEAD ahead by application code means something is built but not
   deployed — check before assuming production has it.
 
-The previous accepted version was `ee1b9204-6626-41f3-8add-2b4232f6001b`
-(SHA `60d70a9`, analytics version 16 — same stored semantics, UI only), and before
-it `c9fd375b-4028-4656-bbc2-ef0f2f8c3ebf` (SHA `4ce68f7`, analytics version 15). A
-rollback to `ee1b9204` is code-only in every case; a rollback further back to
-`c9fd375b` is code-only and safe **while production records are still
+The previous accepted version was `037633b2-1948-4485-bb04-c45a09ee9680`
+(SHA `37c1fa9`, analytics version 16, before the Finance transfer commission), and
+before it `ee1b9204-6626-41f3-8add-2b4232f6001b` (SHA `60d70a9`) and
+`c9fd375b-4028-4656-bbc2-ef0f2f8c3ebf` (SHA `4ce68f7`, analytics version 15). A
+rollback to `037633b2` or `ee1b9204` is code-only: Finance migration `0012` only
+adds a nullable column, which the older builds ignore — but a transfer commission
+entered under this release becomes invisible to them and its expense disappears
+from the summary until they are rolled forward again. A rollback further back to
+`c9fd375b` is code-only and safe **while production analytics records are still
 version 14/15** — nothing has rebuilt them yet. Once the version-16 Full Sync has
 run, the stored records carry SLA evidence the older build does not read, so
 rolling back then needs the matching D1 restore as well, not code alone.
