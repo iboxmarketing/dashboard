@@ -1,6 +1,6 @@
 import { getD1 } from "@/db";
 import { buildFieldOptionMap, buildStatusMaps, buildUserMap } from "./analytics-dictionaries";
-import { buildAnalyticsRecords, type RawDeal, type RawStageHistory } from "./analytics";
+import { ANALYTICS_VERSION, buildAnalyticsRecords, type RawDeal, type RawStageHistory } from "./analytics";
 import { bitrixCall, bitrixList, bitrixPage, getBitrixDomain, SafeBitrixError, safeBitrixMessage } from "./bitrix";
 import {
   getDictionary, getSettings, getSyncJob,
@@ -14,12 +14,17 @@ import {
 } from "./known-deal-refresh";
 import type { CrmFieldOption, PipelineOption, PipelineStageOption } from "./types";
 export { normalizePipelineName, resolvePipelineSelection } from "./pipelines";
-import { normalizePipelineName, pairPostSalePipeline, resolvePipelineSelection, resolvePostSalePipelines } from "./pipelines";
+import { normalizePipelineName } from "./pipelines";
 import { resolveSyncWindow } from "./sync-window";
 import { canonicalDealFieldKey, canonicalizeFieldOptions } from "./crm-fields";
 import { normalizeSafeStableSellerField, normalizeSalesOwnerAtWonField } from "./stable-seller-field";
-import { OWNER_APPROVED_SELLER_NAMES, directoryUsers, resolveRoster } from "./seller-roster";
+import { PROJECT_SELLER_NAMES, directoryUsers, resolveRoster, rosterDictionaryKey } from "./seller-roster";
 import { runPostSyncReconciliation } from "./post-sync-reconciliation";
+import {
+  DEFAULT_PROJECT, PROJECT_KEYS, SALES_PROJECTS, projectForCategory, type ProjectKey,
+} from "./sales-projects";
+import { groupDealsByProject } from "./project-records";
+import { projectSyncKey, type ProjectSyncRecord } from "./project-sync";
 import { validMarketingChannelField } from "./source-authority";
 import {
   persistStageHistoryRows,
@@ -267,20 +272,24 @@ function advanceDealDiscovery(job: StoredSyncJob, paymentStageIds: string[]) {
   return { ...job, dealScope: next, cursor: 0, processed: 0, total: 0, message: messages[next] };
 }
 
-export async function startSync(options: { days?: number; full?: boolean; pipelineId?: string } = {}) {
-  let settings = await getSettings();
+/** The project a job synchronises. A job written before projects existed was IBOX. */
+const jobProject = (job: Pick<StoredSyncJob, "projectKey">): ProjectKey => job.projectKey ?? DEFAULT_PROJECT;
+
+export async function startSync(options: { days?: number; full?: boolean; pipelineId?: string; project?: ProjectKey } = {}) {
+  // The project is explicit, or implied by the funnel asked for — never a guess
+  // between two. Its funnels come from the registry (lib/sales-projects.ts), so an
+  // IBOX run can only ever read categories 3/13 and a Sales Doctor run 5/17.
+  const project = options.project ?? projectForCategory(options.pipelineId) ?? DEFAULT_PROJECT;
+  if (options.pipelineId && projectForCategory(options.pipelineId) !== project) {
+    throw new Error("Tanlangan sales funnel bu loyihaga tegishli emas");
+  }
+  const registry = SALES_PROJECTS[project];
+  let settings = await getSettings(project);
   const pipelines = await listPipelines();
-  const allSelected = resolvePipelineSelection(pipelines, settings.selectedPipelineIds, settings.selectedPipelineNames);
-  const configuredReporting = resolvePostSalePipelines(pipelines, settings.postSalePipelineIds, settings.postSalePipelineNames);
-  const autoReporting = resolvePostSalePipelines(pipelines, [], allSelected.map((item) => item.name));
-  const allReporting = [...new Map(allSelected.flatMap((main) => {
-    const paired = pairPostSalePipeline(main, configuredReporting) ?? pairPostSalePipeline(main, autoReporting);
-    return paired ? [[paired.id, paired] as const] : [];
-  })).values()];
-  const scopedMain = allSelected.find((pipeline) => pipeline.id === String(options.pipelineId ?? "")) ?? allSelected[0];
-  if (options.pipelineId && scopedMain.id !== String(options.pipelineId)) throw new Error("Tanlangan sales funnel sozlamalarda topilmadi");
-  const scopedPostSale = pairPostSalePipeline(scopedMain, allReporting);
-  if (!scopedPostSale) throw new Error(`${scopedMain.name} uchun mos Обучение / Сопровождение funnel topilmadi`);
+  const scopedMain = pipelines.find((pipeline) => pipeline.id === registry.salesCategoryId);
+  if (!scopedMain) throw new Error(`${registry.name} sales funnel’i (${registry.salesCategoryId}) Bitrix’da topilmadi`);
+  const scopedPostSale = pipelines.find((pipeline) => pipeline.id === registry.postSaleCategoryId);
+  if (!scopedPostSale) throw new Error(`${registry.name} uchun Обучение / Сопровождение funnel (${registry.postSaleCategoryId}) topilmadi`);
   const selected = [scopedMain]; const reporting = [scopedPostSale];
   let crmFields: CrmFieldOption[] = [];
   try { crmFields = await listCrmFields(selected.map((item) => item.id)); } catch { /* Config remains editable by field code. */ }
@@ -303,7 +312,6 @@ export async function startSync(options: { days?: number; full?: boolean; pipeli
         /employee|user/,
       )),
   };
-  const selectedIds = allSelected.map((item) => item.id);
   const scopeState = await getDictionary<{ lastSyncAt: string | null }>(`syncScope:${scopedMain.id}`, { lastSyncAt: null });
   const now = new Date();
   const window = resolveSyncWindow({
@@ -318,13 +326,15 @@ export async function startSync(options: { days?: number; full?: boolean; pipeli
   const runId = crypto.randomUUID();
   const permissions = { deals: "ok", stageHistory: "ok", managers: "ok" };
 
-  await saveSettings({ ...settings, selectedPipelineIds: selectedIds, selectedPipelineNames: allSelected.map((item) => item.name), postSalePipelineIds: allReporting.map((item) => item.id), postSalePipelineNames: allReporting.map((item) => item.name) });
+  // Only this project's row is written; the other project's settings are never touched.
+  await saveSettings({ ...settings, selectedPipelineNames: [scopedMain.name], postSalePipelineNames: [scopedPostSale.name] }, project);
   await saveDictionary("crmFields", crmFields);
   if (mode === "full") await clearPipelineScope([scopedMain.id, scopedPostSale.id]);
 
   const timestamp = now.toISOString();
   const job: StoredSyncJob = {
-    status: "running", phase: "deals", progress: 0, message: `${scopedMain.name} Deal’lari yuklanmoqda…`,
+    projectKey: project,
+    status: "running", phase: "deals", progress: 0, message: `${registry.name}: ${scopedMain.name} Deal’lari yuklanmoqda…`,
     processed: 0, total: 0, cursor: 0, fromIso, toIso: timestamp, mode, runId,
     selectedPipelines: selected, scopePipelineId: scopedMain.id, reportingPipelines: reporting, dealScope: "main", counts: {}, permissions, safeError: null,
     heartbeatAt: timestamp, updatedAt: timestamp,
@@ -335,22 +345,28 @@ export async function startSync(options: { days?: number; full?: boolean; pipeli
 }
 
 async function dealStep(job: StoredSyncJob) {
-  const settings = await getSettings();
+  const settings = await getSettings(jobProject(job));
   const salesCategoryIds = job.selectedPipelines.map((item) => item.id);
   const postSaleCategoryIds = job.reportingPipelines.map((item) => item.id);
   const paymentStageIds = [...new Set(settings.paymentStageIds.map(String).filter(Boolean))];
+  // Every project's evidence fields go on the read, not just this run's: a Deal
+  // that has moved to the other product is interpreted with THAT product's rules
+  // (analyticsStep), which need its seller field and failure-reason field in the
+  // raw payload. The cost is a few extra columns; the alternative is a record
+  // built without the evidence its own project relies on.
+  const everyProject = await Promise.all(PROJECT_KEYS.map((key) => (key === jobProject(job) ? settings : getSettings(key))));
   // Source authority reads the configured Marketing channel field, with
   // SOURCE_ID (always selected below) as its fallback.
-  const customFields = [...new Set([
-    settings.failureReasonField,
-    ...Object.values(settings.failureReasonFieldByPipeline ?? {}),
-    normalizeSafeStableSellerField(settings.salesManagerField),
+  const customFields = [...new Set(everyProject.flatMap((projectSettings) => [
+    projectSettings.failureReasonField,
+    ...Object.values(projectSettings.failureReasonFieldByPipeline ?? {}),
+    normalizeSafeStableSellerField(projectSettings.salesManagerField),
     // The canonical seller field must be on every Deal read, including the
     // refresh scope: a sale that reached payment between syncs carries its
     // seller only here.
-    normalizeSalesOwnerAtWonField(settings.salesOwnerAtWonField),
-    settings.marketingChannelField,
-  ])]
+    normalizeSalesOwnerAtWonField(projectSettings.salesOwnerAtWonField),
+    projectSettings.marketingChannelField,
+  ]))]
     .filter((field): field is string => Boolean(field)).map(canonicalDealFieldKey);
   // CLOSED is current-state evidence for reconciliation only. Won/lost
   // classification stays with the canonical stage and stage-history rules;
@@ -521,9 +537,12 @@ async function lookupStep(job: StoredSyncJob) {
   // hand, and persist the ids: every attribution rule downstream compares ids
   // only, and an ambiguous or missing name is simply left out.
   if (users.length) {
-    const roster = resolveRoster(OWNER_APPROVED_SELLER_NAMES, directoryUsers(users));
-    await saveSettings({ ...(await getSettings()), salesStaffIds: [...roster.approvedSellerIds] });
-    await saveDictionary("salesRoster", roster.entries);
+    // This project's names only, into this project's settings only: an IBOX run
+    // can never write IBOX sellers into Sales Doctor's roster, or the reverse.
+    const project = jobProject(job);
+    const roster = resolveRoster(PROJECT_SELLER_NAMES[project], directoryUsers(users));
+    await saveSettings({ ...(await getSettings(project)), salesStaffIds: [...roster.approvedSellerIds] }, project);
+    await saveDictionary(rosterDictionaryKey(project), roster.entries);
   }
   return move({ ...job, permissions }, "analytics", "Dashboard ko‘rsatkichlari kichik paketlarda hisoblanmoqda…", job.counts.deals);
 }
@@ -540,11 +559,17 @@ async function analyticsStep(job: StoredSyncJob) {
     // modified while it was still working.
     await saveDictionary(`syncScope:${job.scopePipelineId}`, { lastSyncAt: job.toIso, pipelineName: job.selectedPipelines[0]?.name ?? "" });
     await saveSyncState({ status: "success", lastSyncAt: completedAt, lastFrom: job.fromIso, counts: job.counts, permissions: job.permissions, safeError: null });
+    // Which project was synced, when, how, and at which analytics version — so the
+    // UI never leaves anyone wondering whether the last Full Sync was IBOX or Sales Doctor.
+    await saveDictionary(projectSyncKey(jobProject(job)), {
+      project: jobProject(job), lastSyncAt: completedAt, mode: job.mode, runId: job.runId,
+      analyticsVersion: ANALYTICS_VERSION, deals: job.counts.deals ?? 0,
+    } satisfies ProjectSyncRecord);
     // The single completion point for every sync path — the UI's step loop and
     // the scheduled handler both land here — so reconciliation applies
     // identically to manual and cron runs. It never throws and never downgrades
     // this successful result; its own state records any problem.
-    await runPostSyncReconciliation(await getSettings());
+    await runPostSyncReconciliation(await getSettings(jobProject(job)));
     return finished;
   }
   const retryBatchSize = nextAnalyticsRetryBatchSize({
@@ -577,9 +602,7 @@ async function analyticsStep(job: StoredSyncJob) {
   const userRows = await getDictionary<Record<string, unknown>[]>("users", []);
   const statusRows = await getDictionary<Record<string, unknown>[]>("statuses", []);
   const users = buildUserMap(userRows);
-  const pipelines = new Map([...job.selectedPipelines, ...job.reportingPipelines].map((item) => [item.id, item.name]));
   const { stages, sources, stageMeta } = buildStatusMaps(statusRows);
-  const settings = await getSettings();
   const crmFields = await getDictionary<CrmFieldOption[]>("crmFields", []);
   const fieldOptions = buildFieldOptionMap(crmFields);
   const snapshots = await getSalesSnapshots(ids);
@@ -587,11 +610,28 @@ async function analyticsStep(job: StoredSyncJob) {
   // deliberately withheld, so the dashboard never certifies a seller the CRM
   // does not carry.
   const confirmations = await listSellerConfirmations();
-  const records = buildAnalyticsRecords({
-    deals: parseRows<RawDeal>(batchDeals), stageHistories: parseRows<RawStageHistory>(selectedHistories),
-    settings, users, pipelines, stages, sources, stageMeta, fieldOptions, snapshots, confirmations, domain: getBitrixDomain(),
-    stageHistoryAvailable: job.permissions.stageHistory === "ok",
-  });
+  // Each Deal is interpreted with the rules of the project it belongs to NOW —
+  // not the project whose run happened to fetch it. A Deal that moved from IBOX to
+  // Sales Doctor is built with Sales Doctor's stages, roster and seller field, and
+  // lands in Sales Doctor's population; one outside both families stays with the
+  // family it came from, or with this run's project when that cannot be told.
+  const byProject = groupDealsByProject(parseRows<RawDeal>(batchDeals), parseRows<RawStageHistory>(selectedHistories), jobProject(job));
+  const pipelines = new Map([
+    ...job.selectedPipelines, ...job.reportingPipelines,
+    ...PROJECT_KEYS.flatMap((key) => [
+      { id: SALES_PROJECTS[key].salesCategoryId, name: SALES_PROJECTS[key].salesCategoryName },
+      { id: SALES_PROJECTS[key].postSaleCategoryId, name: SALES_PROJECTS[key].postSaleCategoryName },
+    ]),
+  ].map((item) => [item.id, item.name]));
+  const records = [];
+  for (const [project, group] of byProject) {
+    records.push(...buildAnalyticsRecords({
+      deals: group.deals, stageHistories: group.histories,
+      settings: await getSettings(project), projectKey: project,
+      users, pipelines, stages, sources, stageMeta, fieldOptions, snapshots, confirmations, domain: getBitrixDomain(),
+      stageHistoryAvailable: job.permissions.stageHistory === "ok",
+    }));
+  }
   await upsertAnalyticsRecords(records);
   await saveSalesSnapshots(records);
   const cursor = job.cursor + batchDeals.length;

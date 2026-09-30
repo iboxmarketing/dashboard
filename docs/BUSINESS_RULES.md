@@ -4,9 +4,41 @@ This document records the product owner's current rules. If a request conflicts 
 
 ## 1. Project and funnel scope
 
-- IBOX project = IBOX Sales + its IBOX Обучение/Сопровождение funnel.
-- SD project = SD Sales + its SD Обучение/Сопровождение funnel.
-- A user may select only IBOX. Two Sales funnels are not mandatory.
+IBOX and Sales Doctor are two **isolated analytics workspaces** over one Bitrix
+portal (`lib/sales-projects.ts` is the only place a category number belongs to a
+project):
+
+| | IBOX (`/ibox`) | Sales Doctor (`/sales-doctor`) |
+| --- | --- | --- |
+| Sales funnel | category 3 | category 5 "Sales Doctor" |
+| Post-sale funnel | category 13 | category 17 "SD Обучение/Сопровождение" |
+| Distribution (SLA start) | `C3:NEW` | `C5:NEW` РАСПРЕДЕЛЁННЫЕ СДЕЛКИ |
+| SQL from | configured / ОБРАБОТКА | `C5:PREPAYMENT_INVOICE` ОБРАБОТКА (SORT 30) and later |
+| Sale | `C3:WON` Оплата получена | `C5:WON` ЕСТЬ ЗАПУСК! |
+| Sales Lost | `C3:LOSE` | `C5:LOSE` ЗАКРЫТО И НЕ РЕАЛИЗОВАНО |
+| Not Relevant | `C3:UC_C0725V` | `C5:UC_X51N7T` Not Relevant (Marketing) |
+| Product fit | `C3:UC_FKITQ2` | none |
+| Seller at Won field | `UF_CRM_1790230512` | `UF_CRM_1790786031` "SD Sales Owner at Won" |
+| Settings row | `app_settings` key `dashboard` | `app_settings` key `dashboard:SALES_DOCTOR` |
+
+- **Current family decides membership** (owner decision, 2026-10-01): a Deal in
+  3 or 13 is IBOX, a Deal in 5 or 17 is Sales Doctor. A client moved from one
+  product to the other leaves the first project's current population and joins
+  the second's; it never counts in both. A Deal that has left both families (a
+  churn-risk or other funnel) stays with the family it came from, which keeps
+  "a proven sale keeps its Period Sale even if the Deal later moves" true.
+- **Each Deal is interpreted with its own project's rules**, whichever sync fetched
+  it. A record belongs to a project only if its current family is that project
+  AND it was built with that project's rules (`projectKey`). A record written
+  before projects existed was built with IBOX's configuration, so it counts only
+  as IBOX; a legacy Sales Doctor record waits for Sales Doctor's own rebuild.
+- Each project has its own settings, roster, seller field, SLA calendar and target,
+  stage mapping and cached analytics. Saving one project's settings drops stage ids
+  of the other project's funnels and never touches the other row.
+- Sales Doctor quality mirrors IBOX's accepted principles: Not Relevant is NR and
+  never SQL; an ordinary ЗАКРЫТО И НЕ РЕАЛИЗОВАНО is SQL and Sales Lost even when
+  closed directly; ЕСТЬ ЗАПУСК! is a sale and SQL, and stays one after the move to
+  category 17. Sales Doctor has no product-fit outcome.
 - Call-center and unrelated funnels are excluded.
 - The same Bitrix card moves between funnels. Count its `dealId` once.
 
@@ -247,6 +279,28 @@ Period Sale created before the selected range.
 ## 5. Seller attribution
 
 The goal is to attribute performance to the seller responsible at the sales outcome, not to a later support/customer-care assignee.
+
+### Sales Doctor specifics
+
+- Canonical field: `UF_CRM_1790786031` "SD Sales Owner at Won". The owner's
+  Bitrix robot on category 5 ЕСТЬ ЗАПУСК! writes the current Responsible into it
+  when empty, before the category-17 transfer and any onboarding reassignment.
+  IBOX's `UF_CRM_1790230512` is never read or written for a Sales Doctor Deal.
+- Roster (resolved by id from the owner's names, 2026-10-01): Abdulla Norboyev
+  235, Jasur Shadiev 225 (Bitrix "Jasur Shadieev"), Ikrom Tojiev 229 (Bitrix
+  "Ikrom Tojiyev"), Humoyun Toirjonov 203, Behruz Abdulazizov 13121.
+  **Abubakr Rahimov is unresolved**: two active users are named "Abubakir Rahimov"
+  (223, registered 2025-02, last login 2026-03-13; 12565, registered 2026-03-13).
+  Neither is guessed; the owner decides.
+- Historical sales: Bitrix REST stage history carries no actor and there is no
+  history of `ASSIGNED_BY_ID`, so "the Responsible at the ЕСТЬ ЗАПУСК! transition"
+  cannot be read directly. Reliable evidence is the field itself, an owner
+  confirmation, or the single-roster-observer handoff. A current Responsible
+  counts only while the Deal is still in category 5 — never the category-17
+  onboarding Responsible (Rule 3 is limited to the Sales funnel for Sales Doctor).
+- Legacy `CUSTOM_FIELD` snapshots on Sales Doctor sales name Customer Care
+  specialists (the category-17 assignees). They stay REVIEW_REQUIRED and are
+  never promoted to seller credit.
 
 ### Sales Owner at Won — the canonical seller field
 

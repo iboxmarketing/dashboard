@@ -1,3 +1,5 @@
+import { DEFAULT_PROJECT, type ProjectKey } from "./sales-projects";
+import { widgetProject } from "./custom-pages";
 import {
   formatManualValue, orderWidgets, pageRangeBounds, pageRangeLabel, resolveWidgetCustomRange, resolveWidgetRange,
   selectLatestUpdates, selectProjectsListRows, widgetSource,
@@ -39,8 +41,13 @@ export type ShareModelInput = {
   widgets: PageWidget[];
   /** Widget ids this particular share exposes. Everything else is dropped. */
   allowedWidgetIds: string[];
-  /** Prepared project records (`loadSalesRecords`), never the raw table. */
+  /** Prepared IBOX records (`loadSalesRecords`), never the raw table. */
   records: MetricRecord[];
+  /**
+   * Prepared records per sales project, for widgets bound to a project. A widget
+   * reads ONLY its own project's population; IBOX falls back to `records`.
+   */
+  recordsByProject?: Partial<Record<ProjectKey, MetricRecord[]>>;
   projects: Project[];
   updates: ProjectUpdate[];
   now?: Date;
@@ -97,7 +104,11 @@ function renderWidget(widget: PageWidget, input: ShareModelInput, now: Date): Sh
     const range = resolveWidgetRange(config, input.page.defaultRange);
     const custom = resolveWidgetCustomRange(config, input.page);
     const bounds = pageRangeBounds(range, now, custom);
-    const populations = selectPeriodPopulations(input.records, bounds.from, bounds.to);
+    const project = widgetProject(config);
+    const projectRecords = input.recordsByProject?.[project] ?? (project === DEFAULT_PROJECT ? input.records : null);
+    // A project whose records were not loaded shows no number rather than zero.
+    if (!projectRecords) return { kind: "KPI", title: widget.title || String(config.metricId), value: "—", detail: pageRangeLabel(range, custom), source };
+    const populations = selectPeriodPopulations(projectRecords, bounds.from, bounds.to);
     const metrics = buildDashboardMetrics(populations.cohort, populations.periodSales);
     const resolved = resolveDashboardMetric(metrics, String(config.metricId) as DashboardMetricId);
     return { kind: "KPI", title: widget.title || resolved.label, value: resolved.value, detail: pageRangeLabel(range, custom), source };

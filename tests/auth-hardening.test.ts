@@ -224,7 +224,8 @@ test("MEDIUM 1: Finance-only, Projects-only and Sales members get no operational
   assert.deepEqual(bootstrapPayload(false, () => { loaded = true; throw new Error("must not load"); }), {});
   assert.equal(loaded, false);
   const route = read("app/api/bootstrap/route.ts");
-  assert.ok(route.indexOf('if (!can("settings"))') < route.indexOf("loadSalesRecords()"), "the check precedes the read");
+  assert.ok(route.indexOf("loadSalesRecords(") > 0, "the route reads through the shared loader");
+  assert.ok(route.indexOf('if (!can("settings"))') < route.indexOf("loadSalesRecords("), "the check precedes the read");
   // Diagnostics and Stage Control get their own minimal payloads instead.
   assert.match(read("app/api/diagnostics/route.ts"), /requirePermission\(request, "diagnostics"\)/);
   assert.match(read("app/api/current-stages/route.ts"), /stageSettings: stageSettings\(settings\)/);

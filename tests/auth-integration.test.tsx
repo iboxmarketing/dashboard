@@ -428,7 +428,9 @@ test("the frontend permission mapping and the backend route guards are the same 
   }
   // The shared Sales handler checks that permission before reading anything.
   const handler = read("lib/sales-http.ts");
-  assert.ok(handler.indexOf("requirePermission(request, SALES_SECTION_PERMISSION[section])") < handler.indexOf("loadSalesRecords()"));
+  // The call site, not the definition above it: the read happens after the check.
+  assert.ok(handler.indexOf("await loadSalesRecords(") > 0);
+  assert.ok(handler.indexOf("requirePermission(request, SALES_SECTION_PERMISSION[section])") < handler.indexOf("await loadSalesRecords("));
 });
 
 test("every application route is guarded; only login, logout and the share link are open", () => {
@@ -477,7 +479,8 @@ test("the dashboard never fetches a section the user cannot open", () => {
   assert.match(client, /if \(!accessRef\.current\.canPages\) return;/);
   // Operational config is fetched only by Settings; each Sales section only
   // while its own view is open.
-  assert.match(client, /if \(accessRef\.current\.canSettings\) \{\n\s+const bootstrapResponse = await authFetch\("\/api\/bootstrap"/);
+  // Scoped to the workspace's project, but still only behind the Settings permission.
+  assert.match(client, /if \(accessRef\.current\.canSettings\) \{\n\s+const bootstrapResponse = await authFetch\(scoped\("\/api\/bootstrap"\)/);
   assert.match(client, /useSalesSection<DashboardSection>\(view === "dashboard" \? "dashboard" : null/);
   assert.match(client, /useSalesSection<DealsSection>\(view === "deals" \? "deals" : null/);
   assert.doesNotMatch(client, /\/api\/dashboard"/);

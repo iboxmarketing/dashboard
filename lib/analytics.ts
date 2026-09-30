@@ -3,6 +3,7 @@ import { OWNER_OVERRIDES, type OwnerSellerOverride } from "./seller-overrides";
 import { resolveSlaState } from "./sla";
 import { classifyLossReasonGroup, MISSING_LOSS_REASON, classifySalesStatus, fieldDisplayValue, isLowQualityStage, isPaymentStage, isSqlOrDownstreamStage } from "./sales-logic";
 import { distributionStageId, sqlThresholdsByCategory, type StageMeta, type StageSemantics } from "./stage-config";
+import { dealProjectFamily, type ProjectKey } from "./sales-projects";
 import { canonicalDealFieldKey } from "./crm-fields";
 import { resolveDealSource } from "./source-authority";
 import { certifySeller } from "./seller-evidence";
@@ -166,6 +167,11 @@ export function buildAnalyticsRecords(input: {
   pipelines: Map<string, string>; stages: Map<string, string>; sources: Map<string, string>; fieldOptions?: Map<string, Map<string, string>>;
   stageMeta?: Map<string, StageMeta>;
   snapshots?: Map<string, SalesSnapshot>; domain: string | null; activitiesAvailable?: boolean; stageHistoryAvailable: boolean;
+  /**
+   * The project whose rules `settings` are. A Deal whose current family is a
+   * different project gets `projectKey: null`, never this one.
+   */
+  projectKey?: ProjectKey;
   /** Admin confirmations from the review queue, written back to Bitrix (lib/storage.ts). */
   confirmations?: Map<string, SellerConfirmationEvidence>;
   /** Reviewed per-Deal seller decisions. Default to the version-controlled registry, so every caller — Sync and Backfill — applies them. */
@@ -468,6 +474,17 @@ export function buildAnalyticsRecords(input: {
       analyticsVersion: ANALYTICS_VERSION, dealId, title: string(deal.TITLE) || `Deal #${dealId}`, createdAt: created.toISOString(), creationPeriod: isInsideWorkingTime(created, input.settings) ? "WORK_HOURS" : "AFTER_HOURS", slaStart: slaStart.toISOString(),
       assignedManagerId, assignedManager: managerName(assignedManagerId, input.users), categoryId: currentCategoryId, pipeline: input.pipelines.get(currentCategoryId) ?? `Pipeline #${currentCategoryId}`,
       originCategoryId, originPipeline: input.pipelines.get(originCategoryId) ?? `Pipeline #${originCategoryId}`, operationalPipeline: mainIds.has(currentCategoryId), projectLeadMembership,
+      // A record belongs to a project only when the Deal sits in that project's
+      // family NOW and was interpreted with that project's rules. Anything else is
+      // null: excluded from both populations until its own project rebuilds it,
+      // rather than counted under the other product's definitions.
+      // A caller that names no project (written before projects existed) leaves
+      // the field absent, so `recordProject` applies the legacy rule exactly as it
+      // always did; only a project-aware build decides membership here.
+      ...(input.projectKey ? {
+        projectKey: dealProjectFamily(currentCategoryId, originCategoryId) === input.projectKey ? input.projectKey : null,
+        interpretedBy: input.projectKey,
+      } : {}),
       stageId: currentStageId, stage: currentStage, stageEnteredAt: stageEntered.toISOString(), stageAgeHours, stageLimitHours, stageOverdue: salesStatus === "ACTIVE" && stageAgeHours > stageLimitHours,
       sourceId, source, rawSource, marketingChannel, salesStatus, qualified, qualifiedAt, qualifiedStageId: effectiveQualifiedEvent?.stageId ?? null, qualifiedStage: effectiveQualifiedEvent?.stage ?? null,
       wonAt: effectiveWonAt, salesCycleHours, opportunity: Number.isFinite(opportunity) ? opportunity : 0, currencyId: string(deal.CURRENCY_ID), lossReason: effectiveLossReason, lossReasonGroup,

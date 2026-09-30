@@ -1,4 +1,6 @@
 import { getSettings, listAnalyticsRecords } from "@/lib/storage";
+import { requestProject } from "@/lib/sales-http";
+import { recordProject } from "@/lib/sales-projects";
 import { bitrixList, safeBitrixMessage as _safe } from "@/lib/bitrix";
 import type { RawCurrentStageDeal } from "@/lib/current-stages";
 import { getDealsByIds, LOOKUP_BATCH_LIMIT } from "@/lib/deal-lookup";
@@ -19,11 +21,17 @@ import { authorizePermission } from "@/lib/auth/http";
 export async function GET(request: Request) {
   const denied = await authorizePermission(request, "diagnostics");
   if (denied) return denied;
+  const scoped = requestProject(request);
+  if (!scoped.ok) return scoped.response;
   try {
     const url = new URL(request.url);
     const requested = (url.searchParams.get("ids") ?? "").split(",").map((id) => id.trim()).filter(Boolean);
 
-    const [settings, records] = await Promise.all([getSettings(), listAnalyticsRecords()]);
+    // One project's funnel and one project's records.
+    const [settings, records] = await Promise.all([
+      getSettings(scoped.project),
+      listAnalyticsRecords().then((rows) => rows.filter((row) => recordProject(row) === scoped.project)),
+    ]);
     const salesCategoryIds = [...new Set((settings.selectedPipelineIds ?? []).map(String).filter(Boolean))];
     const projectCategoryIds = [...new Set([...salesCategoryIds, ...(settings.postSalePipelineIds ?? []).map(String)].filter(Boolean))];
     // Membership snapshot: all statuses in Sales + matching post-sale. This is

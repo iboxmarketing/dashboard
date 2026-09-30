@@ -4,6 +4,8 @@ import { getBitrixDomain } from "./bitrix";
 import { backfillProgress, type BackfillState } from "./backfill-plan";
 import { getD1 } from "@/db";
 import { getDictionary, getSalesSnapshots, getSettings, saveSalesSnapshots, upsertAnalyticsRecords } from "./storage";
+import { DEFAULT_PROJECT, PROJECT_KEYS, SALES_PROJECTS } from "./sales-projects";
+import { groupDealsByProject } from "./project-records";
 import type { CrmFieldOption } from "./types";
 
 /**
@@ -61,7 +63,7 @@ export const BACKFILL_BATCH_SIZE = 40;
  */
 export async function runAnalyticsBackfillBatch(state: BackfillState): Promise<BackfillState> {
   const db = getD1();
-  const settings = await getSettings();
+  const settings = await getSettings(DEFAULT_PROJECT);
 
   const dealRows = (await db
     .prepare(`SELECT deal_id, payload FROM raw_deals ORDER BY deal_id LIMIT ${BACKFILL_BATCH_SIZE} OFFSET ?`)
@@ -109,21 +111,32 @@ export async function runAnalyticsBackfillBatch(state: BackfillState): Promise<B
   dealRows.length = 0;
   historyRows.length = 0;
 
-  const records = buildAnalyticsRecords({
-    deals,
-    stageHistories,
-    settings,
-    users,
-    pipelines,
-    stages, sources, stageMeta,
-    fieldOptions,
-    snapshots,
-    domain: getBitrixDomain(),
-    // The raw history in D1 is what the last successful sync stored. Treating
-    // it as available is what lets the corrected rule read "history exists and
-    // contains no SQL" as evidence rather than as an unknown.
-    stageHistoryAvailable: true,
-  });
+  // Each Deal is rebuilt with the rules of the project it belongs to now, exactly
+  // as the sync builds it (lib/project-records.ts) — a backfill must never
+  // reinterpret a Sales Doctor Deal with IBOX's stages, roster or seller field.
+  for (const key of PROJECT_KEYS) {
+    pipelines.set(SALES_PROJECTS[key].salesCategoryId, pipelines.get(SALES_PROJECTS[key].salesCategoryId) ?? SALES_PROJECTS[key].salesCategoryName);
+    pipelines.set(SALES_PROJECTS[key].postSaleCategoryId, pipelines.get(SALES_PROJECTS[key].postSaleCategoryId) ?? SALES_PROJECTS[key].postSaleCategoryName);
+  }
+  const records = [];
+  for (const [project, group] of groupDealsByProject(deals, stageHistories, DEFAULT_PROJECT)) {
+    records.push(...buildAnalyticsRecords({
+      deals: group.deals,
+      stageHistories: group.histories,
+      settings: project === DEFAULT_PROJECT ? settings : await getSettings(project),
+      projectKey: project,
+      users,
+      pipelines,
+      stages, sources, stageMeta,
+      fieldOptions,
+      snapshots,
+      domain: getBitrixDomain(),
+      // The raw history in D1 is what the last successful sync stored. Treating
+      // it as available is what lets the corrected rule read "history exists and
+      // contains no SQL" as evidence rather than as an unknown.
+      stageHistoryAvailable: true,
+    }));
+  }
 
   for (const record of records) {
     const scope = scopeByDeal.get(record.dealId);

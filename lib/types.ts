@@ -130,6 +130,8 @@ export type AnalyticsRuntimeDiagnostics = {
 };
 
 export type SyncProgressState = {
+  /** Which sales project the current (or last) run belongs to. Null when no job is recorded. */
+  projectKey?: "IBOX" | "SALES_DOCTOR" | null;
   status: "idle" | "running" | "paused" | "success" | "error";
   phase: SyncPhase | null;
   progress: number;
@@ -229,6 +231,16 @@ export type StageTimelineEntry = {
 
 export type AnalyticsRecord = {
   analyticsVersion: number;
+  /**
+   * The sales project whose population this record belongs to: set only when the
+   * Deal's CURRENT family is that project AND the record was interpreted with that
+   * project's rules. `null` means neither (another funnel, or a record built with
+   * the other project's rules that awaits its own project's rebuild). Absent on
+   * records written before projects existed — see `recordProject`.
+   */
+  projectKey?: "IBOX" | "SALES_DOCTOR" | null;
+  /** Whose rules built this record — for diagnostics; never membership authority. */
+  interpretedBy?: "IBOX" | "SALES_DOCTOR" | null;
   dealId: string;
   title: string;
   createdAt: string;

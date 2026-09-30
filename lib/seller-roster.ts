@@ -1,3 +1,4 @@
+import type { ProjectKey } from "./sales-projects";
 /**
  * The owner-approved Sales roster, resolved once to Bitrix user IDs.
  *
@@ -32,6 +33,30 @@ export const OWNER_APPROVED_SELLER_NAMES = [
   "Rahmatulloh Ahmadjonov",
   "Muhamadrasul Dadaxonov",
 ] as const;
+
+/**
+ * Sales Doctor's owner-provided roster, 2026-10-01. Names as the owner wrote
+ * them; resolved by the same conservative matcher as IBOX. "Abubakr Rahimov"
+ * matches two active users (both "Abubakir Rahimov") and therefore resolves to
+ * ROSTER_MAPPING_REVIEW — never to a guessed id.
+ */
+export const SALES_DOCTOR_SELLER_NAMES = [
+  "Abdulla Norboyev",
+  "Abubakr Rahimov",
+  "Jasur Shadiev",
+  "Ikrom Tojiev",
+  "Humoyun Toirjonov",
+  "Behruz Abdulazizov",
+] as const;
+
+/** Each project's roster names. A sync resolves ONLY its own project's list. */
+export const PROJECT_SELLER_NAMES: Record<ProjectKey, readonly string[]> = {
+  IBOX: OWNER_APPROVED_SELLER_NAMES,
+  SALES_DOCTOR: SALES_DOCTOR_SELLER_NAMES,
+};
+
+/** Where a project's resolved roster evidence is kept; IBOX keeps its historical key. */
+export const rosterDictionaryKey = (project: ProjectKey) => (project === "IBOX" ? "salesRoster" : `salesRoster:${project}`);
 
 export type DirectoryUser = { id: string; name: string; active?: boolean };
 

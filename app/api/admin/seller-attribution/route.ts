@@ -1,11 +1,13 @@
 import { authError, requireAdmin } from "@/lib/auth/http";
 import { bitrixCall, bitrixList, getBitrixDomain, safeBitrixMessage } from "@/lib/bitrix";
+import { SALES_PROJECTS, parseProjectKey, recordProject, type ProjectKey } from "@/lib/sales-projects";
+import { requestProject } from "@/lib/sales-http";
 import { DEAL_OBSERVERS_FIELD, buildDealObserverRead, observerIdList } from "@/lib/deal-observers";
 import {
   classifyLegacySalesOwner, evidenceStillHolds, isAutoConfirm, summarizeLegacySalesOwners,
   type LegacySellerDecision,
 } from "@/lib/legacy-seller-autoconfirm";
-import { OWNER_APPROVED_SELLER_NAMES, directoryUsers, resolveRoster } from "@/lib/seller-roster";
+import { PROJECT_SELLER_NAMES, directoryUsers, resolveRoster } from "@/lib/seller-roster";
 import { canonicalDealFieldKey } from "@/lib/crm-fields";
 import { employeeFieldValue } from "@/lib/seller-writeback";
 import { classifyBackfill, isWritable, summarizeBackfill, type BackfillDecision } from "@/lib/seller-backfill";
@@ -45,9 +47,21 @@ function userMap(rows: Record<string, unknown>[]) {
   ]));
 }
 
-async function loadContext() {
+/**
+ * One project's seller evidence: its own settings, its own records, its own field.
+ *
+ * Every action here can write to Bitrix, so the project is not a display filter
+ * but a write boundary: a Sales Doctor action reads only Sales Doctor records and
+ * writes only UF_CRM_1790786031, an IBOX action only IBOX records and
+ * UF_CRM_1790230512. Neither can ever write the other product's field.
+ */
+/** This project's population only — never the whole table. */
+const projectRecords = (project: ProjectKey) =>
+  listAnalyticsRecords().then((rows) => rows.filter((row) => recordProject(row) === project));
+
+async function loadContext(project: ProjectKey) {
   const [settings, records, confirmations, userRows] = await Promise.all([
-    getSettings(), listAnalyticsRecords(), listSellerConfirmations({ includeFailed: true }),
+    getSettings(project), projectRecords(project), listSellerConfirmations({ includeFailed: true }),
     getDictionary<Record<string, unknown>[]>("users", []),
   ]);
   const users = userMap(userRows);
@@ -98,9 +112,11 @@ function queueRow(record: AnalyticsRecord, decision: BackfillDecision, users: Ma
 }
 
 export async function GET(request: Request) {
+  const scoped = requestProject(request);
+  if (!scoped.ok) return scoped.response;
   try {
     await requireAdmin(request);
-    const { settings, records, confirmations, users, field, decisions } = await loadContext();
+    const { settings, records, confirmations, users, field, decisions } = await loadContext(scoped.project);
     const domain = getBitrixDomain();
     const byDeal = new Map(decisions.map((decision) => [decision.dealId, decision]));
     const queue = records
@@ -113,6 +129,7 @@ export async function GET(request: Request) {
       .map((record) => queueRow(record, byDeal.get(record.dealId) as BackfillDecision, users, domain));
     const sales = records.filter((record) => record.salesStatus === "WON" && record.wonAt);
     return Response.json({
+      project: scoped.project,
       canonicalField: field,
       configuredSellerField: settings.salesManagerField,
       summary: summarizeBackfill(decisions),
@@ -144,20 +161,25 @@ export async function POST(request: Request) {
   }
   const payload = (await request.json().catch(() => ({}))) as Record<string, unknown>;
   const action = String(payload.action ?? "");
+  // The write boundary: an action names its project explicitly (body or query),
+  // and anything else is refused rather than defaulted — a Bitrix write must never
+  // land on the other product's field by omission.
+  const project = parseProjectKey(payload.project ?? new URL(request.url).searchParams.get("project"));
+  if (!project) return Response.json({ error: "Loyiha noto‘g‘ri" }, { status: 400 });
   try {
-    if (action === "backfill") return await runBackfill(payload, actor);
-    if (action === "legacy-autoconfirm") return await legacyAutoconfirm(payload, actor);
-    if (action === "confirm") return await confirmSeller(payload, actor);
+    if (action === "backfill") return await runBackfill(payload, actor, project);
+    if (action === "legacy-autoconfirm") return await legacyAutoconfirm(payload, actor, project);
+    if (action === "confirm") return await confirmSeller(payload, actor, project);
     return Response.json({ error: "Amal noto‘g‘ri" }, { status: 400 });
   } catch (error) {
     return Response.json({ error: safeBitrixMessage(error) }, { status: 500 });
   }
 }
 
-async function runBackfill(payload: Record<string, unknown>, actor: string) {
+async function runBackfill(payload: Record<string, unknown>, actor: string, project: ProjectKey) {
   const apply = payload.mode === "apply";
   const limit = Math.max(1, Math.min(APPLY_LIMIT, Number(payload.limit ?? APPLY_LIMIT) || APPLY_LIMIT));
-  const { settings, decisions, users, field } = await loadContext();
+  const { settings, decisions, users, field } = await loadContext(project);
   const writable = decisions.filter(isWritable);
   const summary = summarizeBackfill(decisions);
   const plan = writable.slice(0, limit).map((decision) => ({
@@ -213,12 +235,12 @@ async function runBackfill(payload: Record<string, unknown>, actor: string) {
   });
 }
 
-async function confirmSeller(payload: Record<string, unknown>, actor: string) {
+async function confirmSeller(payload: Record<string, unknown>, actor: string, project: ProjectKey) {
   const dealId = String(payload.dealId ?? "").trim();
   const sellerId = String(payload.sellerId ?? "").trim();
   if (!EMPLOYEE_ID.test(dealId)) return Response.json({ error: "Deal ID noto‘g‘ri" }, { status: 400 });
   if (!EMPLOYEE_ID.test(sellerId)) return Response.json({ error: "Sotuvchi tanlanmagan" }, { status: 400 });
-  const { records, users, field, decisions } = await loadContext();
+  const { records, users, field, decisions } = await loadContext(project);
   if (!field) return Response.json({ error: "Sales Owner at Won maydoni sozlanmagan" }, { status: 400 });
   const record = records.find((entry) => entry.dealId === dealId);
   if (!record) return Response.json({ error: "Deal analytics bazasida topilmadi" }, { status: 404 });
@@ -278,7 +300,7 @@ const LEGACY_CANDIDATE_LIMIT = 600;
 const LEGACY_WRITE_LIMIT = 200;
 const LIVE_BATCH = 50;
 
-type LiveEvidence = { assignedManagerId: string; observerIds: string[]; salesOwnerAtWonId: string };
+type LiveEvidence = { assignedManagerId: string; observerIds: string[]; salesOwnerAtWonId: string; categoryId: string };
 
 /**
  * Current observers, Responsible person and canonical field, read from Bitrix.
@@ -294,7 +316,7 @@ async function readLiveEvidence(dealIds: string[], field: string): Promise<Map<s
   for (let index = 0; index < dealIds.length; index += LIVE_BATCH) {
     const ids = dealIds.slice(index, index + LIVE_BATCH);
     const deals = await bitrixList<Record<string, unknown>>("crm.deal.list", {
-      order: { ID: "ASC" }, filter: { "@ID": ids }, select: ["ID", "ASSIGNED_BY_ID", key],
+      order: { ID: "ASC" }, filter: { "@ID": ids }, select: ["ID", "ASSIGNED_BY_ID", "CATEGORY_ID", key],
     }, { maxPages: 3 });
     for (const deal of deals) {
       const dealId = String(deal.ID ?? "");
@@ -302,6 +324,9 @@ async function readLiveEvidence(dealIds: string[], field: string): Promise<Map<s
       live.set(dealId, {
         assignedManagerId: employeeFieldValue(deal.ASSIGNED_BY_ID),
         salesOwnerAtWonId: employeeFieldValue(deal[key] ?? deal[field]),
+        // Re-read with the rest: a Deal moved into onboarding since the plan was
+        // made must not have its new Responsible credited by Rule 3.
+        categoryId: String(deal.CATEGORY_ID ?? ""),
         observerIds: [],
       });
     }
@@ -323,6 +348,7 @@ function legacyRow(record: AnalyticsRecord, live: LiveEvidence | undefined) {
     dealId: record.dealId, title: record.title, wonAt: record.wonAt, opportunity: record.opportunity,
     currencyId: record.currencyId, salesStatus: record.salesStatus,
     projectLeadMembership: record.projectLeadMembership ?? null, currentScope: record.currentScope ?? null,
+    categoryId: live ? live.categoryId : record.categoryId ?? null,
     assignedManagerId: live ? live.assignedManagerId : record.assignedManagerId,
     observerIds: live ? live.observerIds : [],
     salesOwnerAtWonId: live ? live.salesOwnerAtWonId : record.salesOwnerAtWonId ?? null,
@@ -336,7 +362,7 @@ function legacyRow(record: AnalyticsRecord, live: LiveEvidence | undefined) {
  * caller-supplied claim: the candidate set is always this database's sale
  * population, optionally narrowed by `dealIds`.
  */
-async function legacyAutoconfirm(payload: Record<string, unknown>, actor: string) {
+async function legacyAutoconfirm(payload: Record<string, unknown>, actor: string, project: ProjectKey) {
   const apply = payload.mode === "apply";
   const writeLimit = Math.max(1, Math.min(LEGACY_WRITE_LIMIT, Number(payload.limit ?? LEGACY_WRITE_LIMIT) || LEGACY_WRITE_LIMIT));
   const allowlist = Array.isArray(payload.dealIds)
@@ -344,11 +370,18 @@ async function legacyAutoconfirm(payload: Record<string, unknown>, actor: string
     : null;
 
   const [settings, records, userRows] = await Promise.all([
-    getSettings(), listAnalyticsRecords(), getDictionary<Record<string, unknown>[]>("users", []),
+    getSettings(project), projectRecords(project), getDictionary<Record<string, unknown>[]>("users", []),
   ]);
   const field = normalizeSalesOwnerAtWonField(settings.salesOwnerAtWonField);
   const users = userMap(userRows);
-  const roster = resolveRoster(OWNER_APPROVED_SELLER_NAMES, directoryUsers(userRows));
+  // This project's roster names only (lib/seller-roster.ts).
+  const roster = resolveRoster(PROJECT_SELLER_NAMES[project], directoryUsers(userRows));
+  // Sales Doctor never credits a current Responsible once the Deal has left its
+  // Sales funnel (category 17 is onboarding); IBOX keeps its accepted Rule 3.
+  const legacyContext = {
+    approvedSellerIds: roster.approvedSellerIds,
+    ...(project === "SALES_DOCTOR" ? { responsibleCategoryIds: new Set([SALES_PROJECTS.SALES_DOCTOR.salesCategoryId]) } : {}),
+  };
   const rosterTable = roster.entries.map((entry) => ({
     providedName: entry.providedName, status: entry.status, userId: entry.userId,
     canonicalName: entry.canonicalName, matchKind: entry.matchKind,
@@ -370,7 +403,7 @@ async function legacyAutoconfirm(payload: Record<string, unknown>, actor: string
   const live = await readLiveEvidence(candidates.map((record) => record.dealId), field);
   const byDeal = new Map(candidates.map((record) => [record.dealId, record]));
   const decisions = candidates.map((record) =>
-    classifyLegacySalesOwner(legacyRow(record, live.get(record.dealId)), { approvedSellerIds: roster.approvedSellerIds }));
+    classifyLegacySalesOwner(legacyRow(record, live.get(record.dealId)), legacyContext));
   const summary = summarizeLegacySalesOwners(decisions);
 
   const name = (id: string | null | undefined) => (id ? users.get(String(id)) ?? `Menejer #${id}` : null);
@@ -418,7 +451,7 @@ async function legacyAutoconfirm(payload: Record<string, unknown>, actor: string
     const record = byDeal.get(decision.dealId);
     const fresh = await readLiveEvidence([decision.dealId], field);
     const reclassified = classifyLegacySalesOwner(
-      legacyRow(record as AnalyticsRecord, fresh.get(decision.dealId)), { approvedSellerIds: roster.approvedSellerIds });
+      legacyRow(record as AnalyticsRecord, fresh.get(decision.dealId)), legacyContext);
     const guard = evidenceStillHolds(decision, reclassified);
     if (!guard.ok) {
       results.push({ ...row(decision, guard.reason, null) });

@@ -45,7 +45,7 @@ import {
   DEFAULT_SHARED_WIDGET_TYPES, SHARE_STATUS_LABELS, defaultVisibleWidgetIds, shareStatus,
   type PageShare,
 } from "@/lib/share-tokens";
-import { dealOutcomeLabel } from "@/lib/sales-logic";
+import { dealOutcomeLabel, isSalesLost } from "@/lib/sales-logic";
 import {
   activeFilterCount, filterCurrentStageRecords, filterStageHistoryRecords, liveManagerOptions,
 } from "@/lib/record-filters";
@@ -76,6 +76,9 @@ import { Drawer } from "./ui/drawer";
 import { FinanceView } from "./finance/finance-view";
 import { StatusCombobox } from "./ui/combobox";
 import { hasPermission, type PermissionKey } from "@/lib/auth/permissions";
+import { SALES_PROJECTS, type ProjectKey } from "@/lib/sales-projects";
+import { responseMatchesProject, withProject } from "@/lib/project-url";
+import { ProjectProvider, ProjectSelector, ProjectSwitcher, lastProject, rememberProject, useProject } from "./project-context";
 
 /** Sales analytics views. Only these carry the global cohort filter bar. */
 const SALES_VIEWS = ["dashboard", "managers", "managerDetail", "leadFlow", "quality", "stages", "deals"] as const;
@@ -200,7 +203,7 @@ function SyncProgress({ sync, busy, onPause, onResume }: { sync: SyncState; busy
     <div className="sync-progress-head"><div>{sync.status === "running" ? <Loader2 size={18} className="spin" /> : sync.status === "paused" ? <TimerReset size={18} /> : <XCircle size={18} />}<span><strong>{sync.status === "running" ? "Sinxronizatsiya ishlayapti" : sync.status === "paused" ? "Sinxronizatsiya pauzada" : "Sinxronizatsiya to‘xtadi"}</strong><small>{sync.message ?? sync.safeError ?? "Holat yangilanmoqda…"}</small></span></div><b>{sync.progress}%</b></div>
     <div className="sync-track"><span style={{ width: `${sync.progress}%` }} /></div>
     <div className="sync-progress-foot"><span>{sync.selectedPipelines[0]?.name || "Sales funnel"} · faqat shu funnel</span><span>{sync.processed}{sync.total ? ` / ${sync.total}` : ""}</span></div>
-    {sync.status === "running" ? <button className="button small secondary" onClick={onPause}>Pauza</button> : sync.status === "paused" ? <button className="button small primary" disabled={busy} onClick={onResume}>{busy ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}Davom ettirish</button> : <small className="sync-restart-hint">Yuqoridan IBOX yoki SD funnel’ni tanlab yangi sync boshlang.</small>}
+    {sync.status === "running" ? <button className="button small secondary" onClick={onPause}>Pauza</button> : sync.status === "paused" ? <button className="button small primary" disabled={busy} onClick={onResume}>{busy ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}Davom ettirish</button> : <small className="sync-restart-hint">Yuqoridagi tugma bilan shu loyiha uchun yangi sync boshlang.</small>}
   </div>;
 }
 
@@ -480,6 +483,7 @@ function FiltersBar({ filters, setFilters, options, currentStages, mode = "cohor
 }
 
 function DashboardView({ section, onManager }: { section: DashboardSection; onManager: (manager: ManagerRow) => void }) {
+  const project = useProject() ?? "IBOX";
   const { metrics, previousMetrics, managers, metricIds } = section;
   const selected = resolveHeadlineCardIds(metricIds);
   const money = (value: number) => `${Math.round(value).toLocaleString("uz-UZ")} ${metrics.money.currency || "UZS"}`;
@@ -492,7 +496,7 @@ function DashboardView({ section, onManager }: { section: DashboardSection; onMa
   const cards: Record<HeadlineCardId, { value: string; detail: React.ReactNode; tone: string; icon: typeof Activity; hint?: string }> = {
     leads: {
       value: String(metrics.counts.leads),
-      detail: <><MetricDelta current={metrics.counts.leads} previous={previousMetrics.counts.leads} /> · canonical IBOX a’zoligi</>,
+      detail: <><MetricDelta current={metrics.counts.leads} previous={previousMetrics.counts.leads} /> · canonical {SALES_PROJECTS[project].name} a’zoligi</>,
       tone: "blue", icon: Database },
     classified_leads: {
       value: String(metrics.counts.classified_leads),
@@ -872,6 +876,7 @@ function LeadFlowView({ flow }: { flow: LeadFlow }) {
 }
 
 function DealsTable({ records }: { records: DealRow[] }) {
+  const project = useProject() ?? "IBOX";
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<"createdAt" | "slaBusinessMinutes">("createdAt");
   const perPage = 20;
@@ -880,9 +885,14 @@ function DealsTable({ records }: { records: DealRow[] }) {
   const safePage = Math.min(page, pages);
   const rows = sorted.slice((safePage - 1) * perPage, safePage * perPage);
   function exportCsv() {
-    const headers = ["Deal ID", "Deal nomi", "Yaratilgan vaqt", "Deal mas’uli", "Sales pipeline", "Current pipeline", "Current stage", "Stage age hours", "Stage limit hours", "Sales status", "SQL at", "Sales manager", "Seller attribution", "Won at", "Sales cycle hours", "Opportunity", "Currency", "Failure group", "Failure reason", "Source (SOURCE_ID)", "Marketing kanali", "Duplicate of", "First processing at", "Processing source", "Processing business minutes", "SLA status", "Taqsimlangan vaqt", "SLA to‘xtagan stage", "SLA ish daqiqasi", "SLA kalendar daqiqasi"];
+    // Project, category and the canonical quality flags lead the row, so an
+    // export always says which product's population it is and what each Deal
+    // counted as there.
+    const yes = (value: boolean) => (value ? "Ha" : "Yo‘q");
+    const headers = ["Loyiha", "Deal ID", "Joriy kategoriya", "SQL", "Not Relevant", "Sotilmadi", "Sotuv", "Deal nomi", "Yaratilgan vaqt", "Deal mas’uli", "Sales pipeline", "Current pipeline", "Current stage", "Stage age hours", "Stage limit hours", "Sales status", "SQL at", "Sales manager", "Seller attribution", "Won at", "Sales cycle hours", "Opportunity", "Currency", "Failure group", "Failure reason", "Source (SOURCE_ID)", "Marketing kanali", "Duplicate of", "First processing at", "Processing source", "Processing business minutes", "SLA status", "Taqsimlangan vaqt", "SLA to‘xtagan stage", "SLA ish daqiqasi", "SLA kalendar daqiqasi"];
     const quote = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
-    const lines: unknown[][] = [headers, ...sorted.map((row) => [row.dealId, row.title, row.createdAt, row.assignedManager, row.originPipeline, row.pipeline, row.stage, row.stageAgeHours, row.stageLimitHours, row.salesStatus, row.qualifiedAt, row.salesManager, row.salesManagerAttribution, row.wonAt, row.salesCycleHours, row.opportunity, row.currencyId, row.lossReasonGroup, row.lossReason, row.source, row.marketingChannel ?? "", row.duplicateOfDealId, row.processingAt, row.processingSource, row.processingBusinessMinutes, row.slaStatus, row.slaStartAt, row.slaStopStage, row.slaBusinessMinutes, row.slaElapsedMinutes])];
+    const lines: unknown[][] = [headers, ...sorted.map((row) => [SALES_PROJECTS[project].name, row.dealId, row.categoryId,
+      yes(Boolean(row.qualified)), yes(row.lossReasonGroup === "MARKETING"), yes(isSalesLost(row)), yes(row.salesStatus === "WON"), row.title, row.createdAt, row.assignedManager, row.originPipeline, row.pipeline, row.stage, row.stageAgeHours, row.stageLimitHours, row.salesStatus, row.qualifiedAt, row.salesManager, row.salesManagerAttribution, row.wonAt, row.salesCycleHours, row.opportunity, row.currencyId, row.lossReasonGroup, row.lossReason, row.source, row.marketingChannel ?? "", row.duplicateOfDealId, row.processingAt, row.processingSource, row.processingBusinessMinutes, row.slaStatus, row.slaStartAt, row.slaStopStage, row.slaBusinessMinutes, row.slaElapsedMinutes])];
     const blob = new Blob(["\ufeff", lines.map((line) => line.map(quote).join(",")).join("\n")], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob); const link = document.createElement("a");
     link.href = url; link.download = `bitrix-deals-${new Date().toISOString().slice(0, 10)}.csv`; link.click(); URL.revokeObjectURL(url);
@@ -995,6 +1005,7 @@ function SalesQualityTable({ rows, onSelect }: { rows: SalesManagerDiagnostic[];
 }
 
 function QualityView({ analytics, onManager }: { analytics: QualityAnalytics; onManager: (managerId: string) => void }) {
+  const hasProductFit = SALES_PROJECTS[useProject() ?? "IBOX"].hasProductFit;
   const { summary } = analytics;
   const topMarketing = summary.topMarketingReason;
   const topSales = summary.topSalesReason;
@@ -1004,8 +1015,8 @@ function QualityView({ analytics, onManager }: { analytics: QualityAnalytics; on
       <KpiCard label="Saralash qamrovi" value={qualityRate(summary.classificationCoverage)} detail={<>{summary.classified} / {summary.leads} · Saralangan / Leadlar<small className="card-note">Saralanmagan: {summary.unclassified}</small></>} icon={Gauge} tone="blue" />
       <KpiCard label="Sotilmadi" value={String(summary.salesLost)} detail={<>{qualityRate(summary.salesLostRate)} SQL’dan<small className="card-note">Faqat canonical Sales Lost</small></>} icon={XCircle} tone="red" />
       <KpiCard label="Sababsiz yopilgan" value={String(summary.missingReasons)} detail={<>{qualityRate(summary.missingReasonRate)} · {summary.missingReasons} / {summary.missingReasonPopulation}<small className="card-note">NR + Sales Lost · sabab intizomi</small></>} icon={ClipboardList} tone="slate" />
-      <KpiCard label="Programma mos emas" value={String(summary.productFit)}
-        detail={<>Mijoz real, programma to‘g‘ri kelmadi<small className="card-note">Leadlarda qoladi · SQL/Not Relevant/Sotilmadi emas</small></>} icon={ClipboardList} tone="slate" />
+      {hasProductFit && <KpiCard label="Programma mos emas" value={String(summary.productFit)}
+        detail={<>Mijoz real, programma to‘g‘ri kelmadi<small className="card-note">Leadlarda qoladi · SQL/Not Relevant/Sotilmadi emas</small></>} icon={ClipboardList} tone="slate" />}
       <KpiCard label="Top marketing muammo" value={topMarketing?.reason ?? "—"} valueClassName="reason-value" detail={topMarketing ? `${topMarketing.count} ta · ${topMarketing.share}% Not Relevant’dan` : "Not Relevant yo‘q"} icon={AlertTriangle} tone="amber" />
       <KpiCard label="Top sales yo‘qotish sababi" value={topSales?.reason ?? "—"} valueClassName="reason-value" detail={topSales ? `${topSales.count} ta · ${topSales.share}% Sotilmadi’dan` : "Sales Lost yo‘q"} icon={XCircle} tone="red" />
     </section>
@@ -1239,6 +1250,7 @@ function ClassificationDiagnostics({ data }: { data: DiagnosticsData["classifica
  * readiness. It no longer needs the record list or the CRM settings.
  */
 function DiagnosticsView({ data, reconciliation }: { data: DiagnosticsData; reconciliation: StageReconciliation | null }) {
+  const hasProductFit = SALES_PROJECTS[useProject() ?? "IBOX"].hasProductFit;
   const { sync, readiness, conflicts } = data;
   // Calls are no longer a data source, so those API permissions are irrelevant.
   const permissions = [["Deal API", sync.permissions.deals], ["Stage history", sync.permissions.stageHistory], ["User API", sync.permissions.managers]];
@@ -1255,7 +1267,7 @@ function DiagnosticsView({ data, reconciliation }: { data: DiagnosticsData; reco
     { label: "Ma’lumot mavjud emas", hint: "Activity yoki stage history olinmagan", count: quality.dataUnavailable },
     { label: "Eski yozuv — yangilash kerak", hint: "Loyiha a’zoligi aniqlanmagan; UNRESOLVED sifatida saqlanadi, Full Sync qayta quradi", count: data.membership.needsRefresh },
     { label: "Eski yozuv — boshqa loyiha", hint: "Oxirgi ma’lum funnel loyihaga kirmaydi; Lead’ga qo‘shilmaydi", count: data.membership.legacyOtherProject },
-    { label: "Programma mos emas", hint: "Mijoz real, programma mos emas — Marketing ham, Sales ham ayibdor emas", count: data.classification.productFit ?? 0 },
+    ...(hasProductFit ? [{ label: "Programma mos emas", hint: "Mijoz real, programma mos emas — Marketing ham, Sales ham ayibdor emas", count: data.classification.productFit ?? 0 }] : []),
     { label: "Marketing kanal to‘ldirilgan", hint: data.marketingChannelField ? `${data.marketingChannelField} — alohida o‘lcham, Manba emas` : "Marketing kanal maydoni sozlanmagan", count: data.marketingChannel.withChannel },
     { label: "Sotuv atributsiyasi tasdiqlanmagan", hint: "Tekshiruv kerak — hech bir xodim hisobiga kirmaydi", count: data.sellerCertification.reviewRequired },
     { label: "Sotuv atributsiyasi aniqlanmagan", hint: "Sotuvchi dalili yo‘q", count: data.sellerCertification.unknown },
@@ -1398,7 +1410,14 @@ function DashboardMetricOrder({ selected, onChange }: { selected: HeadlineCardId
   </section>;
 }
 
-function SettingsView({ settings, syncing, lastSyncAt, onSave, onFullSync, onDirtyChange }: {
+function SettingsView(props: Omit<Parameters<typeof SettingsViewInner>[0], "workspace">) {
+  // Settings are always ONE project's: the workspace on screen.
+  const workspace = useProject();
+  return workspace ? <SettingsViewInner {...props} workspace={workspace} /> : null;
+}
+
+function SettingsViewInner({ settings, syncing, lastSyncAt, onSave, onFullSync, onDirtyChange, workspace }: {
+  workspace: ProjectKey;
   settings: DashboardSettings; syncing: boolean; lastSyncAt: string | null;
   onSave: (settings: DashboardSettings) => Promise<void>;
   onFullSync: (settings: DashboardSettings, pipelineId: string) => Promise<void>;
@@ -1414,7 +1433,7 @@ function SettingsView({ settings, syncing, lastSyncAt, onSave, onFullSync, onDir
   const [customFieldCount, setCustomFieldCount] = useState(0);
   const days = [[1, "Dushanba"], [2, "Seshanba"], [3, "Chorshanba"], [4, "Payshanba"], [5, "Juma"], [6, "Shanba"], [0, "Yakshanba"]] as const;
   useEffect(() => {
-    void authFetch("/api/pipelines", { cache: "no-store" }).then(async (response) => {
+    void authFetch(withProject("/api/pipelines", workspace), { cache: "no-store" }).then(async (response) => {
       const payload = await response.json() as { pipelines?: PipelineOption[]; selectedIds?: string[]; reportingIds?: string[]; fields?: CrmFieldOption[]; customFieldCount?: number; detectedFailureReasonField?: string | null; stages?: PipelineStageOption[]; error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Pipeline’lar yuklanmadi");
       const options = Array.isArray(payload.pipelines) ? payload.pipelines : [];
@@ -1439,28 +1458,7 @@ function SettingsView({ settings, syncing, lastSyncAt, onSave, onFullSync, onDir
         setDraft((current) => ({ ...current, postSalePipelineIds: selected.map((item) => item.id), postSalePipelineNames: selected.map((item) => item.name) }));
       }
     }).catch((caught) => setPipelineError(caught instanceof Error ? caught.message : "Pipeline’lar yuklanmadi"));
-  }, [settings.selectedPipelineIds.length, settings.postSalePipelineIds.length]);
-
-  const normalizeName = (name: string) => name.toLocaleLowerCase().replace(/[^a-zа-яё0-9]+/gi, " ").trim();
-  const brandOf = (name: string) => normalizeName(name).includes("ibox") ? "ibox" : /(^| )sd( |$)/.test(normalizeName(name)) ? "sd" : null;
-  const salesPipelines = pipelines.filter((pipeline) => {
-    const name = normalizeName(pipeline.name);
-    return draft.selectedPipelineIds.includes(pipeline.id) || (Boolean(brandOf(pipeline.name)) && /(^| )sales( |$)/.test(name) && !/(обуч|сопров|obuch|training|support)/.test(name));
-  });
-  const postSaleCandidates = pipelines.filter((pipeline) => /(обуч|сопров|obuch|training|support|onboard)/.test(normalizeName(pipeline.name)));
-  const pairFor = (pipeline: PipelineOption) => postSaleCandidates.find((candidate) => brandOf(candidate.name) === brandOf(pipeline.name)) ?? null;
-  function togglePipeline(pipeline: PipelineOption, checked: boolean) {
-    const selected = checked
-      ? [...pipelines.filter((item) => draft.selectedPipelineIds.includes(item.id)), pipeline]
-      : pipelines.filter((item) => draft.selectedPipelineIds.includes(item.id) && item.id !== pipeline.id);
-    const unique = [...new Map(selected.map((item) => [item.id, item])).values()].slice(0, 2);
-    const paired = unique.flatMap((item) => { const match = pairFor(item); return match ? [match] : []; });
-    setDraft({
-      ...draft,
-      selectedPipelineIds: unique.map((item) => item.id), selectedPipelineNames: unique.map((item) => item.name),
-      postSalePipelineIds: paired.map((item) => item.id), postSalePipelineNames: paired.map((item) => item.name),
-    });
-  }
+  }, [settings.selectedPipelineIds.length, settings.postSalePipelineIds.length, workspace]);
 
   const savedSettings = useMemo(() => normalizeSettings(settings), [settings]);
   const dirty = isSettingsDirty(savedSettings, draft);
@@ -1505,7 +1503,8 @@ function SettingsView({ settings, syncing, lastSyncAt, onSave, onFullSync, onDir
   // Enumeration fields are the only sensible Причина провала candidates.
   const reasonFieldOptions = canonicalizeFieldOptions(fields.filter((field) => /enum/i.test(field.type) || (field.options ?? []).length > 0));
   const stageNameById = new Map(stages.map((stage) => [stage.id, stage.name]));
-  const pairedProjectCount = draft.selectedPipelineIds.filter((id) => { const main = pipelines.find((item) => item.id === id); return main && draft.postSalePipelineNames.some((name) => brandOf(name) === brandOf(main.name)); }).length;
+  // The pairing is the registry's; readiness only needs to know Bitrix still serves it.
+  const pairedProjectCount = pipelines.some((item) => item.id === SALES_PROJECTS[workspace].postSaleCategoryId) ? 1 : 0;
   const readiness = settingsReadiness(draft, pairedProjectCount);
   const blockers = fullSyncBlockers(readiness);
   const validConfig = readiness.pairing.valid;
@@ -1522,22 +1521,22 @@ function SettingsView({ settings, syncing, lastSyncAt, onSave, onFullSync, onDir
     {saveError && <div className="notice error page-notice"><XCircle size={18} /><span>{saveError}</span></div>}
 
     {tab === "asosiy" && <>
-      <section className="panel pipeline-settings"><SectionHeader title="Sotuv loyihasi" subtitle="Bitta loyiha — Sales va unga bog‘langan Обучение / Сопровождение funnel’i." />
+      <section className="panel pipeline-settings"><SectionHeader title={`Loyiha: ${SALES_PROJECTS[workspace].name}`}
+        subtitle="Loyihaning funnel’lari qat’iy: bu sozlamalar faqat shu loyihaga tegishli va boshqa loyihani o‘zgartirmaydi." />
         {pipelineError && <div className="notice error"><XCircle size={17} />{pipelineError}</div>}
-        <div className="pipeline-options project-options">{salesPipelines.map((pipeline) => { const checked = draft.selectedPipelineIds.includes(pipeline.id); const paired = pairFor(pipeline); return <CheckCard key={pipeline.id}
-          checked={checked} disabled={!checked && draft.selectedPipelineIds.length >= 2}
-          onChange={(next) => togglePipeline(pipeline, next)}
-          title={pipeline.name}
-          meta={paired ? `+ ${paired.name}` : "Mos post-sale funnel topilmadi"}
-          hint={`Sales ID: ${pipeline.id}${paired ? ` · Post-sale ID: ${paired.id}` : ""}`} />; })}
-          {!pipelines.length && !pipelineError && <small>Bitrix’dan pipeline’lar yuklanmoqda…</small>}</div>
-        <div className={`pipeline-selection-note ${validConfig ? "ok" : "warning"}`}>{validConfig ? `Faol loyiha: ${draft.selectedPipelineNames.join(" + ")}. Deal ID bo‘yicha unique hisoblanadi.` : "Kamida bitta Sales loyiha va uning post-sale funnel’i topilishi kerak."}</div>
+        {/* The project's funnels come from the registry, not from a choice: a
+            workspace can never be pointed at the other product's category. */}
+        <div className="project-funnels">
+          <div><span>Sales funnel</span><strong>{SALES_PROJECTS[workspace].salesCategoryName}</strong><small>ID {SALES_PROJECTS[workspace].salesCategoryId}</small></div>
+          <div><span>Обучение / Сопровождение</span><strong>{SALES_PROJECTS[workspace].postSaleCategoryName}</strong><small>ID {SALES_PROJECTS[workspace].postSaleCategoryId}</small></div>
+          <div><span>Sales roster</span><strong>{(draft.salesStaffIds ?? []).length} ta sotuvchi</strong><small>Bitrix user ID bo‘yicha · har sync’da qayta tekshiriladi</small></div>
+        </div>
       </section>
     </>}
 
     {tab === "funnel" && <>
       <section className="panel"><SectionHeader title="Bosqich ma’nolari" subtitle={`${draft.selectedPipelineNames.join(" + ") || "Tanlangan Sales funnel"} bosqichlari. Bosqich ID saqlanadi, shuning uchun Bitrix’da nom o‘zgarsa ham hisob buzilmaydi.`} />
-        {stageSemanticFields.map((field) => <StagePicker key={field.key} title={field.title} hint={field.hint} stages={stages} selected={draft[field.key]} onToggle={(stageId, checked) => setDraft({ ...draft, [field.key]: checked ? [...new Set([...draft[field.key], stageId])] : draft[field.key].filter((id) => id !== stageId) })} />)}
+        {stageSemanticFields.filter((field) => field.key !== "productFitStageIds" || SALES_PROJECTS[workspace].hasProductFit).map((field) => <StagePicker key={field.key} title={field.title} hint={field.hint} stages={stages} selected={draft[field.key]} onToggle={(stageId, checked) => setDraft({ ...draft, [field.key]: checked ? [...new Set([...draft[field.key], stageId])] : draft[field.key].filter((id) => id !== stageId) })} />)}
         <div className={`field-discovery ${stageConflicts.length ? "warning" : "ok"}`}>{stageConflicts.length
           ? `Bir bosqich bir nechta ma’noga biriktirilgan: ${stageConflicts.map((conflict) => `${stageNameById.get(conflict.stageId) ?? conflict.stageId} (${conflict.groups.join(", ")})`).join("; ")}. SQL chegarasi eng erta tanlangan bosqichdan boshlanadi, shuning uchun keyingi bosqichlarni SQL ro‘yxatidan olib tashlang. Konflikt bor ekan full sync qilmang.`
           : "Bo‘sh qoldirilsa avvalgidek bosqich nomi bo‘yicha aniqlanadi. Faqat tanlangan Sales funnel bosqichlari ko‘rsatiladi."}</div>
@@ -1636,16 +1635,14 @@ function SettingsView({ settings, syncing, lastSyncAt, onSave, onFullSync, onDir
         {blockers.length > 0 && <div className="field-discovery warning">To‘liq qayta yuklash bloklangan:
           <ul className="full-sync-blockers">{blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul>
         </div>}
-        <div className="scoped-sync-grid">{draft.selectedPipelineIds.map((id, index) => {
-          const name = draft.selectedPipelineNames[index] ?? `Sales funnel #${id}`;
-          const brand = brandOf(name) ?? "sales";
-          const postSale = draft.postSalePipelineNames.find((item) => brandOf(item) === brand) ?? "mos post-sale funnel";
-          return <article key={id}><div><span>{brand.toUpperCase()}</span><div><strong>{name}</strong><small>+ {postSale}</small></div></div>
-            <p>Oxirgi {draft.historyDays} kun. Sales va post-sale kartochkalari Deal ID bo‘yicha bitta lead hisoblanadi.</p>
-            <button className="button secondary" disabled={saving || syncing || blockers.length > 0} onClick={() => void fullSync(id, name)}>
-              {saving || syncing ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}{name} — to‘liq qayta yuklash
-            </button></article>;
-        })}</div>
+        {/* One workspace, one Full Sync: it rebuilds THIS project's analytics with
+            this project's rules and never touches the other project's. */}
+        <div className="scoped-sync-grid"><article><div><span>{SALES_PROJECTS[workspace].name}</span><div><strong>{SALES_PROJECTS[workspace].salesCategoryName}</strong><small>+ {SALES_PROJECTS[workspace].postSaleCategoryName}</small></div></div>
+          <p>Oxirgi {draft.historyDays} kun. Sales va post-sale kartochkalari Deal ID bo‘yicha bitta lead hisoblanadi.</p>
+          <button className="button secondary" disabled={saving || syncing || blockers.length > 0}
+            onClick={() => void fullSync(SALES_PROJECTS[workspace].salesCategoryId, SALES_PROJECTS[workspace].name)}>
+            {saving || syncing ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}{SALES_PROJECTS[workspace].name} — to‘liq qayta yuklash
+          </button></article></div>
       </section>
       <section className="panel"><SectionHeader title="Qo‘shimcha Bitrix maydonlari" subtitle="Sotuvchi va Marketing kanali maydonlari. Manba har doim Bitrix SOURCE_ID’dan olinadi. Marketing kanali — alohida o‘lcham." />
         <div className={`field-discovery ${customFieldCount ? "ok" : "warning"}`}>{customFieldCount ? `${customFieldCount} ta maxsus maydon topildi. Nom yoki kod bo‘yicha qidiring.` : "Webhook maxsus maydon nomlarini bermadi. UF_CRM_... kodini qo‘lda kiritish mumkin."}</div>
@@ -1981,8 +1978,10 @@ const PALETTE_GROUPS: { source: WidgetSource; title: string }[] = [
 ];
 
 /** Starting config for a freshly added widget. */
-function defaultWidgetConfig(type: WidgetType): Record<string, unknown> {
-  if (type === "SALES_KPI") return { metricId: "leads", range: "", from: null, to: null };
+function defaultWidgetConfig(type: WidgetType, project: ProjectKey): Record<string, unknown> {
+  // A Sales KPI widget is bound to the workspace it is created in, so a saved
+  // page can never read the other project's population by accident.
+  if (type === "SALES_KPI") return { metricId: "leads", range: "", from: null, to: null, project };
   if (type === "MANUAL_KPI") return { label: "KPI", value: "", unit: "", note: "", format: "text" };
   if (type === "PROJECTS_LIST") return { status: "", deadline: "", includeArchived: false, limit: 10 };
   if (type === "LATEST_UPDATES") return { projectId: "", status: "", limit: 5 };
@@ -2162,8 +2161,13 @@ function SharePanel({ page, widgets, shares, draft, setDraft, createdUrl, dismis
  * from a list kept in sync by hand: a section the user cannot open is absent,
  * and its fetch never fires. The API enforces the same rules independently.
  */
-function DashboardApp({ session }: { session: AuthSession }) {
+type ProjectSyncInfo = { project: ProjectKey; lastSyncAt: string; mode: string; analyticsVersion: number; deals: number };
+
+function DashboardApp({ session, project }: { session: AuthSession; project: ProjectKey }) {
   const authUser = session.user;
+  // Every project-scoped read goes through this: the workspace's project on the URL.
+  const scoped = useCallback((url: string) => withProject(url, project), [project]);
+  useEffect(() => { rememberProject(project); }, [project]);
   const canAccess = (permission: PermissionKey) => hasPermission(authUser.role, authUser.permissions, permission);
   const allowedNavItems = navItems.filter((item) => canAccess(item.permission));
   const defaultView = allowedNavItems[0]?.id ?? "dashboard";
@@ -2205,6 +2209,8 @@ function DashboardApp({ session }: { session: AuthSession }) {
   const [currentStageError, setCurrentStageError] = useState<string | null>(null);
   const [settings, setSettings] = useState<DashboardSettings | null>(null);
   const [sync, setSync] = useState<SyncState>(idleSync);
+  // THIS workspace's last completed sync (lib/project-sync.ts) — never the other project's.
+  const [projectSync, setProjectSync] = useState<ProjectSyncInfo | null>(null);
   // Seeded from the permission mapping rather than defaulting to "dashboard": a
   // member without that section must never see it render even for one frame.
   const [requestedView, setView] = useState<View>(defaultView);
@@ -2250,7 +2256,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
     if (!accessRef.current.canStages) return;
     setCurrentStageLoading(true); setCurrentStageError(null);
     try {
-      const response = await authFetch("/api/current-stages", { cache: "no-store" });
+      const response = await authFetch(scoped("/api/current-stages"), { cache: "no-store" });
       const payload = await response.json() as { records?: CurrentStageRecord[]; reconciliation?: StageReconciliation | null; stageCatalog?: PipelineStageOption[]; truncated?: boolean; stageSettings?: Partial<DashboardSettings>; liveCandidates?: number; excludedCounts?: Record<string, number>; error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Joriy stage’lar yuklanmadi");
       setCurrentStageRecords(payload.records ?? []); setStageReconciliation(payload.reconciliation ?? null);
@@ -2263,7 +2269,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
     } catch (caught) {
       setCurrentStageError(caught instanceof Error ? caught.message : "Joriy stage’lar yuklanmadi");
     } finally { setCurrentStageLoading(false); }
-  }, []);
+  }, [scoped]);
 
   /**
    * Runs one Stage Control history request. Every caller goes through
@@ -2272,7 +2278,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
    */
   const runStageFunnelFetch = useCallback(async () => {
     try {
-      const response = await authFetch("/api/stage-funnel", { cache: "no-store" });
+      const response = await authFetch(scoped("/api/stage-funnel"), { cache: "no-store" });
       const payload = await response.json() as { records?: StageFunnelRecord[]; error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Stage tarixi yuklanmadi");
       setStageFunnelRecords(payload.records ?? []);
@@ -2282,7 +2288,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
       // "we could not load history" must not render as "there is no history".
       dispatchRef.current?.({ type: "FAILURE" });
     }
-  }, []);
+  }, [scoped]);
 
   const dispatchStageFunnel = useCallback((action: StageFunnelAction) => {
     const next = stageFunnelNext(stageFunnelRef.current, action);
@@ -2376,10 +2382,13 @@ function DashboardApp({ session }: { session: AuthSession }) {
       // brings its own data, so a Finance-only or Projects-only member never
       // asks for CRM settings or sync state at all.
       if (accessRef.current.canSettings) {
-        const bootstrapResponse = await authFetch("/api/bootstrap", { cache: "no-store" });
-        const bootstrap = await bootstrapResponse.json() as { configured: boolean; settings: DashboardSettings; sync: SyncState; recordCount?: number; legacyData?: boolean; error?: string };
+        const bootstrapResponse = await authFetch(scoped("/api/bootstrap"), { cache: "no-store" });
+        const bootstrap = await bootstrapResponse.json() as { configured: boolean; settings: DashboardSettings; sync: SyncState; recordCount?: number; legacyData?: boolean; error?: string; project?: ProjectKey; projectSync?: ProjectSyncInfo | null };
         if (!bootstrapResponse.ok) throw new Error(bootstrap.error ?? "Dashboard yuklanmadi");
+        // An answer for the other workspace is refused, never painted.
+        if (!responseMatchesProject(bootstrap, project)) throw new Error("Javob boshqa loyihaga tegishli — sahifani yangilang");
         setConfigured(bootstrap.configured); setSettings(normalizeSettings(bootstrap.settings)); setSync(bootstrap.sync);
+        setProjectSync(bootstrap.projectSync ?? null);
         setRecordCount(Number(bootstrap.recordCount ?? 0)); setLegacyData(bootstrap.legacyData === true);
       }
       // The dataset may have changed, so open Sales sections refetch and any
@@ -2391,7 +2400,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
       if (accessRef.current.canPages) { void loadPages(); void loadShares(); }
     } catch (caught) { setLoadError(caught instanceof Error ? caught.message : "Dashboard yuklanmadi"); }
     finally { setLoading(false); }
-  }, [loadCurrentStages, loadProjects, loadPages, loadShares, invalidateStageFunnel]);
+  }, [loadCurrentStages, loadProjects, loadPages, loadShares, invalidateStageFunnel, scoped, project]);
   useEffect(() => { viewRef.current = view; });
   useEffect(() => {
     if (view === "stages") dispatchStageFunnel({ type: "OPEN" });
@@ -2458,7 +2467,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
    */
   async function recoverStartedSync(pipelineId: unknown) {
     try {
-      const response = await authFetch("/api/bootstrap", { cache: "no-store" });
+      const response = await authFetch(scoped("/api/bootstrap"), { cache: "no-store" });
       if (!response.ok || !/\bjson\b/i.test(response.headers.get("content-type") ?? "")) return null;
       const payload = await response.json() as { sync?: SyncState };
       const decision = classifyStartRecovery({
@@ -2485,7 +2494,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
     for (let attempt = 0; ; attempt += 1) {
       let outcome;
       try {
-        const response = await authFetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        const response = await authFetch(scoped("/api/sync"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, project }) });
         outcome = classifySyncResponse<SyncState & { error?: string }>({
           ok: response.ok, status: response.status,
           contentType: response.headers.get("content-type"), body: await response.text(),
@@ -2532,7 +2541,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
     }
   }
   async function saveSettings(next: DashboardSettings) {
-    const response = await authFetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next) });
+    const response = await authFetch(scoped("/api/settings"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next) });
     const payload = await response.json() as { settings?: DashboardSettings; error?: string };
     if (!response.ok || !payload.settings) throw new Error(payload.error ?? "Sozlamalar saqlanmadi"); setSettings(normalizeSettings(payload.settings)); void loadCurrentStages();
   }
@@ -2587,22 +2596,24 @@ function DashboardApp({ session }: { session: AuthSession }) {
   const openPage = pages.find((page) => page.id === openPageId) ?? null;
   const openPageWidgets = openPage ? pageWidgets(widgets, openPage.id) : [];
   const hasLegacyData = legacyData;
-  const syncOptions = settings ? settings.selectedPipelineIds.map((id, index) => ({ id, name: settings.selectedPipelineNames[index] ?? `Sales funnel #${id}` })) : [];
+  // One job at a time across projects: while the other workspace syncs, this one waits.
+  const otherProjectSyncing = sync.status === "running" && Boolean(sync.projectKey) && sync.projectKey !== project;
   // Data freshness: from sync state for Settings, otherwise from whichever
   // section is open. Shown only when known — a Finance-only member has none.
   const lastSyncAt = sync.lastSyncAt ?? activeSales?.data?.dataAsOf ?? diagnostics.data?.sync.lastSyncAt ?? null;
-  const activeSyncPipelineId = syncOptions.some((pipeline) => pipeline.id === syncPipelineId) ? syncPipelineId : syncOptions[0]?.id ?? "";
 
   return <div className="app-shell">
     <aside className={menuOpen ? "open" : ""}>
-      <div className="brand"><div className="brand-mark">B24</div><div><strong>Deal Processing</strong><small>Sales analytics</small></div><button className="mobile-close" onClick={() => setMenuOpen(false)}><X size={18} /></button></div>
+      <div className="brand"><div className="brand-mark">B24</div><div><strong>{SALES_PROJECTS[project].name}</strong><small>Sales analytics</small></div><button className="mobile-close" onClick={() => setMenuOpen(false)}><X size={18} /></button></div>
       <nav>{allowedNavItems.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => { if (item.id === "stages") setFilters((current) => ({ ...current, period: "", sla: "", processing: "" })); changeView(item.id); setMenuOpen(false); }}><item.icon size={18} /><span>{item.label}</span>{item.id === "diagnostics" && sync.permissions.stageHistory === "error" && <i />}</button>)}</nav>
-      {lastSyncAt && <div className="sidebar-status"><div><span className="live-dot" /><strong>Bitrix24 ulangan</strong></div><small>Oxirgi sync</small><p>{fmtDate(lastSyncAt)}</p></div>}
+      {lastSyncAt && <div className="sidebar-status"><div><span className="live-dot" /><strong>Bitrix24 ulangan</strong></div><small>{SALES_PROJECTS[project].name} · oxirgi sync</small><p>{fmtDate(lastSyncAt)}</p></div>}
       <div className="sidebar-foot"><ShieldCheck size={16} /><span>Webhook server secret’da himoyalangan</span></div>
     </aside>
     {menuOpen && <button className="sidebar-backdrop" aria-label="Menyuni yopish" onClick={() => setMenuOpen(false)} />}
     <main className="content">
-      <header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)}><Menu size={20} /></button><div><span>Bitrix24</span><small>/</small><strong>{title}</strong></div><div className="top-actions">{!isManagementView(view) && canSettings && <><span className="sync-time">Oxirgi sinxronizatsiya: <strong>{fmtDate(sync.lastSyncAt)}</strong></span><Select label="Sinxronizatsiya funnel" value={activeSyncPipelineId} onChange={setSyncPipelineId}>{syncOptions.map((pipeline) => <option key={pipeline.id} value={pipeline.id}>{pipeline.name}</option>)}</Select><button className="button secondary refresh" onClick={refresh}>{sync.status === "running" ? <TimerReset size={17} /> : refreshing ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}{sync.status === "running" ? "Pauza" : "Tanlangan funnelni sinxronlash"}</button></>}<ProfileMenu user={session.user} onChangePassword={session.changePassword} onLogout={session.logout} /></div></header>
+      <header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)}><Menu size={20} /></button><div><span>Bitrix24</span><small>/</small><strong>{title}</strong></div><div className="top-actions"><ProjectSwitcher project={project} />{!isManagementView(view) && canSettings && <><span className="sync-time" title={projectSync ? `Analytics versiya ${projectSync.analyticsVersion} · ${projectSync.mode === "full" ? "Full Sync" : "yangilash"}` : undefined}>{SALES_PROJECTS[project].name} · oxirgi sync: <strong>{fmtDate(projectSync?.lastSyncAt ?? null)}</strong>{projectSync && <small> · v{projectSync.analyticsVersion}</small>}</span>{otherProjectSyncing
+        ? <span className="sync-time">{SALES_PROJECTS[sync.projectKey as ProjectKey].name} sinxronlanmoqda…</span>
+        : <button className="button secondary refresh" onClick={refresh}>{sync.status === "running" ? <TimerReset size={17} /> : refreshing ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}{sync.status === "running" ? "Pauza" : `${SALES_PROJECTS[project].name}ni sinxronlash`}</button>}</>}<ProfileMenu user={session.user} onChangePassword={session.changePassword} onLogout={session.logout} /></div></header>
       <div className="content-inner">
         {loadError && <div className="notice error page-notice"><XCircle size={18} />{loadError}<button onClick={() => setLoadError(null)}><X size={14} /></button></div>}
         {canSettings && hasLegacyData && sync.status !== "running" && <div className="notice warning page-notice"><AlertTriangle size={18} /><span>Post-sale observer seller dalilini yuklash uchun Sozlamalarda CRM field’larini tekshirib, <strong>“To‘liq qayta sync”</strong>ni bosing. Analytics Backfill observer’ni Bitrix’dan yuklamaydi.</span><button onClick={() => setView("settings")}>Sozlamalar</button></div>}
@@ -2670,7 +2681,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
 
           <div className={pageEditing ? "builder-shell" : ""}>
             {pageEditing && <WidgetPalette busy={projectBusy} onAdd={(type) => {
-              const config = defaultWidgetConfig(type);
+              const config = defaultWidgetConfig(type, project);
               if (NEEDS_CONFIG.includes(type)) {
                 setWidgetDraft({ pageId: openPage.id, widgetType: type, title: WIDGET_REGISTRY.find((entry) => entry.type === type)?.label ?? "", config });
               } else {
@@ -2689,7 +2700,7 @@ function DashboardApp({ session }: { session: AuthSession }) {
               {pageEditing && <div className="quick-adds">{(["SALES_KPI", "PROJECT_SUMMARY", "MANUAL_KPI", "TEXT_NOTE"] as WidgetType[]).map((type) => {
                 const entry = WIDGET_REGISTRY.find((item) => item.type === type)!;
                 return <button key={type} className="button secondary" disabled={projectBusy}
-                  onClick={() => setWidgetDraft({ pageId: openPage.id, widgetType: type, title: entry.label, config: defaultWidgetConfig(type) })}>{entry.label}</button>;
+                  onClick={() => setWidgetDraft({ pageId: openPage.id, widgetType: type, title: entry.label, config: defaultWidgetConfig(type, project) })}>{entry.label}</button>;
               })}</div>}</div>}
             </div>
           </div>
@@ -2920,6 +2931,24 @@ function DashboardApp({ session }: { session: AuthSession }) {
  * The dashboard only mounts once `/api/auth/me` has answered, so no analytics
  * request and no navigation happens on behalf of an unidentified visitor.
  */
-export default function DashboardClient() {
-  return <AuthGate>{(session) => <DashboardApp session={session} />}</AuthGate>;
+/**
+ * The signed-in dashboard for one sales project, or the project selector when
+ * the route names none.
+ *
+ * Keyed by project: a workspace switch mounts a brand-new app, so no state of one
+ * project — stages, managers, filters, a late response — can survive into the
+ * other. The project is fixed before the first fetch.
+ */
+export default function DashboardClient({ project }: { project?: ProjectKey }) {
+  return <AuthGate>{(session) => project
+    ? <ProjectProvider project={project}><DashboardApp key={project} session={session} project={project} /></ProjectProvider>
+    : <ProjectEntry />}</AuthGate>;
+}
+
+/** The bare route: choose a project (the last one used is highlighted, never auto-opened). */
+function ProjectEntry() {
+  // AuthGate renders only after `/api/auth/me` answers, i.e. in the browser, so the
+  // remembered choice can be read during the first render.
+  const [highlighted] = useState<ProjectKey | null>(() => lastProject());
+  return <ProjectSelector highlighted={highlighted} />;
 }

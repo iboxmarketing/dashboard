@@ -1,3 +1,4 @@
+import { widgetProject } from "@/lib/custom-pages";
 import { listProjectUpdates, listProjects } from "@/lib/projects-storage";
 import { loadSalesRecords } from "@/lib/sales-http";
 import { buildSharePayload, shareDataNeeds } from "@/lib/share-model";
@@ -41,7 +42,15 @@ export async function GET(_request: Request, context: { params: Promise<{ token:
       needs.projects ? listProjectUpdates() : Promise.resolve([]),
     ]);
 
+    // A shared KPI widget reads only its own project's population, exactly as it
+    // does on the signed-in page.
+    const kpiProjects = [...new Set(resolved.widgets
+      .filter((widget) => widget.widgetType === "SALES_KPI" && allowedWidgetIds.includes(widget.id))
+      .map((widget) => widgetProject(widget.config)))];
+    const recordsByProject = Object.fromEntries(await Promise.all(kpiProjects.map(async (project) =>
+      [project, (await loadSalesRecords(new Date(), project)).records] as const)));
     const payload = buildSharePayload({
+      recordsByProject,
       page: resolved.page,
       widgets: resolved.widgets,
       allowedWidgetIds,

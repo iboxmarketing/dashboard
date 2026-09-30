@@ -2,6 +2,7 @@ import { SYNC_FAILED_MESSAGE, safeOperationMessage } from "@/lib/safe-errors";
 import { pauseSync, resumeSync, runSyncSteps, startSync } from "@/lib/sync";
 import { isSyncAction, type SyncAction } from "@/lib/sync-actions";
 import { authorizePermission } from "@/lib/auth/http";
+import { parseProjectKey } from "@/lib/sales-projects";
 
 /**
  * Sync control endpoint.
@@ -15,14 +16,18 @@ export async function POST(request: Request) {
   if (denied) return denied;
   try {
     const payload = (await request.json().catch(() => ({}))) as {
-      action?: unknown; days?: number; full?: boolean; steps?: number; pipelineId?: string;
+      action?: unknown; days?: number; full?: boolean; steps?: number; pipelineId?: string; project?: unknown;
     };
     if (!isSyncAction(payload.action)) {
       return Response.json({ error: "Noma’lum amal" }, { status: 400 });
     }
     const action: SyncAction = payload.action;
+    // A start names its project (body or `?project=`); step, pause and resume act
+    // on the running job, which already carries its own.
+    const project = parseProjectKey(payload.project ?? new URL(request.url).searchParams.get("project"));
+    if (action === "start" && !project) return Response.json({ error: "Loyiha noto‘g‘ri" }, { status: 400 });
     const result = action === "start"
-      ? await startSync(payload)
+      ? await startSync({ days: payload.days, full: payload.full, pipelineId: payload.pipelineId, project: project ?? undefined })
       : action === "step"
         ? await runSyncSteps(payload.steps)
         : action === "pause"

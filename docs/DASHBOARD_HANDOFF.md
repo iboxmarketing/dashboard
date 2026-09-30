@@ -69,6 +69,23 @@ new version is accepted.
 staging changes production data. Never create test Deals in the portal: they
 enter production KPI.
 
+## Two projects: IBOX and Sales Doctor
+
+The dashboard is two isolated workspaces over one Bitrix portal: `/ibox`
+(categories 3/13) and `/sales-doctor` (categories 5/17). `/` asks which one; the
+header's switcher moves between them, and a switch mounts a fresh app so no stage,
+manager, filter or cached answer carries over. Every API read takes `?project=`
+(IBOX when absent), every Sales response names its project, and the client refuses
+one that names the other. Raw Bitrix data is shared; interpretation is per project
+— each Deal is built with the rules of the project it belongs to **now**
+(`lib/project-records.ts`). Settings, roster, seller field, SLA calendar/target,
+stage mapping and the analytics cache are per project. Full rules:
+`docs/BUSINESS_RULES.md` §1 and §5.
+
+Records written before projects existed carry no `projectKey`; they count as IBOX
+(built with IBOX's rules) and a legacy Sales Doctor record waits for **one Sales
+Doctor Full Sync**, run from the Sales Doctor workspace's Settings.
+
 ## Business rules (frozen)
 
 | Metric | Definition |

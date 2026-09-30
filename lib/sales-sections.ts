@@ -10,6 +10,7 @@ import { buildQualityAnalytics, type QualityAnalytics } from "./quality-analytic
 import { dedupeByDealId, filterHistoricalRecords, historicalManagerOptions, type SalesFilterSelection } from "./record-filters";
 import { countClassificationConflicts, dealOutcomeLabel, isClassifiedLead, isEligibleCohortDeal, isPreSqlClosed, isProductFitOutcome, isUnclassifiedLead, resolveProjectMembership } from "./sales-logic";
 import { countsCurrently, dealLifecycle, lifecycleBreakdown } from "./deal-lifecycle";
+import { DEFAULT_PROJECT, recordProject, type ProjectKey } from "./sales-projects";
 import { certifyStoredAttribution, countsForScorecard } from "./seller-evidence";
 import { FUNNEL_OWNER_LABELS, funnelOwnerBreakdown, funnelOwnerKey, resolveFunnelOwner } from "./funnel-owner";
 import { resolveManagerName } from "./manager-identity";
@@ -145,8 +146,8 @@ export function hydrateRecord(row: DashboardRecord): DashboardRecord {
  * order, as the dashboard's load: hydrate, keep the selected project's
  * pipelines, re-resolve SLA against the clock, mark duplicates.
  */
-export function prepareSalesRecords(rows: DashboardRecord[], settings: DashboardSettings, now: Date = new Date()): DashboardRecord[] {
-  return resolveSalesSla(prepareSalesBase(rows, settings), settings, now);
+export function prepareSalesRecords(rows: DashboardRecord[], settings: DashboardSettings, now: Date = new Date(), project: ProjectKey = DEFAULT_PROJECT): DashboardRecord[] {
+  return resolveSalesSla(prepareSalesBase(rows, settings, project), settings, now);
 }
 
 /**
@@ -159,8 +160,8 @@ export function prepareSalesRecords(rows: DashboardRecord[], settings: Dashboard
  * sorts stably, so marking before or after the SLA pass yields the same rows
  * in the same order.
  */
-export function prepareSalesBase(rows: DashboardRecord[], settings: Pick<DashboardSettings, "selectedPipelineIds" | "postSalePipelineIds">): DashboardRecord[] {
-  return markDuplicates(projectScopedRecords(rows.map(hydrateRecord), settings));
+export function prepareSalesBase(rows: DashboardRecord[], settings: Pick<DashboardSettings, "selectedPipelineIds" | "postSalePipelineIds">, project: ProjectKey = DEFAULT_PROJECT): DashboardRecord[] {
+  return markDuplicates(projectScopedRecords(rows.map(hydrateRecord), settings, project));
 }
 
 /**
@@ -169,19 +170,24 @@ export function prepareSalesBase(rows: DashboardRecord[], settings: Pick<Dashboa
  * funnel — goes through here, so no path can count a record the others would
  * not.
  *
- * Kept: a record that started in a selected Sales funnel or sits in a project
- * funnel now. Membership: the builder's decision, or for an older record that
- * has none, `resolveProjectMembership` — never the bare legacy fallback.
+ * Kept: records of THIS project's current family, interpreted with this
+ * project's rules (`recordProject`). A Deal moved from one product to the other
+ * leaves the first population and joins the second; it never counts in both.
+ * The old rule — "started in a selected Sales funnel" — is exactly what let a
+ * Deal that moved 3 → 5 stay in IBOX, and let two products share one population.
+ *
+ * Membership: the builder's decision, or for an older record that has none,
+ * `resolveProjectMembership` — never the bare legacy fallback.
  */
-export function projectScopedRecords<T extends Pick<DashboardRecord, "originCategoryId" | "categoryId" | "projectLeadMembership" | "lossReasonGroup" | "membershipBasis"> & Partial<Pick<DashboardRecord, "salesManagerId" | "salesManagerAttribution" | "sellerCertification">>>(
+export function projectScopedRecords<T extends Pick<DashboardRecord, "originCategoryId" | "categoryId" | "projectLeadMembership" | "lossReasonGroup" | "membershipBasis"> & Partial<Pick<DashboardRecord, "salesManagerId" | "salesManagerAttribution" | "sellerCertification" | "projectKey">>>(
   rows: T[], settings: Pick<DashboardSettings, "selectedPipelineIds" | "postSalePipelineIds" | "salesStaffIds">,
+  project: ProjectKey = DEFAULT_PROJECT,
 ): T[] {
-  const selectedOrigins = new Set(settings.selectedPipelineIds.map(String));
   const projectCategories = new Set([...settings.selectedPipelineIds, ...settings.postSalePipelineIds].map(String));
   const postSaleCategoryIds = new Set(settings.postSalePipelineIds.map(String));
   const roster = new Set((settings.salesStaffIds ?? []).map(String).filter(Boolean));
   return rows
-    .filter((row) => !selectedOrigins.size || selectedOrigins.has(String(row.originCategoryId ?? row.categoryId)) || projectCategories.has(String(row.categoryId)))
+    .filter((row) => recordProject(row) === project)
     .map((row) => {
       const { membership, basis } = resolveProjectMembership(row, projectCategories);
       // A record written before certification existed is judged by the same

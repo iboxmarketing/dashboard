@@ -6,6 +6,8 @@ import { Loader2, RefreshCw } from "lucide-react";
 import { SessionLostError, authFetch } from "@/lib/auth-fetch";
 import { FORBIDDEN_MESSAGE } from "@/lib/auth-adapter";
 import type { FilterOptions } from "@/lib/sales-sections";
+import { responseMatchesProject, withProject } from "@/lib/project-url";
+import { useProject } from "./project-context";
 
 /**
  * Browser side of the Sales sections: one fetch per open section, through the
@@ -27,7 +29,11 @@ type Stored<T> = { key: string; data: T | null; notReady: boolean; error: string
  * 401 is handled centrally by `authFetch` (the shell signs out); 403 becomes a
  * forbidden state; anything else is an error — never a sign-out.
  */
-export function useSectionFetch<T>(url: string | null, reloadToken = 0): SectionState<T> {
+export function useSectionFetch<T>(rawUrl: string | null, reloadToken = 0): SectionState<T> {
+  // Inside a workspace every section read is scoped to its project, and the key
+  // carries it, so nothing fetched for one project can be shown in the other.
+  const project = useProject();
+  const url = rawUrl && project ? withProject(rawUrl, project) : rawUrl;
   const [stored, setStored] = useState<Stored<T> | null>(null);
   const [attempt, setAttempt] = useState(0);
   const key = url ? `${url}#${reloadToken}#${attempt}` : "";
@@ -42,6 +48,11 @@ export function useSectionFetch<T>(url: string | null, reloadToken = 0): Section
         if (response.status === 403) { setStored({ key, data: null, notReady: false, error: FORBIDDEN_MESSAGE, forbidden: true, code: payload?.code ?? null }); return; }
         if (!response.ok) { setStored({ key, data: null, notReady: false, error: payload?.error ?? "Ma’lumot yuklanmadi", forbidden: false }); return; }
         if (payload && payload.ready === false) { setStored({ key, data: null, notReady: true, error: null, forbidden: false }); return; }
+        // A section answer that names another project is refused, never painted.
+        if (project && !responseMatchesProject(payload, project)) {
+          setStored({ key, data: null, notReady: false, error: "Javob boshqa loyihaga tegishli. Sahifani yangilang.", forbidden: false });
+          return;
+        }
         setStored({ key, data: payload as T, notReady: false, error: null, forbidden: false });
       } catch (error) {
         if (cancelled || error instanceof SessionLostError) return;
@@ -51,7 +62,7 @@ export function useSectionFetch<T>(url: string | null, reloadToken = 0): Section
     // A short delay coalesces rapid filter changes into one request.
     const timer = window.setTimeout(() => { void run(); }, 120);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [url, key]);
+  }, [url, key, project]);
   if (!url) return { data: null, loading: false, notReady: false, error: null, forbidden: false, code: null };
   const current = stored?.key === key ? stored : null;
   const data = current ? current.data : stored?.key.startsWith(url.split("?")[0]) ? stored.data : null;

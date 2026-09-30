@@ -1,3 +1,4 @@
+import { DEFAULT_PROJECT, parseProjectKey, type ProjectKey } from "./sales-projects";
 import { DASHBOARD_METRICS, type DashboardMetricId } from "./dashboard-metrics";
 import { filterProjects, projectUpdates, type Project, type ProjectUpdate } from "./projects";
 import {
@@ -131,6 +132,12 @@ export function validateWidgetConfig(type: unknown, rawConfig: unknown): Validat
   if (type === "SALES_KPI") {
     const metricId = text(config.metricId, 60);
     if (!DASHBOARD_METRICS.some((metric) => metric.id === metricId)) return { ok: false, error: "Ko‘rsatkich noto‘g‘ri" };
+    // A KPI widget is bound to ONE sales project. Absent means IBOX — what every
+    // widget created before projects existed was — and an unknown project is
+    // refused rather than silently read as IBOX.
+    const project = config.project === undefined || config.project === "" ? undefined : parseProjectKey(config.project);
+    if (project === null) return { ok: false, error: "Widget loyihasi noto‘g‘ri" };
+    const bound = project ? { project } : {};
     const range = config.range === undefined || config.range === "" ? "" : config.range;
     if (range !== "" && !isPageRange(range)) return { ok: false, error: "Widget sana oralig‘i noto‘g‘ri" };
     // A widget-level custom range lives in config_json rather than new columns;
@@ -138,9 +145,9 @@ export function validateWidgetConfig(type: unknown, rawConfig: unknown): Validat
     if (range === "custom") {
       const parsed = validateCustomRange(config.from, config.to);
       if (!parsed.ok) return { ok: false, error: parsed.error };
-      return { ok: true, value: { metricId, range, from: parsed.from, to: parsed.to } };
+      return { ok: true, value: { metricId, range, from: parsed.from, to: parsed.to, ...bound } };
     }
-    return { ok: true, value: { metricId, range, from: null, to: null } };
+    return { ok: true, value: { metricId, range, from: null, to: null, ...bound } };
   }
 
   if (type === "MANUAL_KPI") {
@@ -360,4 +367,10 @@ export const PAGE_TEMPLATES: { id: string; name: string; audience: string; label
 
 export function templateById(id: string) {
   return PAGE_TEMPLATES.find((template) => template.id === id) ?? null;
+}
+
+
+/** The sales project a KPI widget reads. Every widget written before projects existed is IBOX. */
+export function widgetProject(config: Record<string, unknown>): ProjectKey {
+  return parseProjectKey(config.project) ?? DEFAULT_PROJECT;
 }

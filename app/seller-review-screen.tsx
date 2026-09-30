@@ -5,6 +5,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { SelectInput, TextInput } from "./ui/form";
 import { authFetch } from "@/lib/auth-fetch";
+import { withProject } from "@/lib/project-url";
+import { useProject } from "./project-context";
 import type { BackfillVerdict } from "@/lib/seller-backfill";
 import {
   canConfirm, matchesQueueFilters, sortQueue, verdictLabel, VERDICT_LABELS, WRITE_STATUS_LABELS,
@@ -99,6 +101,9 @@ export function SellerReviewTable({ rows, sellers, busyDealId, feedback, onConfi
 }
 
 export function SellerReviewScreen() {
+  // Reads and every Bitrix write are this workspace's: the server refuses a write
+  // that names no project, and writes only the named project's seller field.
+  const project = useProject() ?? "IBOX";
   const [data, setData] = useState<SellerAttributionData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -117,7 +122,7 @@ export function SellerReviewScreen() {
     const run = async () => {
       setLoading(true);
       try {
-        const response = await authFetch("/api/admin/seller-attribution", { cache: "no-store" });
+        const response = await authFetch(withProject("/api/admin/seller-attribution", project), { cache: "no-store" });
         const payload = await response.json().catch(() => null) as (SellerAttributionData & { error?: string }) | null;
         if (cancelled) return;
         if (!response.ok) { setData(null); setError(payload?.error ?? "Ma’lumot yuklanmadi"); return; }
@@ -128,7 +133,7 @@ export function SellerReviewScreen() {
     };
     void run();
     return () => { cancelled = true; };
-  }, [reload]);
+  }, [reload, project]);
 
   const rows = useMemo(
     () => (data ? sortQueue(data.queue).filter((row) => matchesQueueFilters(row, search, verdict)) : []),
@@ -140,7 +145,7 @@ export function SellerReviewScreen() {
     try {
       const response = await authFetch("/api/admin/seller-attribution", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "confirm", dealId, sellerId }),
+        body: JSON.stringify({ action: "confirm", dealId, sellerId, project }),
       });
       const payload = await response.json().catch(() => null) as { error?: string; status?: string; certified?: boolean } | null;
       if (!response.ok || !payload?.certified) {
@@ -152,7 +157,7 @@ export function SellerReviewScreen() {
     } catch {
       setFeedback({ dealId, ok: false, message: "Serverga ulanmadi" });
     } finally { setBusyDealId(null); }
-  }, []);
+  }, [project]);
 
   const runBackfill = useCallback(async (mode: "dry-run" | "apply") => {
     setBackfillBusy(true); setBackfillError(null);
@@ -160,7 +165,7 @@ export function SellerReviewScreen() {
     try {
       const response = await authFetch("/api/admin/seller-attribution", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "backfill", mode }),
+        body: JSON.stringify({ action: "backfill", mode, project }),
       });
       const payload = await response.json().catch(() => null) as {
         error?: string; plan?: { dealId: string; sellerName: string | null; evidenceType: string | null; reason: string }[];
@@ -172,7 +177,7 @@ export function SellerReviewScreen() {
     } catch {
       setBackfillError("Serverga ulanmadi");
     } finally { setBackfillBusy(false); }
-  }, []);
+  }, [project]);
 
   if (loading && !data) return <div className="notice page-notice"><Loader2 size={17} className="spin" />Sotuvchi atributsiyasi yuklanmoqda…</div>;
   if (error) return <div className="notice warning page-notice"><AlertTriangle size={17} />{error}</div>;

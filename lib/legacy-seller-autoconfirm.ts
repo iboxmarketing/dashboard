@@ -46,6 +46,8 @@ export type LegacySellerRow = {
   assignedManagerId?: string | null;
   observerIds?: string[];
   salesOwnerAtWonId?: string | null;
+  /** The Deal's current category — needed for a project that limits Rule 3 by funnel. */
+  categoryId?: string | null;
 };
 
 export type LegacySellerDecision = {
@@ -74,6 +76,14 @@ const id = (value: unknown) => {
 export type LegacySellerContext = {
   /** Resolved roster user IDs — never names. */
   approvedSellerIds: ReadonlySet<string>;
+  /**
+   * When set, Rule 3 may credit the current Responsible only while the Deal sits
+   * in one of these (Sales) categories. Sales Doctor sets it to its Sales funnel:
+   * after the transfer to category 17 the Responsible is onboarding, never the
+   * historical seller (owner rule, 2026-10-01). IBOX leaves it unset, keeping its
+   * accepted Rule 3 exactly as it was.
+   */
+  responsibleCategoryIds?: ReadonlySet<string>;
 };
 
 export function classifyLegacySalesOwner(row: LegacySellerRow, context: LegacySellerContext): LegacySellerDecision {
@@ -117,7 +127,12 @@ export function classifyLegacySalesOwner(row: LegacySellerRow, context: LegacySe
     return decide("REVIEW_REQUIRED_NO_SELLER_OBSERVER", "RULE_2_OBSERVER", "OBSERVERS_OUTSIDE_ROSTER", null, observerIds);
   }
 
-  // RULE 3 — allowed only because there is no observer at all.
+  // RULE 3 — allowed only because there is no observer at all, and — where the
+  // project says so — only while the Deal has not left the Sales funnel.
+  const handedOff = Boolean(context.responsibleCategoryIds) && !context.responsibleCategoryIds!.has(String(row.categoryId ?? ""));
+  if (assignedManagerId && handedOff) {
+    return decide("REVIEW_REQUIRED_NON_SALES_RESPONSIBLE", "RULE_3_NO_OBSERVER_RESPONSIBLE", "NO_OBSERVER_RESPONSIBLE_AFTER_HANDOFF", null, [assignedManagerId]);
+  }
   if (assignedManagerId && approved.has(assignedManagerId)) {
     return decide("AUTO_CONFIRM_CURRENT_RESPONSIBLE_NO_OBSERVER", "RULE_3_NO_OBSERVER_RESPONSIBLE", "NO_OBSERVER_ROSTER_RESPONSIBLE", assignedManagerId);
   }

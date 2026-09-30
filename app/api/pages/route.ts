@@ -2,7 +2,7 @@ import {
   addWidget, applyWidgetOrder, createPage, deletePage, deleteWidget, listPageWidgets,
   listPages, setPageArchived, updatePage, updateWidget,
 } from "@/lib/custom-pages-storage";
-import {
+import { widgetProject,
   moveWidget, pageRangeBounds, resolveWidgetCustomRange, resolveWidgetRange, templateById, validatePageInput, validateWidgetConfig, validateWidgetInput,
   type PageWidget,
 } from "@/lib/custom-pages";
@@ -32,14 +32,18 @@ export async function GET(request: Request) {
     const kpis = widgets.filter((widget) => widget.widgetType === "SALES_KPI");
     const salesKpi: Record<string, { label: string; value: string }> = {};
     if (canDashboard && kpis.length) {
-      const { records } = await loadSalesRecords();
+      // Each widget reads its OWN project's population; only the projects some
+      // widget actually uses are loaded.
       const now = new Date();
+      const needed = [...new Set(kpis.map((widget) => widgetProject(widget.config)))];
+      const loaded = new Map(await Promise.all(needed.map(async (project) =>
+        [project, (await loadSalesRecords(now, project)).records] as const)));
       for (const widget of kpis) {
         const page = pages.find((candidate) => candidate.id === widget.pageId);
         if (!page) continue;
         const range = resolveWidgetRange(widget.config, page.defaultRange);
         const bounds = pageRangeBounds(range, now, resolveWidgetCustomRange(widget.config, page));
-        salesKpi[widget.id] = salesKpiValue(records, bounds.from, bounds.to, String(widget.config.metricId));
+        salesKpi[widget.id] = salesKpiValue(loaded.get(widgetProject(widget.config)) ?? [], bounds.from, bounds.to, String(widget.config.metricId));
       }
     }
     return Response.json({ pages, widgets, salesKpi, salesKpiLocked: !canDashboard }, { headers: { "cache-control": "no-store" } });

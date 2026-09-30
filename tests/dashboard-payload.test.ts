@@ -137,9 +137,10 @@ test("the funnel's minimal record carries exactly what that view reads", () => {
   // scalars the historical outcome summary needs so it can reuse the canonical
   // predicates instead of classifying by stage or reason text.
   // categoryId: the route resolves an older record's project membership from it.
-  for (const field of ["dealId", "title", "salesManagerId", "source", "originPipeline", "originCategoryId", "categoryId", "salesStatus", "qualified", "lossReasonGroup", "projectLeadMembership", "currentScope", "stageTimeline"])
+  // projectKey: the route keeps only the workspace's own project population.
+  for (const field of ["dealId", "title", "salesManagerId", "source", "originPipeline", "originCategoryId", "categoryId", "salesStatus", "qualified", "lossReasonGroup", "projectLeadMembership", "currentScope", "stageTimeline", "projectKey"])
     assert.ok((STAGE_FUNNEL_FIELDS as readonly string[]).includes(field), `${field} missing from the funnel projection`);
-  assert.equal(STAGE_FUNNEL_FIELDS.length, 13, "nothing extra is shipped to the funnel");
+  assert.equal(STAGE_FUNNEL_FIELDS.length, 14, "nothing extra is shipped to the funnel");
   // Still a projection: the full record is far larger than what the funnel gets.
   assert.ok(STAGE_FUNNEL_FIELDS.length < Object.keys(COHORT[0]).length / 2, "the funnel stays a projection, not a record dump");
 });

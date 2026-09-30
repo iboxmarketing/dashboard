@@ -1,6 +1,7 @@
 import { getD1 } from "@/db";
 import { DASHBOARD_TIMELINE_FIELD, STAGE_FUNNEL_FIELDS, STAGE_HISTORY_COUNT_FIELD, dashboardRemovedPaths } from "./dashboard-record";
 import { defaultSettings } from "./business-time";
+import { DEFAULT_PROJECT, SALES_PROJECTS, seedSalesDoctorSettings, withProjectPipelines, type ProjectKey } from "./sales-projects";
 import { SALES_SNAPSHOT_UPSERT, isSnapshotCandidate } from "./sales-snapshots";
 import { SELLER_CONFIRMATION_UPSERT, writeSucceeded } from "./seller-confirmation-sql";
 import { stageIdList } from "./stage-config";
@@ -58,12 +59,40 @@ async function createSchema(db: ReturnType<typeof getD1>) {
   ]);
 }
 
-export async function getSettings(): Promise<DashboardSettings> {
+/**
+ * One project's settings.
+ *
+ * Every project keeps its own row: IBOX under the key it has always used
+ * (`dashboard`), so the accepted IBOX configuration is read exactly as before;
+ * Sales Doctor under `dashboard:SALES_DOCTOR`. The project's funnels always come
+ * from the registry (lib/sales-projects.ts), never from a row — a project cannot
+ * be pointed at the other project's category.
+ *
+ * A project with no row yet is seeded once, atomically (`INSERT OR IGNORE`), from
+ * its approved configuration. Seeding never overwrites, and after it the two
+ * projects' settings are independent.
+ */
+export async function getSettings(project: ProjectKey = DEFAULT_PROJECT): Promise<DashboardSettings> {
   await ensureSchema();
-  const row = await getD1().prepare("SELECT value FROM app_settings WHERE key = ?").bind("dashboard").first<{ value: string }>();
-  if (!row?.value) return defaultSettings;
+  const key = SALES_PROJECTS[project].settingsKey;
+  const row = await getD1().prepare("SELECT value FROM app_settings WHERE key = ?").bind(key).first<{ value: string }>();
+  if (!row?.value) {
+    if (project === DEFAULT_PROJECT) return withProjectPipelines(defaultSettings, project);
+    const seeded = seedSalesDoctorSettings(await getSettings(DEFAULT_PROJECT));
+    await getD1()
+      .prepare("INSERT OR IGNORE INTO app_settings(key, value, updated_at) VALUES(?, ?, ?)")
+      .bind(key, JSON.stringify(seeded), new Date().toISOString())
+      .run();
+    // Whatever landed — this seed, or a concurrent one — is what everyone reads.
+    const stored = await getD1().prepare("SELECT value FROM app_settings WHERE key = ?").bind(key).first<{ value: string }>();
+    return withProjectPipelines(stored?.value ? parseStoredSettings(stored.value) : seeded, project);
+  }
+  return withProjectPipelines(parseStoredSettings(row.value), project);
+}
+
+function parseStoredSettings(value: string): DashboardSettings {
   try {
-    const parsed = JSON.parse(row.value) as Partial<DashboardSettings>;
+    const parsed = JSON.parse(value) as Partial<DashboardSettings>;
     return {
       ...defaultSettings,
       ...parsed,
@@ -101,13 +130,14 @@ export async function getSettings(): Promise<DashboardSettings> {
   }
 }
 
-export async function saveSettings(settings: DashboardSettings) {
+/** Writes ONE project's settings. The other project's row is never touched. */
+export async function saveSettings(settings: DashboardSettings, project: ProjectKey = DEFAULT_PROJECT) {
   await ensureSchema();
   const now = new Date().toISOString();
   await getD1()
     .prepare("INSERT INTO app_settings(key, value, updated_at) VALUES(?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
-    .bind("dashboard", JSON.stringify({
-      ...settings,
+    .bind(SALES_PROJECTS[project].settingsKey, JSON.stringify({
+      ...withProjectPipelines(settings, project),
       salesManagerField: normalizeSafeStableSellerField(settings.salesManagerField),
     }), now)
     .run();
@@ -593,6 +623,7 @@ export async function getSyncState() {
     processed: 0,
     total: 0,
     stale: false,
+    projectKey: null,
     selectedPipelines: [],
     scopePipelineId: null,
     safeError: base.status === "running" ? "Avvalgi sync server timeout’i sabab yakunlanmagan." : base.safeError,
@@ -611,6 +642,8 @@ export async function getSyncState() {
     processed: job.processed,
     total: job.total,
     stale,
+    // A job written before projects existed was IBOX's.
+    projectKey: job.projectKey ?? DEFAULT_PROJECT,
     selectedPipelines: job.selectedPipelines,
     scopePipelineId: job.scopePipelineId ?? job.selectedPipelines[0]?.id ?? null,
     counts: job.counts,
@@ -623,6 +656,11 @@ export async function getSyncState() {
 }
 
 export type StoredSyncJob = {
+  /**
+   * The project this run synchronises. Its settings, roster and rules drive the
+   * run; absent on a job written before projects existed, which was IBOX.
+   */
+  projectKey?: ProjectKey;
   status: SyncProgressState["status"];
   phase: NonNullable<SyncProgressState["phase"]>;
   progress: number;

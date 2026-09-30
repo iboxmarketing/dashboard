@@ -105,7 +105,14 @@ test("the filter bar and the funnel/sync controls are gated on view type", () =>
   // Auth integration added a second condition: the sync controls are an
   // administrative action, so they now also require the `settings` permission.
   assert.match(topActions, /\{!isManagementView\(view\) && canSettings && <>/, "top actions are gated on view type and on the settings permission");
-  for (const control of ["Sinxronizatsiya funnel", "Tanlangan funnelni sinxronlash", "Oxirgi sinxronizatsiya"]) {
+  // One workspace, one funnel: the funnel picker is gone, and the sync controls
+  // name the project they act on.
+  assert.doesNotMatch(topActions, /Sinxronizatsiya funnel/, "no cross-project funnel picker");
+  // Switching workspaces is not an administrative action: the switcher sits
+  // before the settings gate, available to every signed-in member.
+  assert.ok(topActions.indexOf("<ProjectSwitcher project={project} />") >= 0);
+  assert.ok(topActions.indexOf("<ProjectSwitcher project={project} />") < topActions.indexOf("!isManagementView(view)"));
+  for (const control of ["oxirgi sync:", "ni sinxronlash", "sinxronlanmoqda"]) {
     assert.ok(topActions.includes(control), `${control} lives inside the gated block`);
     const gateAt = topActions.indexOf("!isManagementView(view)");
     assert.ok(topActions.indexOf(control) > gateAt, `${control} appears after the gate`);

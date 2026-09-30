@@ -105,13 +105,18 @@ test("an older in-project record with no decision is kept as UNRESOLVED and coun
     row({ dealId: "700", analyticsVersion: 7, projectLeadMembership: undefined, categoryId: "3" }),
     row({ dealId: "701", analyticsVersion: 7, projectLeadMembership: undefined, categoryId: "3", salesStatus: "LOST", lossReasonGroup: "ROUTING" }),
     row({ dealId: "702", analyticsVersion: 7, projectLeadMembership: undefined, categoryId: "17", originCategoryId: "3" }),
+    // Left both families for an unrelated funnel: still IBOX's, as an exclusion.
+    row({ dealId: "703", analyticsVersion: 7, projectLeadMembership: undefined, categoryId: "31", originCategoryId: "3" }),
   ];
   const prepared = prepareSalesBase([...IBOX, ...legacy], SETTINGS);
   const byId = new Map(prepared.map((r) => [r.dealId, r]));
   assert.equal(byId.get("700")?.projectLeadMembership, "UNRESOLVED");
   assert.equal(isEligibleCohortDeal(byId.get("700")!), true, "never silently excluded");
   assert.equal(byId.get("701")?.projectLeadMembership, "EXCLUDED", "legacy transfer evidence still excludes, as before");
-  assert.equal(byId.get("702")?.projectLeadMembership, "EXCLUDED");
+  // 702 now sits in Sales Doctor's post-sale funnel: it is Sales Doctor's Deal
+  // (owner rule, 2026-10-01) and IBOX does not carry it at all.
+  assert.equal(byId.has("702"), false, "a Deal in the other project's family is not in this population");
+  assert.equal(byId.get("703")?.projectLeadMembership, "EXCLUDED");
   assert.equal(byId.get("100")?.membershipBasis, "RECORD", "a decided record keeps its decision");
   assert.deepEqual(membershipDiagnostics(prepared), { needsRefresh: 1, legacyOtherProject: 1, legacyRouting: 1 });
   assert.deepEqual(diagnosticsDataSection(prepared).membership, { needsRefresh: 1, legacyOtherProject: 1, legacyRouting: 1 });
@@ -122,11 +127,14 @@ test("public shares and the Stage funnel read records through the same project s
   assert.match(share, /loadSalesRecords\(\)\.then\(\(loaded\) => loaded\.records\)/);
   assert.doesNotMatch(share, /listAnalyticsRecords/, "no raw-table path of its own");
   const funnel = code("../app/api/stage-funnel/route.ts");
-  assert.match(funnel, /projectScopedRecords\(rows\.map\(\(row\) => JSON\.parse\(row\) as StageFunnelRecord\), settings\)/);
+  assert.match(funnel, /projectScopedRecords\(rows\.map\(\(row\) => JSON\.parse\(row\) as StageFunnelRecord\), settings, scoped\.project\)/);
   const scoped = projectScopedRecords([...IBOX, ...STALE], SETTINGS);
   assert.deepEqual(scoped.map((r) => [r.dealId, r.projectLeadMembership]), [
-    ["100", "INCLUDED"], ["101", "INCLUDED"], ["102", "INCLUDED"], ["103", "INCLUDED"], ["900", "EXCLUDED"], ["901", "EXCLUDED"],
-  ], "902 started and sits outside the project and is not even carried");
+    ["100", "INCLUDED"], ["101", "INCLUDED"], ["102", "INCLUDED"], ["103", "INCLUDED"], ["901", "EXCLUDED"],
+  ], "900 moved to Sales Doctor (category 5) and 902 sits in Sales Doctor's post-sale funnel: neither is carried by IBOX");
+  // …and Sales Doctor carries exactly those two, never IBOX's own.
+  assert.deepEqual(projectScopedRecords([...IBOX, ...STALE], SETTINGS, "SALES_DOCTOR").map((r) => r.dealId), [],
+    "legacy records were built with IBOX's rules, so Sales Doctor waits for its own rebuild rather than trust them");
 });
 
 test("a Full Sync ends with a refresh of every known Deal; an incremental sync never does", () => {
@@ -226,8 +234,11 @@ test("source is SOURCE_ID only; the Marketing channel is a separate dimension", 
   const sync = code("../lib/sync.ts");
   assert.doesNotMatch(sync, /marketing\.\*channel|маркет\.\*канал/, "the field is never detected by name");
   assert.match(sync, /marketingChannelField: validMarketingChannelField\(settings\.marketingChannelField, knownFieldKeys\)/);
-  assert.match(sync, /normalizeSafeStableSellerField\(settings\.salesManagerField\),[\s\S]{0,400}?settings\.marketingChannelField,\n  \]\)\]/, "the Full Sync selects the configured field");
-  assert.match(sync, /normalizeSalesOwnerAtWonField\(settings\.salesOwnerAtWonField\),/, "and the canonical seller field");
+  // Every project's fields are selected, so a Deal that moved families still
+  // carries the evidence its new project reads.
+  assert.match(sync, /normalizeSafeStableSellerField\(projectSettings\.salesManagerField\),[\s\S]{0,400}?projectSettings\.marketingChannelField,\n  \]\)\)\]/, "the Full Sync selects the configured field");
+  assert.match(sync, /normalizeSalesOwnerAtWonField\(projectSettings\.salesOwnerAtWonField\),/, "and the canonical seller field");
+  assert.match(sync, /PROJECT_KEYS\.map\(\(key\) => \(key === jobProject\(job\) \? settings : getSettings\(key\)\)\)/);
 
   const records = buildAnalyticsRecords({
     deals: [{ ID: "1", TITLE: "T", DATE_CREATE: "2026-09-05T11:00:00+05:00", ASSIGNED_BY_ID: "7", CATEGORY_ID: "3", STAGE_ID: "C3:NEW", SOURCE_ID: "WEBFORM", UF_CRM_1784823646: "102" }],

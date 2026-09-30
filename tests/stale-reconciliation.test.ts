@@ -97,7 +97,8 @@ test("the reconciler skips a lookup it could not answer", () => {
 
 test("reconciliation is hooked into the one shared completion point", () => {
   const sync = readFileSync(new URL("../lib/sync.ts", import.meta.url), "utf8");
-  assert.match(sync, /await runPostSyncReconciliation\(await getSettings\(\)\);/);
+  // With THIS job's project settings: reconciliation reads one project's funnel.
+  assert.match(sync, /await runPostSyncReconciliation\(await getSettings\(jobProject\(job\)\)\);/);
 
   // It must sit inside the success branch, after the checkpoint is written.
   const completion = sync.slice(sync.indexOf('status: "success", phase: "done"'), sync.indexOf("return finished;"));

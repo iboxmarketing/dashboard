@@ -33,8 +33,11 @@ test("3/9: the backfill makes no Bitrix network calls", () => {
 test("3: the backfill never deletes raw data, checkpoints or management tables", () => {
   const backfill = code("../lib/analytics-backfill.ts");
   assert.doesNotMatch(backfill, /DELETE|DROP|TRUNCATE/i, "no destructive statement");
+  // Table names are checked in the code, not in module paths: importing
+  // `./sales-projects` (the project registry) touches no `projects` table.
+  const statements = backfill.split("\n").filter((line) => !/^\s*import\b/.test(line)).join("\n");
   for (const table of ["projects", "project_updates", "custom_pages", "custom_page_widgets", "page_share_tokens", "page_share_widgets"]) {
-    assert.doesNotMatch(backfill, new RegExp(`\\b${table}\\b`), `${table} must never be touched`);
+    assert.doesNotMatch(statements, new RegExp(`\\b${table}\\b`), `${table} must never be touched`);
   }
   assert.doesNotMatch(backfill, /syncScope|saveSyncState|saveSyncJob/, "sync checkpoints must not move");
   // raw tables are read-only here.

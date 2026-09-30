@@ -216,6 +216,11 @@ test("the base cache holds one dataset, for one key, for at most the TTL", () =>
   assert.equal(cache.get("a", 9_000), null, "a clock that went backwards is a miss");
   cache.set("b", base, 20_000);
   assert.equal(cache.get("a", 20_001), null, "a new dataset replaces the old one");
+  // One slot per project: Sales Doctor's rows neither answer nor evict IBOX's.
+  cache.set("sd", base, 20_000, "SALES_DOCTOR");
+  assert.equal(cache.get("b", 20_001), base, "IBOX's entry survives a Sales Doctor load");
+  assert.equal(cache.get("b", 20_001, "SALES_DOCTOR"), null, "and never answers a Sales Doctor request");
+  assert.equal(cache.get("sd", 20_001), null, "nor does Sales Doctor's answer an IBOX one");
   cache.clear();
   assert.equal(cache.get("b", 20_001), null);
   assert.equal(SALES_CACHE_TTL_MS, 5 * 60_000);
@@ -225,7 +230,7 @@ test("the Sales loader re-resolves SLA per request and caches rows only under th
   const http = code("../lib/sales-http.ts");
   assert.match(http, /readSalesFingerprint\(\)/);
   assert.match(http, /listDashboardRecordJsonWithFingerprint\(\)/);
-  assert.match(http, /salesBaseCache\.set\(salesCacheKey\(fresh\.fingerprint, settings\)/, "a miss is stored under the fingerprint from the same batch as its rows");
+  assert.match(http, /salesBaseCache\.set\(salesCacheKey\(fresh\.fingerprint, settings, project\), base, Date\.now\(\), project\)/, "a miss is stored under the fingerprint from the same batch as its rows, in its own project's slot");
   assert.match(http, /resolveSalesSla\(base, settings, now\)/, "SLA is never served from the cache");
   assert.doesNotMatch(http, /Promise<.*>\s*=.*salesBaseCache|salesBaseCache\.set\([^)]*Promise/, "no pending promise is shared between requests");
 

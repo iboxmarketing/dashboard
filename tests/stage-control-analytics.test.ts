@@ -524,7 +524,9 @@ test("AO: the stage-funnel projection stays lazy and the dashboard payload carri
   assert.equal((STAGE_FUNNEL_FIELDS as readonly string[]).includes("assignedManagerId"), false, "current assignee is not historical funnel identity");
   // categoryId lets the route resolve an older record's membership server-side.
   assert.ok(STAGE_FUNNEL_FIELDS.includes("categoryId"));
-  assert.equal(STAGE_FUNNEL_FIELDS.length, 13, "still a projection, not the full record");
+  // projectKey keeps the funnel inside the workspace's own project.
+  assert.ok(STAGE_FUNNEL_FIELDS.includes("projectKey"));
+  assert.equal(STAGE_FUNNEL_FIELDS.length, 14, "still a projection, not the full record");
   assert.ok(Object.keys(funnel()).length < 20);
 });
 

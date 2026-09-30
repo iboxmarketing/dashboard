@@ -157,7 +157,9 @@ test("the shell renders loading until /api/auth/me answers, and never guesses si
   assert.match(shellSource, /setFatal\(/);
   assert.match(shellSource, /if \(fatal\)/);
   // The dashboard mounts only inside the gate, so no section renders first.
-  assert.match(client, /<AuthGate>\{\(session\) => <DashboardApp session=\{session\} \/>\}<\/AuthGate>/);
+  // …and so does the project selector: nothing of either workspace renders
+  // before sign-in, and a workspace mounts with its project already fixed.
+  assert.match(client, /return <AuthGate>\{\(session\) => project\n\s+\? <ProjectProvider project=\{project\}><DashboardApp key=\{project\} session=\{session\} project=\{project\} \/><\/ProjectProvider>\n\s+: <ProjectEntry \/>\}<\/AuthGate>;/);
   const html = renderToStaticMarkup(<AuthLoadingScreen />);
   assert.match(html, /role="status"/);
   assert.doesNotMatch(html, /Foydalanuvchilar|Dashboard<\/span>/);

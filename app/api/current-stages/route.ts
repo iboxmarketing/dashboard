@@ -2,6 +2,8 @@ import { bitrixList, getBitrixDomain, safeBitrixMessage } from "@/lib/bitrix";
 import { buildCurrentStageRecords, reconcileCurrentStages, type RawCurrentStageDeal } from "@/lib/current-stages";
 import { buildStatusMaps } from "@/lib/analytics-dictionaries";
 import { getDictionary, getSettings, listAnalyticsRecords } from "@/lib/storage";
+import { requestProject } from "@/lib/sales-http";
+import { recordProject } from "@/lib/sales-projects";
 import { listPipelineStages } from "@/lib/sync";
 import { authorizePermission } from "@/lib/auth/http";
 import type { DashboardSettings } from "@/lib/types";
@@ -28,8 +30,12 @@ export async function GET(request: Request) {
   const denied = await authorizePermission(request, "stages");
   if (denied) return denied;
   let truncated = false;
+  const scoped = requestProject(request);
+  if (!scoped.ok) return scoped.response;
   try {
-    const settings = await getSettings();
+    // LIVE open Deals of THIS project's Sales funnel only — category 5 for Sales
+    // Doctor, 3 for IBOX — reconciled against this project's cached records only.
+    const settings = await getSettings(scoped.project);
     const categoryIds = [...new Set(settings.selectedPipelineIds.map(String).filter(Boolean))];
     if (!categoryIds.length) return Response.json({ records: [], reconciliation: null, stageCatalog: [], truncated: false, stageSettings: stageSettings(settings) });
 
@@ -51,7 +57,7 @@ export async function GET(request: Request) {
       listPipelineStages(categoryIds),
       getDictionary<Record<string, unknown>[]>("users", []),
       getDictionary<Record<string, unknown>[]>("statuses", []),
-      listAnalyticsRecords(),
+      listAnalyticsRecords().then((rows) => rows.filter((row) => recordProject(row) === scoped.project)),
     ]);
 
     const pipelines = new Map(categoryIds.map((id, index) => [id, settings.selectedPipelineNames[index] ?? `Sales funnel #${id}`]));
@@ -84,6 +90,7 @@ export async function GET(request: Request) {
       id: stage.id, name: stage.name, categoryId: stage.categoryId, sort: stage.sort, semantics: stage.semantics,
     }));
     return Response.json({
+      project: scoped.project,
       records, reconciliation, stageCatalog, truncated, stageSettings: stageSettings(settings),
       liveCandidates: deals.length, excludedCounts, excludedDealIds: excluded,
     });
