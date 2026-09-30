@@ -4,7 +4,7 @@ import {
   type FinanceAccountInput, type FinanceCategory, type FinanceCategoryInput,
   type FinanceProjectInput, type FinanceSubscriptionInput, type FinanceTransactionInput, type ValidationResult,
 } from "./types";
-import { isSafeMinor, normalizeCurrencyCode } from "./money";
+import { isSafeMinor, normalizeCurrencyCode, sumMinor } from "./money";
 
 const NAME_LIMIT = 200;
 const NOTE_LIMIT = 4000;
@@ -125,6 +125,12 @@ export function validateTransactionInput(payload: unknown): ValidationResult<Tra
   const feeAmountMinor = feeRaw === undefined || feeRaw === null || feeRaw === "" ? 0 : feeRaw;
   if (!isSafeMinor(feeAmountMinor)) return { ok: false, error: "Transfer commission must be integer minor units" };
   if ((feeAmountMinor as number) < 0) return { ok: false, error: "Transfer commission cannot be negative" };
+  // The aggregate debit is money too: amount + commission is what actually leaves
+  // the source account, so it must itself be representable exactly. Rejected here,
+  // before persistence — never left to overflow into a wrong balance later.
+  if (sumMinor(input.sourceAmountMinor as number, feeAmountMinor as number) === null) {
+    return { ok: false, error: "Transfer amount and commission together exceed the safe integer range" };
+  }
   return { ok: true, value: {
     ...common, accountId: null, amountMinor: null, currencyCode: null, categoryId: null,
     fromAccountId, toAccountId, sourceAmountMinor: input.sourceAmountMinor as number, sourceCurrencyCode,

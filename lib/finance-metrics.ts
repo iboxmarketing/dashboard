@@ -1,5 +1,5 @@
 import { addMoney } from "./finance-money";
-import { addMinor } from "./finance/money";
+import { addMinor, sumMinor } from "./finance/money";
 import type {
   Cadence, Currency, FinanceAccount, FinanceCategory, FinanceProjectAmount, FinanceSubscription,
   FinanceSummary, FinanceTransaction, MoneyByCurrency, NewTransaction, TransactionType,
@@ -218,6 +218,14 @@ export function validateTransaction(draft: TransactionDraft, accounts: readonly 
   const fee = draft.feeAmountMinor;
   if (fee !== undefined && fee !== null && (!Number.isSafeInteger(fee) || fee < 0)) {
     return { ok: false, error: "Komissiyani to‘g‘ri kiriting" };
+  }
+  // What actually leaves the source account is amount + commission; if that total
+  // cannot be represented exactly, the form says so instead of sending it.
+  if (sumMinor(draft.amountMinor, typeof fee === "number" ? fee : 0) === null) {
+    return { ok: false, error: "Summa va komissiya birgalikda juda katta" };
+  }
+  if (draft.destinationAmountMinor !== null && !Number.isSafeInteger(draft.destinationAmountMinor)) {
+    return { ok: false, error: "Tushadigan summani to‘g‘ri kiriting" };
   }
   return { ok: true, error: null };
 }

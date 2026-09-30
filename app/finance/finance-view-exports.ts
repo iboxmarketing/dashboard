@@ -6,6 +6,6 @@
  */
 export {
   ArchivedBadge, ArchiveStatusBadge, CurrencyKpiRow, EmptyState, ErrorState, FinanceCurrencyProvider,
-  FixtureNotice, LoadingState, Money, MoneyByCurrencyLines, SectionHeading,
+  FixtureNotice, LoadingState, Money, MoneyByCurrencyLines, SectionHeading, TransferBreakdown,
 } from "./finance-primitives";
 export { FINANCE_TABS, FINANCE_TAB_LABELS, type FinanceTab, type FinanceRange } from "./finance-view";

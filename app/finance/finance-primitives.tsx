@@ -5,6 +5,7 @@ import { createContext, useContext, type ReactNode } from "react";
 
 import { formatMoney, moneyLines } from "@/lib/finance-money";
 import { FINANCE_CURRENCIES } from "@/lib/finance/money";
+import { TRANSFER_LABELS, transferRate, transferSettlement } from "@/lib/finance/transfer";
 import type { Currency, FinanceCurrency, MoneyByCurrency } from "@/lib/finance-types";
 
 /**
@@ -47,6 +48,42 @@ export function MoneyByCurrencyLines({ value, tone, emptyLabel = "—", includeZ
         <Money key={line.currency} amountMinor={line.amountMinor} currency={line.currency} tone={tone} />
       ))}
     </span>
+  );
+}
+
+/**
+ * A transfer, spelled out.
+ *
+ * Signed amounts and account names alone were not enough to read: this block
+ * labels what was sent, what arrived, the derived rate (cross-currency only), the
+ * commission, and the total the source account was debited. Every surface — the
+ * create/edit preview, the ledger row, Finance history — renders THIS component,
+ * so labels and arithmetic cannot diverge between them.
+ */
+export function TransferBreakdown({ row, currencies, variant = "block" }: {
+  row: Parameters<typeof transferSettlement>[0];
+  currencies?: readonly { code: string; minorUnit: number }[];
+  variant?: "block" | "compact";
+}) {
+  const settlement = transferSettlement(row);
+  if (!settlement) return null;
+  const rate = transferRate(row, currencies);
+  const source = settlement.sourceCurrencyCode as Currency;
+  return (
+    <dl className={`fin-transfer-breakdown ${variant}`}>
+      <div><dt>{TRANSFER_LABELS.sent}</dt>
+        <dd><Money amountMinor={settlement.sourceAmountMinor} currency={source} /></dd></div>
+      <div><dt>{TRANSFER_LABELS.received}</dt>
+        <dd><Money amountMinor={settlement.destinationAmountMinor} currency={settlement.destinationCurrencyCode as Currency} /></dd></div>
+      {/* No rate line for a same-currency transfer: there is nothing to convert. */}
+      {rate && <div><dt>{TRANSFER_LABELS.rate}</dt><dd className="fin-rate-value">{rate.label}</dd></div>}
+      <div><dt>{TRANSFER_LABELS.fee}</dt>
+        <dd>{settlement.feeMinor
+          ? <Money amountMinor={settlement.feeMinor} currency={source} tone="expense" />
+          : <span className="fin-money muted">{TRANSFER_LABELS.noFee}</span>}</dd></div>
+      <div className="fin-transfer-total"><dt>{TRANSFER_LABELS.sourceTotal}</dt>
+        <dd><Money amountMinor={-settlement.sourceDeltaMinor} currency={source} tone="expense" /></dd></div>
+    </dl>
   );
 }
 

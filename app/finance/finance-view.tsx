@@ -10,11 +10,10 @@ import { MultiSelect } from "../ui/multi-select";
 import { DateInput } from "../ui/form";
 import {
   ArchivedBadge, ArchiveStatusBadge, CurrencyKpiRow, EmptyState, ErrorState, FinanceCurrencyProvider,
-  FixtureNotice, LoadingState, Money, MoneyByCurrencyLines, SectionHeading,
+  FixtureNotice, LoadingState, Money, MoneyByCurrencyLines, SectionHeading, TransferBreakdown,
 } from "./finance-primitives";
 import { AccountDrawer, CategoryDrawer, ProjectDrawer, SubscriptionDrawer, TransactionDrawer } from "./finance-drawers";
 import { createFinanceAdapter, emptyDataset, type FinanceAdapter, type FinanceSource } from "@/lib/finance-adapter";
-import { transferRate, transferSettlement } from "@/lib/finance/transfer";
 import {
   accountBalanceGroups, accountCurrentBalanceMinor, addDays, cadenceMonths, categoryAmountRows, categoryTree,
   filterTransactions, operatingMaps, projectAmountRows, subscriptionBuckets, type FinanceFilters,
@@ -277,25 +276,14 @@ function ProjectTable({ rows }: { rows: ReturnType<typeof projectAmountRows> }) 
 // -------------------------------------------------------------- transactions ---
 
 /**
- * A transfer, read as one movement: what was sent, what arrived, the rate the two
- * amounts imply, and the commission. The rate is shown only when the currencies
- * differ, and it is derived here — nothing about it is stored.
+ * A saved transfer, read as one movement: what was sent, what arrived, the rate
+ * the two amounts imply (cross-currency only), the commission, and the total the
+ * source account was debited.
  */
 function TransferCell({ row, currencies }: { row: FinanceTransaction; currencies: FinanceDataset["currencies"] }) {
-  const settlement = transferSettlement(row);
-  if (!settlement) return null;
-  const rate = transferRate(row, currencies);
-  return (
-    <>
-      <br />
-      <small className="fin-cross">→ <Money amountMinor={settlement.destinationAmountMinor} currency={settlement.destinationCurrencyCode as Currency} /></small>
-      {rate && <><br /><small className="fin-rate-inline">{rate.label}</small></>}
-      <br />
-      {settlement.feeMinor
-        ? <small className="fin-fee">Komissiya <Money amountMinor={settlement.feeMinor} currency={settlement.sourceCurrencyCode as Currency} tone="expense" /></small>
-        : <small className="fin-fee muted">Komissiya yo‘q</small>}
-    </>
-  );
+  // The same labelled breakdown as the create/edit preview, so a saved row reads
+  // exactly like the one that was entered.
+  return <TransferBreakdown row={row} currencies={currencies} variant="compact" />;
 }
 
 function TransactionsTab({ dataset, range, onAdd }: {

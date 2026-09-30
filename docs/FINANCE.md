@@ -46,6 +46,33 @@ deterministic, system-owned bucket — id `system:transfer-fee`, name
 `finance_categories` row: nobody can rename it, archive it, or select it for an
 ordinary expense, and a transfer still carries no Category.
 
+**Safe integers.** Every persisted and derived minor-unit value must stay a safe
+integer, including the aggregate `sourceAmountMinor + feeAmountMinor` that actually
+leaves the source account. `sumMinor` (`lib/finance/money.ts`) is the canonical
+checked sum and returns `null` when any input or the running total leaves the
+range: validation uses it to **reject** the request before persistence, both in the
+browser draft and in the API. Accumulating paths — account balances, summary
+totals, per-currency maps — use the throwing twin `addMinor`, so an
+unrepresentable total surfaces as a visible Finance error instead of a number that
+quietly lost precision. `transferSettlement` reports no settlement at all for a row
+whose total cannot be represented, and the UI then renders nothing rather than a
+rounded figure.
+
+**Reading a transfer.** One component renders every transfer surface — the
+create/edit preview, the ledger row and Finance history — from the shared
+`TRANSFER_LABELS`, so the wording and the arithmetic cannot diverge:
+
+| Label | Value |
+| --- | --- |
+| `Yuborildi` | `sourceAmountMinor` in the source currency |
+| `Qabul qilindi` | `destinationAmountMinor` in the destination currency |
+| `Kurs` | the derived rate — **cross-currency only** |
+| `Komissiya` | `feeAmountMinor`, or `Komissiya yo‘q` |
+| `Manba hisobdan jami yechildi` | `sourceAmountMinor + feeAmountMinor` |
+
+Signed amounts and account names alone are not enough: a saved transfer must read
+the same way as the one that was entered.
+
 **Displayed rate.** A rate is never persisted and never fetched from a market.
 It is derived, on render, from the two exact amounts and the runtime currency
 `minorUnit` metadata, in integer arithmetic (BigInt), and it is display/audit

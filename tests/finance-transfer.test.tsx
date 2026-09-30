@@ -4,11 +4,15 @@ import test from "node:test";
 
 import { buildTransactionBody, validateTransaction } from "../lib/finance-metrics";
 import { buildFinanceSummary, accountBalanceAt } from "../lib/finance/summary";
+import { sumMinor } from "../lib/finance/money";
 import {
   TRANSFER_FEE_CATEGORY_ID, TRANSFER_FEE_CATEGORY_NAME,
   transferFeeMinor, transferRate, transferSettlement,
 } from "../lib/finance/transfer";
 import { validateTransactionInput } from "../lib/finance/validation";
+import { renderToStaticMarkup } from "react-dom/server";
+import { TransferBreakdown } from "../app/finance/finance-view-exports";
+import { TRANSFER_LABELS } from "../lib/finance/transfer";
 import type { FinanceAccount, FinanceCategory, FinanceProject, FinanceTransaction } from "../lib/finance/types";
 
 /**
@@ -389,6 +393,7 @@ test("the persisted row round-trips the commission, and an update replaces it on
 
 const drawers = readFileSync(new URL("../app/finance/finance-drawers.tsx", import.meta.url), "utf8");
 const view = readFileSync(new URL("../app/finance/finance-view.tsx", import.meta.url), "utf8");
+const primitives = readFileSync(new URL("../app/finance/finance-primitives.tsx", import.meta.url), "utf8");
 
 test("the transfer form asks for a commission and previews the settlement", () => {
   assert.match(drawers, /label=\{`Komissiya \(\$\{from\?\.currencyCode \?\? "manba valyutasi"\}\)`\}/,
@@ -396,25 +401,52 @@ test("the transfer form asks for a commission and previews the settlement", () =
   assert.doesNotMatch(drawers, /Komissiya valyutasi|feeCurrency/, "no fee-currency selector in this version");
   assert.match(drawers, /feeAmountMinor: fromCurrency && fee !== "" \? parseMoneyInput\(fee, fromCurrency\) : 0/);
   assert.match(drawers, /Tushadigan summadan ayirilmaydi/, "the form says the fee is charged on top");
-  // The preview reuses the canonical helpers rather than doing its own arithmetic.
-  assert.match(drawers, /transferSettlement\(row\)/);
-  assert.match(drawers, /transferRate\(row, dataset\.currencies\)/);
-  assert.match(drawers, /preview\.settlement\.sourceDeltaMinor/);
-  assert.match(drawers, /preview\.settlement\.destinationDeltaMinor/);
-  assert.match(drawers, /Komissiya yo‘q/);
-  assert.match(drawers, /preview\.rate\.label/);
+  // The preview shows the shared breakdown, built from the same helper the ledger
+  // and the summary use — it cannot disagree with what gets saved.
+  assert.match(drawers, /transferSettlement\(row\) \? \{ row \} : null/);
+  assert.match(drawers, /<TransferBreakdown row=\{preview\.row\} currencies=\{dataset\.currencies\}/);
   // No rate is ever multiplied into an amount anywhere in the form.
   assert.doesNotMatch(drawers, /destinationAmountMinor\s*=\s*[^;]*[*/]/);
 });
 
-test("a transfer row in the ledger reads sent, received, rate and commission", () => {
+test("saved transfers are labelled: sent, received, rate, commission, total debited", () => {
+  // One component renders every transfer surface, so the labels cannot drift.
+  assert.match(primitives, /export function TransferBreakdown/);
+  assert.deepEqual(Object.values(TRANSFER_LABELS), [
+    "Yuborildi", "Qabul qilindi", "Kurs", "Komissiya", "Manba hisobdan jami yechildi", "Komissiya yo‘q",
+  ]);
+  for (const key of ["sent", "received", "rate", "fee", "sourceTotal", "noFee"] as const) {
+    assert.match(primitives, new RegExp(`TRANSFER_LABELS\\.${key}`), `${key} is rendered from the shared label`);
+  }
+  assert.match(primitives, /rate && <div><dt>\{TRANSFER_LABELS\.rate\}/,
+    "the rate line exists only when transferRate returned one — cross-currency only");
+  assert.match(primitives, /amountMinor=\{-settlement\.sourceDeltaMinor\}/, "the total debited is the aggregate, not the sent amount");
+  // Both surfaces use it, and neither re-implements the arithmetic.
   assert.match(view, /function TransferCell/);
-  assert.match(view, /transferSettlement\(row\)/);
-  assert.match(view, /rate && <><br \/><small className="fin-rate-inline">\{rate\.label\}<\/small><\/>/,
-    "the rate appears only when transferRate returned one — that is, cross-currency only");
-  assert.match(view, /Komissiya <Money amountMinor=\{settlement\.feeMinor\}/);
-  assert.match(view, /Komissiya yo‘q/);
-  assert.match(view, /currency=\{settlement\.sourceCurrencyCode as Currency\}/, "the fee is shown in the source currency");
+  assert.match(view, /<TransferBreakdown row=\{row\} currencies=\{currencies\} variant="compact" \/>/);
+  assert.doesNotMatch(view, /fin-rate-inline|Komissiya <Money/, "the ledger no longer hand-rolls the transfer detail");
+  // Rendered output: every label, and the real numbers from the brief's example.
+  const cross = transfer({
+    toAccountId: "usd", sourceAmountMinor: 1_250_000_000, destinationAmountMinor: 100_000,
+    destinationCurrencyCode: "USD", feeAmountMinor: 5_000_000,
+  });
+  const html = renderToStaticMarkup(<TransferBreakdown row={cross} />);
+  for (const label of ["Yuborildi", "Qabul qilindi", "Kurs", "Komissiya", "Manba hisobdan jami yechildi"]) {
+    assert.ok(html.includes(label), `${label} must appear`);
+  }
+  assert.match(html, /12\D?500\D?000/, "12 500 000 UZS sent");
+  assert.match(html, /1\D?000[,.]00\s*(US\$|\$)/, "1 000 USD received");
+  assert.ok(html.includes("1 USD = 12 500 UZS"), "the derived rate");
+  assert.match(html, /12\D?550\D?000/, "12 550 000 UZS debited in total");
+  // Same currency: identical labels, and no rate line at all.
+  const same = renderToStaticMarkup(<TransferBreakdown row={transfer({ feeAmountMinor: 1_000_000 })} />);
+  for (const label of ["Yuborildi", "Qabul qilindi", "Komissiya", "Manba hisobdan jami yechildi"]) {
+    assert.ok(same.includes(label), `${label} must appear for a same-currency transfer`);
+  }
+  assert.equal(same.includes("Kurs"), false, "no exchange rate for one currency");
+  assert.match(same, /1\D?010\D?000/, "1 010 000 UZS debited in total");
+  // A transfer without a commission says so rather than showing a bare zero.
+  assert.ok(renderToStaticMarkup(<TransferBreakdown row={transfer()} />).includes("Komissiya yo‘q"));
 });
 
 test("the fee reaches expense reporting through one deterministic bucket", () => {
@@ -434,4 +466,84 @@ test("the fee reaches expense reporting through one deterministic bucket", () =>
   assert.equal((storage.match(/INSERT INTO finance_transactions/g) ?? []).length, 1);
   assert.doesNotMatch(storage, /type: "EXPENSE"|'EXPENSE',/, "nothing synthesises an expense row for a commission");
   assert.match(storage, /destination_currency_code, fee_amount_minor, created_at/);
+});
+
+// ---- safe integers: no silent precision loss anywhere ----------------------
+
+test("the aggregate debit is validated as money: amount + commission must stay exact", () => {
+  const MAX = Number.MAX_SAFE_INTEGER;
+  const body = (over: Record<string, unknown>) => ({
+    date: "2026-09-10", type: "TRANSFER", note: "", projectId: null,
+    fromAccountId: "uzs", toAccountId: "uzs-2", sourceAmountMinor: 100_000_000, sourceCurrencyCode: "UZS",
+    destinationAmountMinor: 100_000_000, destinationCurrencyCode: "UZS", feeAmountMinor: 0, ...over,
+  });
+  // MAX source with no commission is representable, so it is allowed.
+  assert.equal(validateTransactionInput(body({ sourceAmountMinor: MAX, destinationAmountMinor: MAX })).ok, true);
+  // MAX source plus one minor unit of commission is not.
+  const overflow = validateTransactionInput(body({ sourceAmountMinor: MAX, destinationAmountMinor: MAX, feeAmountMinor: 1 }));
+  assert.equal(overflow.ok, false);
+  if (!overflow.ok) assert.match(overflow.error, /safe integer range/);
+  // Exactly at the boundary the total is still exact, so it is allowed.
+  assert.equal(validateTransactionInput(body({ sourceAmountMinor: MAX - 100, destinationAmountMinor: MAX - 100, feeAmountMinor: 100 })).ok, true);
+  assert.equal(validateTransactionInput(body({ sourceAmountMinor: MAX - 100, destinationAmountMinor: MAX - 100, feeAmountMinor: 101 })).ok, false);
+  // Unsafe amounts on either leg are rejected before persistence.
+  for (const over of [
+    { sourceAmountMinor: MAX + 2 }, { destinationAmountMinor: MAX + 2 },
+    { sourceAmountMinor: Number.POSITIVE_INFINITY }, { destinationAmountMinor: Number.NaN },
+    { feeAmountMinor: MAX + 2 },
+  ]) assert.equal(validateTransactionInput(body(over)).ok, false, JSON.stringify(over));
+  // The same guard runs in the browser, so the form never sends it.
+  const draft = {
+    type: "TRANSFER" as const, date: "2026-09-10", accountId: "uzs", toAccountId: "uzs-2",
+    amountMinor: MAX, destinationAmountMinor: null, feeAmountMinor: 1, categoryId: null, projectId: null,
+  };
+  const checked = validateTransaction(draft, accounts);
+  assert.equal(checked.ok, false);
+  assert.match(String(checked.error), /juda katta/);
+  assert.equal(validateTransaction({ ...draft, feeAmountMinor: 0 }, accounts).ok, true);
+});
+
+test("sumMinor is the canonical safe sum, and settlement refuses an unrepresentable debit", () => {
+  const MAX = Number.MAX_SAFE_INTEGER;
+  assert.equal(sumMinor(MAX, 0), MAX);
+  assert.equal(sumMinor(MAX - 100, 100), MAX);
+  assert.equal(sumMinor(MAX, 1), null);
+  assert.equal(sumMinor(1, 2, 3), 6);
+  assert.equal(sumMinor(MAX, 1, -1), null, "an unsafe running total fails even though the end result would fit");
+  assert.equal(sumMinor(MAX, -1, 1), MAX, "…while a running total that never leaves the range is fine");
+  assert.equal(sumMinor(1.5, 1), null);
+  assert.equal(sumMinor(Number.NaN, 1), null);
+  assert.equal(sumMinor(Number.POSITIVE_INFINITY), null);
+  // A row that somehow holds an unrepresentable total reports no settlement at all
+  // rather than a rounded one — and therefore renders nothing.
+  const broken = transfer({ sourceAmountMinor: MAX, destinationAmountMinor: MAX, feeAmountMinor: 1 });
+  assert.equal(transferSettlement(broken), null);
+  assert.equal(transferRate(broken), null);
+  assert.equal(renderToStaticMarkup(<TransferBreakdown row={broken} />), "");
+});
+
+test("balance and summary accumulation fails loudly instead of losing precision", () => {
+  const MAX = Number.MAX_SAFE_INTEGER;
+  // A balance that cannot be represented throws rather than reporting a rounded
+  // number: the API turns that into a visible Finance error, never a wrong total.
+  const huge = [
+    transfer({ id: "h1", fromAccountId: "uzs-2", toAccountId: "uzs", sourceAmountMinor: MAX - 10, destinationAmountMinor: MAX - 10 }),
+    transfer({ id: "h2", fromAccountId: "uzs-2", toAccountId: "uzs", sourceAmountMinor: MAX - 10, destinationAmountMinor: MAX - 10 }),
+  ];
+  assert.throws(() => summaryOf(huge), /safe integer/);
+  // The same for an expense total built from many commissions.
+  const fees = [
+    transfer({ id: "f1", feeAmountMinor: MAX - 10 }),
+    transfer({ id: "f2", feeAmountMinor: MAX - 10 }),
+  ];
+  assert.throws(() => summaryOf(fees), /safe integer/);
+  // And the source debit itself is summed with the throwing helper.
+  const summary = readFileSync(new URL("../lib/finance/summary.ts", import.meta.url), "utf8");
+  assert.match(summary, /-addMinor\(transaction\.sourceAmountMinor \?\? 0, transferFeeMinor\(transaction\)\)/);
+  assert.doesNotMatch(summary, /\(transaction\.sourceAmountMinor \?\? 0\) \+ transferFeeMinor/, "no unchecked aggregate addition");
+  // Every Finance money accumulation goes through a checked helper.
+  for (const file of ["../lib/finance/summary.ts", "../lib/finance-money.ts", "../lib/finance-metrics.ts"]) {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.match(source, /addMinor|sumMinor/, `${file} uses the checked helpers`);
+  }
 });

@@ -4,10 +4,10 @@ import { useMemo, useState } from "react";
 
 import { Drawer } from "../ui/drawer";
 import { DateInput, FormField, NumberInput, SelectInput, TextInput, Textarea } from "../ui/form";
-import { Money, useFinanceCurrency } from "./finance-primitives";
+import { TransferBreakdown, useFinanceCurrency } from "./finance-primitives";
 import { formatMoney, moneyInputStep, moneyInputValue, parseMoneyInput } from "@/lib/finance-money";
 import { buildTransactionBody, cadenceMonths, selectableCategories, transferShape, validateTransaction } from "@/lib/finance-metrics";
-import { transferRate, transferSettlement } from "@/lib/finance/transfer";
+import { transferSettlement } from "@/lib/finance/transfer";
 import { validateSubscriptionInput } from "@/lib/finance/validation";
 import {
   ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, CADENCES, CADENCE_LABELS, CURRENCIES,
@@ -87,9 +87,10 @@ export function TransactionDrawer({ open, dataset, initialType = "EXPENSE", onCl
       destinationAmountMinor, destinationCurrencyCode: to.currencyCode,
       feeAmountMinor: feeMinor,
     };
-    const settlement = transferSettlement(row);
-    return settlement ? { settlement, rate: transferRate(row, dataset.currencies) } : null;
-  }, [type, from, to, fromCurrency, toCurrency, amount, toAmount, fee, crossCurrency, dataset.currencies]);
+    // The row is validated by the same helper the ledger and the summary use, so a
+    // preview never shows a settlement the backend would reject.
+    return transferSettlement(row) ? { row } : null;
+  }, [type, from, to, fromCurrency, toCurrency, amount, toAmount, fee, crossCurrency]);
   const categories = useMemo(() => selectableCategories(dataset.categories, type), [dataset.categories, type]);
   const dirty = Boolean(accountId || amount || description);
 
@@ -174,21 +175,13 @@ export function TransactionDrawer({ open, dataset, initialType = "EXPENSE", onCl
         </FormField>
       )}
 
-      {/* Rate and settlement: derived from the two entered amounts, never from a
-          market rate, and never persisted as the financial truth. */}
+      {/* What this transfer will do, in the same labelled block the ledger shows.
+          The rate is derived from the two entered amounts — never a market rate,
+          and never persisted as the financial truth. */}
       {type === "TRANSFER" && preview && (
         <div className="fin-transfer-preview">
-          {preview.rate && <p className="fin-rate"><span>Kurs</span><strong>{preview.rate.label}</strong></p>}
-          <dl>
-            <div><dt>{from?.name ?? "Yuboruvchi hisob"}</dt>
-              <dd><Money amountMinor={preview.settlement.sourceDeltaMinor} currency={preview.settlement.sourceCurrencyCode as Currency} tone="expense" /></dd></div>
-            <div><dt>{to?.name ?? "Qabul qiluvchi hisob"}</dt>
-              <dd><Money amountMinor={preview.settlement.destinationDeltaMinor} currency={preview.settlement.destinationCurrencyCode as Currency} tone="income" /></dd></div>
-            <div><dt>Komissiya</dt>
-              <dd>{preview.settlement.feeMinor
-                ? <Money amountMinor={preview.settlement.feeMinor} currency={preview.settlement.sourceCurrencyCode as Currency} tone="expense" />
-                : <span className="fin-money muted">Komissiya yo‘q</span>}</dd></div>
-          </dl>
+          <p className="fin-preview-head">{from?.name ?? "Yuboruvchi hisob"} → {to?.name ?? "Qabul qiluvchi hisob"}</p>
+          <TransferBreakdown row={preview.row} currencies={dataset.currencies} />
         </div>
       )}
 

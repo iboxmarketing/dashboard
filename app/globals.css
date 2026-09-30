@@ -205,19 +205,21 @@ aside nav button i { margin-left: auto; width: 7px; height: 7px; border-radius: 
 .fin-type.income { background: #e7f7f0; color: #167a53; }
 .fin-type.expense { background: #fdeceb; color: #b33f38; }
 .fin-type.transfer { background: #eef0ff; color: #5167d8; }
-.fin-cross { color: #8b95a6; font-size: 9px; }
-/* Transfer reading aids: the derived rate and the commission, never the money itself. */
-.fin-rate-inline { color: #7c869a; font-size: 9px; font-variant-numeric: tabular-nums; }
-.fin-fee { color: #8b95a6; font-size: 9px; }
-.fin-fee .fin-money { font-size: 9px; }
+/* One labelled transfer breakdown, shared by the create/edit preview and the ledger. */
+.fin-transfer-breakdown { display: grid; gap: 4px; margin: 0; text-align: left; }
+.fin-transfer-breakdown > div { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.fin-transfer-breakdown dt { color: #6b7688; font-size: 10px; }
+.fin-transfer-breakdown dd { margin: 0; font-size: 11px; }
+.fin-transfer-breakdown .fin-rate-value { color: var(--navy); font-variant-numeric: tabular-nums; }
+.fin-transfer-breakdown .fin-transfer-total { margin-top: 3px; padding-top: 4px; border-top: 1px solid #e7ebf3; }
+.fin-transfer-breakdown .fin-transfer-total dt { color: #46536b; font-weight: 650; }
+/* Inside a table cell the same block is tighter and its labels are smaller. */
+.fin-transfer-breakdown.compact { gap: 2px; margin-top: 5px; }
+.fin-transfer-breakdown.compact dt { font-size: 9px; color: #8b95a6; }
+.fin-transfer-breakdown.compact dd { font-size: 10px; }
+.fin-transfer-breakdown.compact .fin-money { font-size: 10px; }
 .fin-transfer-preview { margin: 4px 0 10px; padding: 10px 12px; border: 1px solid #e7ebf3; border-radius: 10px; background: #fafbfe; }
-.fin-transfer-preview .fin-rate { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 0 0 8px; }
-.fin-transfer-preview .fin-rate span { color: #7c869a; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
-.fin-transfer-preview .fin-rate strong { color: var(--navy); font-size: 12px; font-variant-numeric: tabular-nums; }
-.fin-transfer-preview dl { display: grid; gap: 5px; margin: 0; }
-.fin-transfer-preview dl > div { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-.fin-transfer-preview dt { color: #6b7688; font-size: 10px; }
-.fin-transfer-preview dd { margin: 0; font-size: 11px; }
+.fin-preview-head { margin: 0 0 8px; color: #7c869a; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
 
 .fin-type-switch { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: white; }
 .fin-type-switch button { height: 29px; padding: 0 12px; border: 0; border-radius: 7px; background: transparent; color: #5a6679; font-size: 11px; font-weight: 650; }

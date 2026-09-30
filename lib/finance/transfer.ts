@@ -15,7 +15,7 @@
  * The commission is never subtracted from the destination amount: what arrived
  * is what the receiving bank credited, and that is entered as its own number.
  */
-import { FINANCE_CURRENCIES } from "./money";
+import { FINANCE_CURRENCIES, sumMinor } from "./money";
 import type { FinanceTransaction } from "./types";
 
 /**
@@ -27,6 +27,20 @@ import type { FinanceTransaction } from "./types";
  */
 export const TRANSFER_FEE_CATEGORY_ID = "system:transfer-fee";
 export const TRANSFER_FEE_CATEGORY_NAME = "Bank komissiyasi";
+
+/**
+ * The five things a person needs to read on any transfer, labelled identically in
+ * the create/edit preview, the ledger row and every Finance history view. One
+ * constant, so the wording cannot drift between surfaces.
+ */
+export const TRANSFER_LABELS = {
+  sent: "Yuborildi",
+  received: "Qabul qilindi",
+  rate: "Kurs",
+  fee: "Komissiya",
+  sourceTotal: "Manba hisobdan jami yechildi",
+  noFee: "Komissiya yo‘q",
+} as const;
 
 type TransferLike = Pick<
   FinanceTransaction,
@@ -60,11 +74,17 @@ export function transferSettlement(transaction: TransferLike): TransferSettlemen
   if (!Number.isSafeInteger(sourceAmountMinor) || !Number.isSafeInteger(destinationAmountMinor)) return null;
   if (!sourceCurrencyCode || !destinationCurrencyCode) return null;
   const feeMinor = transferFeeMinor(transaction);
+  // The aggregate debit, summed safely. Validation rejects an unrepresentable
+  // total before it can be stored, so `null` here means a row that predates that
+  // guard or arrived from outside it: no settlement is reported rather than a
+  // silently wrong one.
+  const debit = sumMinor(sourceAmountMinor as number, feeMinor);
+  if (debit === null) return null;
   return {
     sourceCurrencyCode, destinationCurrencyCode,
     sourceAmountMinor: sourceAmountMinor as number, destinationAmountMinor: destinationAmountMinor as number,
     feeMinor,
-    sourceDeltaMinor: -((sourceAmountMinor as number) + feeMinor),
+    sourceDeltaMinor: -debit,
     destinationDeltaMinor: destinationAmountMinor as number,
     crossCurrency: sourceCurrencyCode !== destinationCurrencyCode,
   };

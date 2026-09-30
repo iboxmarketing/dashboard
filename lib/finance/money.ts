@@ -31,6 +31,25 @@ export function isSafeMinor(value: unknown, options: { positive?: boolean } = {}
   return options.positive ? value > 0 : true;
 }
 
+/**
+ * The canonical safe sum for minor units: the total, or `null` when any input or
+ * the running total leaves the safe integer range.
+ *
+ * Validation uses this to REJECT a value before it is persisted, where throwing
+ * would turn a bad request into a 500. `addMinor` below is the accumulating twin
+ * used where a wrong number must never be produced: it throws instead, so a
+ * balance or summary fails loudly rather than silently losing precision.
+ */
+export function sumMinor(...values: number[]): number | null {
+  let total = 0;
+  for (const value of values) {
+    if (typeof value !== "number" || !Number.isSafeInteger(value)) return null;
+    total += value;
+    if (!Number.isSafeInteger(total)) return null;
+  }
+  return total;
+}
+
 export function addMinor(left: number, right: number) {
   if (!Number.isSafeInteger(left) || !Number.isSafeInteger(right)) throw new Error("Money must use safe integer minor units");
   const result = left + right;

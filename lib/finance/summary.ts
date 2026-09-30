@@ -33,7 +33,9 @@ function accountDelta(transaction: FinanceTransaction, accountId: string) {
   // The commission leaves the SOURCE account with the transfer, in the source
   // currency. It is never deducted from what the destination received.
   if (transaction.type === "TRANSFER" && transaction.fromAccountId === accountId) {
-    return -((transaction.sourceAmountMinor ?? 0) + transferFeeMinor(transaction));
+    // addMinor throws on an unsafe total, so a balance can never be reported as a
+    // number that quietly lost precision.
+    return -addMinor(transaction.sourceAmountMinor ?? 0, transferFeeMinor(transaction));
   }
   if (transaction.type === "TRANSFER" && transaction.toAccountId === accountId) return transaction.destinationAmountMinor ?? 0;
   return 0;
