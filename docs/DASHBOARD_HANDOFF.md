@@ -10,15 +10,15 @@ detailed rules live in `docs/BUSINESS_RULES.md`, the runbooks in
 | | |
 | --- | --- |
 | Worker | `bitrix-deal-dashboard` (Cloudflare Workers, Paid — 30 s CPU) |
-| **Worker version** (what serves traffic) | `0be0a05e-d5d8-4ef4-aa80-e71b105989c4` (deployed 2026-09-30T09:07Z) |
-| **Deployed application SHA** (what that version was built from) | `befea48` — analytics version 16, Finance migrations `0012_transfer_fee` and `0013_transaction_archive` applied |
+| **Worker version** (what serves traffic) | `65b34e0b-c445-4078-b991-71513db98362` (deployed 2026-09-30T16:05Z) |
+| **Deployed application SHA** (what that version was built from) | `84e1d67` — analytics version 16, Finance migrations `0012`–`0014` applied |
 | **Release branch** | `release/meeting-2026-09-21` |
-| **Branch HEAD** (latest commit on that branch) | `befea48`, plus the documentation-only commit that records this deployment |
+| **Branch HEAD** (latest commit on that branch) | `84e1d67`, plus the documentation-only commit that records this deployment |
 | URL | `https://bitrix-deal-dashboard.lively-river-afba.workers.dev` (behind Cloudflare Access) |
 | D1 database | `ibox-dashboard-production`, id `281835a3-f1f4-4f92-be6c-818b05583a00` |
 | Latest Full Sync | `2026-09-24T09:24:57.400Z` (14:24:57 Asia/Tashkent), run `2421c3e2-5762-4048-b53f-bad446536aa7`, analytics version 14 — **a new Full Sync is required** for version 16 records (product-fit outcome and SLA evidence). Until it runs, the stale-data banner asks for the rebuild and the SLA card's average and median read `—`, because no stored record carries SLA evidence yet. |
 | Staging Worker | `bitrix-dashboard-staging` → D1 `ibox-dashboard-staging` (`a97770c8-995d-419d-aa5d-122fbb956610`) |
-| Cron | `*/15 * * * *`; it syncs only while `autoSyncMinutes > 0` (currently `0`, so sync is manual) |
+| Cron | `*/15 * * * *`; CRM sync runs only while `autoSyncMinutes > 0` (currently `0`, so sync is manual). The same trigger runs the Finance subscription pass once per Tashkent day, which only creates due occurrences — it never charges anything. |
 | Observability | deliberately OFF — public share tokens ride in the URL path and Workers Logs would retain them |
 
 Three identities, deliberately listed apart:
@@ -31,7 +31,11 @@ Three identities, deliberately listed apart:
   A branch HEAD ahead by application code means something is built but not
   deployed — check before assuming production has it.
 
-The previous accepted version was `99ac261f-f8f0-417d-a1bf-fc8de127cff1`
+The previous accepted version was `0be0a05e-d5d8-4ef4-aa80-e71b105989c4`
+(SHA `befea48`, before subscription occurrences — rolling back to it leaves
+`finance_subscription_occurrences` in place but unread, so a draft awaiting
+confirmation simply stops being offered until the build returns; nothing posted is
+affected), before it `99ac261f-f8f0-417d-a1bf-fc8de127cff1`
 (SHA `06e1840`, Finance editing and the transaction archive, but deciding an
 account's archive on its pre-patch balance), before it
 `25e28732-0230-4e97-9dd8-fffe5c93aa24`
