@@ -302,6 +302,13 @@ The goal is to attribute performance to the seller responsible at the sales outc
   revenue stay his. His 31 sales are OWNER_CONFIRMED in `lib/seller-overrides.ts`.
   An observer list alone never credits a former seller, but a former seller among
   the observers makes a roster observer ambiguous (Deal 28565: Otabek and Abubakr).
+- Remaining review after the 2026-09-30 backfill (field left empty, never guessed):
+  - no observer and the Deal already in category 17, so only an onboarding
+    Responsible: 22655, 22799, 26691, 27345, 33891, 35035, 35799;
+  - two sellers among the observers: 26785 (Jasur 225 and Ikrom 229), 28565
+    (Otabek 199 and Abubakr 223);
+  - 21927: observer Abdulla 235 but Responsible Humoyun 203, and every category-5
+    stage passed within 47 seconds (an imported record), so the evidence conflicts.
 - Historical sales: Bitrix REST stage history carries no actor and there is no
   history of `ASSIGNED_BY_ID`, so "the Responsible at the ЕСТЬ ЗАПУСК! transition"
   cannot be read directly. Reliable evidence is the field itself, an owner
