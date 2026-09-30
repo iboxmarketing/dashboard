@@ -373,7 +373,11 @@ test("12. the auth integration changes no analytics, seller or finance calculati
     "lib/widget-permissions.ts",
   ].sort());
   // Finance's change is transport only: every changed line is about the fetch path.
-  const financeDiff = execFileSync("git", ["diff", "-U0", "cd1d418", "--", "lib/finance-adapter.ts"], { cwd: root, encoding: "utf8" })
+  //
+  // Scoped to the AUTH lane's own range, like `changed` above. Comparing against
+  // the working tree instead would fold in later accepted Finance work — the
+  // subscription-occurrence load, for one — and report it as an Auth violation.
+  const financeDiff = execFileSync("git", ["diff", "-U0", "cd1d418", hasCommit(AUTH_TIP) ? AUTH_TIP : "HEAD", "--", "lib/finance-adapter.ts"], { cwd: root, encoding: "utf8" })
     .split("\n").filter((line) => /^[+-](?![+-])/.test(line) && line.slice(1).trim());
   for (const line of financeDiff) {
     assert.match(line, /authFetch|SessionLostError|createHttpTransport\(fetchImpl: typeof fetch = fetch\)|catch \(error\)|throw error|FinanceError\("Finance API bilan aloqa|^[+-]\s*(\/\/|\}|\} catch)/, `unexpected Finance change: ${line}`);
