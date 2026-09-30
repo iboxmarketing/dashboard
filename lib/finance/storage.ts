@@ -1,5 +1,6 @@
 import { getD1 } from "@/db";
 import { FINANCE_CURRENCIES, addMinor } from "./money";
+import { ACCOUNT_BALANCE_UNSAFE_MESSAGE, accountArchiveRefusal, projectedAccountBalanceMinor } from "./account-rules";
 import { validateCategoryHierarchy, type AccountInput, type CategoryInput, type ProjectInput, type SubscriptionInput, type TransactionInput } from "./validation";
 import type { FinanceAccount, FinanceCategory, FinanceCurrency, FinanceProject, FinanceSubscription, FinanceTransaction } from "./types";
 
@@ -99,13 +100,20 @@ export async function updateFinanceAccount(id: string, input: AccountInput) {
     if (used) throw new FinanceError("Account currency cannot change after transactions exist", 409, "ACCOUNT_CURRENCY_LOCKED");
   }
   // Archiving hides an account from every active screen, so a balance left on it
-  // would vanish from the totals people read. Blocked with the wording the owner
-  // asked for; restoring (archived -> active) is always allowed.
+  // would vanish from the totals people read.
+  //
+  // The check runs against the PROJECTED state — the opening balance this PATCH
+  // will leave behind, plus the account's active transaction deltas — not against
+  // the balance the account happens to have now. Validating the old balance let a
+  // single request raise the opening balance and archive in one go: the check saw
+  // 0, and the new opening balance was written afterwards, hiding a non-zero
+  // account. `input` is the merged post-patch state (the route validates
+  // `{...existing, ...payload}`), so it is the resulting state that is judged, never
+  // the order the fields arrived in. Nothing is persisted before this passes, so
+  // an invalid combination never exists in the database, even briefly.
   if (input.archived && !existing.archived) {
-    const balance = await financeAccountBalanceMinor(id, existing.openingBalanceMinor);
-    if (balance !== 0) {
-      throw new FinanceError("Hisobda qoldiq mavjud. Arxivlashdan oldin qoldiqni 0 ga tushiring.", 409, "ACCOUNT_BALANCE_NOT_ZERO");
-    }
+    const refusal = accountArchiveRefusal(input, existing, await financeAccountActiveDeltaMinor(id));
+    if (refusal) throw new FinanceError(refusal.message, 409, refusal.code);
   }
   await getD1().prepare("UPDATE finance_accounts SET name = ?, type = ?, currency_code = ?, opening_balance_minor = ?, archived = ?, updated_at = ? WHERE id = ?")
     .bind(input.name, input.type, input.currencyCode, input.openingBalanceMinor, input.archived ? 1 : 0, new Date().toISOString(), id).run();
@@ -120,12 +128,24 @@ export async function updateFinanceAccount(id: string, input: AccountInput) {
  * the archive invariant and the number on screen always agree.
  */
 export async function financeAccountBalanceMinor(id: string, openingBalanceMinor: number) {
+  const projected = projectedAccountBalanceMinor(openingBalanceMinor, await financeAccountActiveDeltaMinor(id));
+  if (projected === null) throw new FinanceError(ACCOUNT_BALANCE_UNSAFE_MESSAGE, 409, "ACCOUNT_BALANCE_UNSAFE");
+  return projected;
+}
+
+/**
+ * What this account's ACTIVE transactions add up to, without its opening balance:
+ * the part of a balance that no account PATCH can change. Archived rows are
+ * excluded exactly as they are in the summary, so the invariant and the number on
+ * screen always agree.
+ */
+export async function financeAccountActiveDeltaMinor(id: string) {
   const result = await getD1().prepare(`SELECT type, account_id, from_account_id, to_account_id,
       amount_minor, source_amount_minor, destination_amount_minor, fee_amount_minor
     FROM finance_transactions
     WHERE archived = 0 AND (account_id = ? OR from_account_id = ? OR to_account_id = ?)`)
     .bind(id, id, id).all<Record<string, unknown>>();
-  let balance = openingBalanceMinor;
+  let balance = 0;
   for (const row of result.results ?? []) {
     const type = String(row.type);
     const minor = (value: unknown) => (value === null || value === undefined ? 0 : Number(value));
@@ -139,6 +159,8 @@ export async function financeAccountBalanceMinor(id: string, openingBalanceMinor
   }
   return balance;
 }
+
+
 
 export async function listFinanceCategories(includeArchived = false): Promise<FinanceCategory[]> {
   const sql = `SELECT * FROM finance_categories ${includeArchived ? "" : "WHERE archived = 0"} ORDER BY sort_order, name, id`;

@@ -5,6 +5,9 @@ import test from "node:test";
 import { buildTransactionBody, filterTransactions, selectableCategories } from "../lib/finance-metrics";
 import { accountBalanceAt, activeFinanceTransactions, buildFinanceSummary } from "../lib/finance/summary";
 import { validateAccountInput, validateCategoryInput, validateTransactionInput } from "../lib/finance/validation";
+import {
+  ACCOUNT_BALANCE_NOT_ZERO_MESSAGE, accountArchiveRefusal, projectedAccountBalanceMinor,
+} from "../lib/finance/account-rules";
 import type { FinanceAccount, FinanceCategory, FinanceProject, FinanceTransaction } from "../lib/finance/types";
 
 /**
@@ -213,7 +216,7 @@ test("10. an archived account leaves every list and selector, and keeps its hist
   assert.equal(accountBalanceAt(archivedAccounts.find((row) => row.id === "usd")!, rows), 1_000);
   // A balance left on an account blocks the archive, with the owner's wording.
   const storage = readFileSync(new URL("../lib/finance/storage.ts", import.meta.url), "utf8");
-  assert.match(storage, /Hisobda qoldiq mavjud\. Arxivlashdan oldin qoldiqni 0 ga tushiring\./);
+  assert.equal(ACCOUNT_BALANCE_NOT_ZERO_MESSAGE, "Hisobda qoldiq mavjud. Arxivlashdan oldin qoldiqni 0 ga tushiring.");
   assert.match(storage, /if \(input\.archived && !existing\.archived\)/, "checked only when archiving, so restoring is never blocked");
   assert.match(storage, /WHERE archived = 0 AND \(account_id = \? OR from_account_id = \? OR to_account_id = \?\)/,
     "the invariant counts active records only, exactly as the summary does");
@@ -284,4 +287,71 @@ test("a transaction body always carries an explicit archived flag", () => {
   assert.equal(edited.archived, true, "editing an archived record keeps it archived");
   const drawers = readFileSync(new URL("../app/finance/finance-drawers.tsx", import.meta.url), "utf8");
   assert.match(drawers, /archived: editing\?\.archived === true/, "the form never flips the flag as a side effect");
+});
+
+// ---- the archive invariant is judged on the RESULTING state -----------------
+
+/**
+ * The defect this locks out: archive eligibility was checked against the balance
+ * the account had BEFORE the same PATCH was applied. One request could therefore
+ * raise the opening balance and archive together — the check saw 0, the new
+ * opening balance was written afterwards, and a non-zero account ended up hidden.
+ */
+test("A-F. archive eligibility is decided by the projected balance, not the old one", () => {
+  const active = { archived: false };
+  const archived = { archived: true };
+
+  // A. balance 0 today, the same PATCH sets opening 1 and archives => REJECT.
+  const exploit = accountArchiveRefusal({ archived: true, openingBalanceMinor: 1 }, active, 0);
+  assert.equal(exploit?.code, "ACCOUNT_BALANCE_NOT_ZERO");
+  assert.equal(exploit?.message, ACCOUNT_BALANCE_NOT_ZERO_MESSAGE);
+  assert.equal(exploit?.projectedBalanceMinor, 1, "judged on 1, not on the stored 0");
+
+  // B. opening 1 today, the PATCH sets opening 0, no transactions => ALLOW.
+  assert.equal(accountArchiveRefusal({ archived: true, openingBalanceMinor: 0 }, active, 0), null);
+
+  // C. active transactions total +500, the PATCH sets opening -500 => projected 0 => ALLOW.
+  assert.equal(accountArchiveRefusal({ archived: true, openingBalanceMinor: -50_000 }, active, 50_000), null);
+  // …and one minor unit away is still refused, in either direction.
+  assert.equal(accountArchiveRefusal({ archived: true, openingBalanceMinor: -49_999 }, active, 50_000)?.projectedBalanceMinor, 1);
+  assert.equal(accountArchiveRefusal({ archived: true, openingBalanceMinor: -50_001 }, active, 50_000)?.projectedBalanceMinor, -1);
+
+  // D. balance 500, archive with no other change => REJECT.
+  assert.equal(accountArchiveRefusal({ archived: true, openingBalanceMinor: 50_000 }, active, 0)?.code, "ACCOUNT_BALANCE_NOT_ZERO");
+  assert.equal(accountArchiveRefusal({ archived: true, openingBalanceMinor: 0 }, active, 50_000)?.projectedBalanceMinor, 50_000);
+
+  // E. an opening-balance edit on its own is never blocked, whatever the balance.
+  assert.equal(accountArchiveRefusal({ archived: false, openingBalanceMinor: 123_456 }, active, 50_000), null);
+  assert.equal(projectedAccountBalanceMinor(200_000_000, 30_000_000), 230_000_000, "and it recalculates correctly");
+
+  // F. restoring is never blocked, and neither is a PATCH that leaves an archived
+  // account archived.
+  assert.equal(accountArchiveRefusal({ archived: false, openingBalanceMinor: 50_000 }, archived, 0), null);
+  assert.equal(accountArchiveRefusal({ archived: true, openingBalanceMinor: 50_000 }, archived, 0), null);
+
+  // Safe money: an unrepresentable projection is refused explicitly, never rounded.
+  const MAX = Number.MAX_SAFE_INTEGER;
+  assert.equal(projectedAccountBalanceMinor(MAX, 1), null);
+  assert.equal(accountArchiveRefusal({ archived: true, openingBalanceMinor: MAX }, active, 1)?.code, "ACCOUNT_BALANCE_UNSAFE");
+  assert.equal(accountArchiveRefusal({ archived: true, openingBalanceMinor: 1.5 }, active, -1.5)?.code, "ACCOUNT_BALANCE_UNSAFE");
+});
+
+test("the account PATCH judges the merged state and persists nothing before it passes", () => {
+  const storage = readFileSync(new URL("../lib/finance/storage.ts", import.meta.url), "utf8");
+  // The rule receives the POST-patch input, never the stored account.
+  assert.match(storage, /accountArchiveRefusal\(input, existing, await financeAccountActiveDeltaMinor\(id\)\)/);
+  assert.doesNotMatch(storage, /financeAccountBalanceMinor\(id, existing\.openingBalanceMinor\)/,
+    "the pre-patch balance can no longer decide the archive");
+  // The delta query excludes the opening balance and every archived row, so the
+  // projection is opening + active deltas and nothing else.
+  assert.match(storage, /let balance = 0;/);
+  assert.match(storage, /WHERE archived = 0 AND \(account_id = \? OR from_account_id = \? OR to_account_id = \?\)/);
+  // The refusal is thrown before the UPDATE runs: no invalid state is ever stored.
+  const update = storage.slice(storage.indexOf("export async function updateFinanceAccount"), storage.indexOf("export async function financeAccountBalanceMinor"));
+  assert.ok(update.indexOf("accountArchiveRefusal") < update.indexOf("UPDATE finance_accounts"),
+    "the check precedes the write");
+  assert.equal((update.match(/UPDATE finance_accounts/g) ?? []).length, 1, "one write, so the update is atomic for the caller");
+  // The route hands the merged state to validation, which is what the rule sees.
+  const route = readFileSync(new URL("../app/api/finance/accounts/route.ts", import.meta.url), "utf8");
+  assert.match(route, /validateAccountInput\(\{ \.\.\.existing, \.\.\.payload \}\)/);
 });
