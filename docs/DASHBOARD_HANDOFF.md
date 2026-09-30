@@ -10,10 +10,10 @@ detailed rules live in `docs/BUSINESS_RULES.md`, the runbooks in
 | | |
 | --- | --- |
 | Worker | `bitrix-deal-dashboard` (Cloudflare Workers, Paid — 30 s CPU) |
-| **Worker version** (what serves traffic) | `25e28732-0230-4e97-9dd8-fffe5c93aa24` (deployed 2026-09-30T07:18Z) |
-| **Deployed application SHA** (what that version was built from) | `539f61f` — analytics version 16, Finance migration `0012_transfer_fee` applied |
+| **Worker version** (what serves traffic) | `99ac261f-f8f0-417d-a1bf-fc8de127cff1` (deployed 2026-09-30T07:49Z) |
+| **Deployed application SHA** (what that version was built from) | `06e1840` — analytics version 16, Finance migrations `0012_transfer_fee` and `0013_transaction_archive` applied |
 | **Release branch** | `release/meeting-2026-09-21` |
-| **Branch HEAD** (latest commit on that branch) | `539f61f`, plus the documentation-only commit that records this deployment |
+| **Branch HEAD** (latest commit on that branch) | `06e1840`, plus the documentation-only commit that records this deployment |
 | URL | `https://bitrix-deal-dashboard.lively-river-afba.workers.dev` (behind Cloudflare Access) |
 | D1 database | `ibox-dashboard-production`, id `281835a3-f1f4-4f92-be6c-818b05583a00` |
 | Latest Full Sync | `2026-09-24T09:24:57.400Z` (14:24:57 Asia/Tashkent), run `2421c3e2-5762-4048-b53f-bad446536aa7`, analytics version 14 — **a new Full Sync is required** for version 16 records (product-fit outcome and SLA evidence). Until it runs, the stale-data banner asks for the rebuild and the SLA card's average and median read `—`, because no stored record carries SLA evidence yet. |
@@ -31,7 +31,11 @@ Three identities, deliberately listed apart:
   A branch HEAD ahead by application code means something is built but not
   deployed — check before assuming production has it.
 
-The previous accepted version was `930ccd1d-fdc5-470a-a67c-6b52aa562c20`
+The previous accepted version was `25e28732-0230-4e97-9dd8-fffe5c93aa24`
+(SHA `539f61f`, before Finance editing and the transaction archive — rolling back
+to it leaves `finance_transactions.archived` in place but unread, so any record
+archived under this release would silently count again), before that
+`930ccd1d-fdc5-470a-a67c-6b52aa562c20`
 (SHA `b84588f`, the first Finance transfer-commission release), before it
 `037633b2-1948-4485-bb04-c45a09ee9680` (SHA `37c1fa9`, before the commission), and
 before that `ee1b9204-6626-41f3-8add-2b4232f6001b` (SHA `60d70a9`) and
