@@ -6,6 +6,7 @@ import type {
   FinanceDataset, FinanceEntity, FinanceSummary, NewAccount, NewCategory, NewProject,
   NewSubscription, NewTransaction,
 } from "./finance-types";
+import type { SubscriptionOccurrence } from "./finance/occurrences";
 
 /** The single network boundary used by every Finance screen. */
 export const FINANCE_ENDPOINTS = {
@@ -18,6 +19,10 @@ export const FINANCE_ENDPOINTS = {
   currencies: "/api/finance/currencies",
 } as const;
 
+/** Subscription occurrences: the due-date rows the owner confirms, retries or skips. */
+export const FINANCE_OCCURRENCES_ENDPOINT = "/api/finance/occurrences";
+export type OccurrenceAction = "sweep" | "retry" | "confirm" | "pending" | "skip";
+
 export type FinanceSource = "api" | "fixtures";
 export type FinanceRange = { from: string; to: string };
 export type FinanceLoad = { dataset: FinanceDataset; source: FinanceSource; error: string | null };
@@ -28,6 +33,8 @@ export class FinanceError extends Error {
 
 type Transport = {
   list(entity: FinanceEntity): Promise<unknown[]>;
+  occurrences(): Promise<SubscriptionOccurrence[]>;
+  occurrenceAction(action: OccurrenceAction, id?: string): Promise<void>;
   currencies(): Promise<FinanceDataset["currencies"]>;
   summary(range: FinanceRange): Promise<FinanceSummary>;
   create(entity: FinanceEntity, body: unknown): Promise<{ id: string }>;
@@ -63,6 +70,14 @@ export function createHttpTransport(fetchImpl: typeof fetch = authFetch): Transp
       if (!Array.isArray(rows)) throw new FinanceError(`Finance API '${entity}' ro‘yxatini qaytarmadi`);
       return rows;
     },
+    occurrences: async () => {
+      const payload = await call(FINANCE_OCCURRENCES_ENDPOINT);
+      if (!Array.isArray(payload.occurrences)) throw new FinanceError("Finance API occurrences ro‘yxatini qaytarmadi");
+      return payload.occurrences as SubscriptionOccurrence[];
+    },
+    occurrenceAction: async (action, id) => {
+      await call(FINANCE_OCCURRENCES_ENDPOINT, { method: "POST", body: JSON.stringify(id ? { action, id } : { action }) });
+    },
     currencies: async () => {
       const payload = await call(FINANCE_ENDPOINTS.currencies);
       if (!Array.isArray(payload.currencies)) throw new FinanceError("Finance API currencies ro‘yxatini qaytarmadi");
@@ -92,6 +107,10 @@ export function createFixtureTransport(seed = cloneFixtures()): Transport {
   const nextId = (entity: FinanceEntity) => `${entity.slice(0, 3)}-local-${++counter}`;
   return {
     list: async (entity) => structuredClone(data[entity]),
+    // Fixtures carry no occurrences: a due-date row only ever comes from the
+    // scheduler running against a real database.
+    occurrences: async () => [],
+    occurrenceAction: async () => undefined,
     currencies: async () => structuredClone(data.currencies),
     summary: async (range) => buildFinanceSummary({
       accounts: data.accounts, transactions: data.transactions, categories: data.categories,
@@ -126,6 +145,8 @@ export type FinanceAdapter = {
   updateTransaction(id: string, body: Partial<NewTransaction>): Promise<void>;
   createSubscription(body: NewSubscription): Promise<{ id: string }>;
   updateSubscription(id: string, body: Partial<NewSubscription>): Promise<void>;
+  /** Subscription occurrences: sweep, then confirm / retry / keep pending / skip. */
+  occurrenceAction(action: OccurrenceAction, id?: string): Promise<void>;
 };
 
 export function createFinanceAdapter({ mode = "api", fetchImpl, seed }: {
@@ -137,11 +158,12 @@ export function createFinanceAdapter({ mode = "api", fetchImpl, seed }: {
   const transport = mode === "fixtures" ? createFixtureTransport(seed) : createHttpTransport(fetchImpl);
   const load = async (range: FinanceRange): Promise<FinanceLoad> => {
     try {
-      const [accounts, categories, projects, transactions, subscriptions, currencies, summary] = await Promise.all([
+      const [accounts, categories, projects, transactions, subscriptions, currencies, summary, occurrences] = await Promise.all([
         transport.list("accounts"), transport.list("categories"), transport.list("projects"),
         transport.list("transactions"), transport.list("subscriptions"), transport.currencies(), transport.summary(range),
+        transport.occurrences(),
       ]);
-      return { dataset: { accounts, categories, projects, transactions, subscriptions, currencies, summary } as FinanceDataset, source, error: null };
+      return { dataset: { accounts, categories, projects, transactions, subscriptions, currencies, summary, occurrences } as FinanceDataset, source, error: null };
     } catch (error) {
       const message = error instanceof FinanceError ? error.message : "Finance ma’lumotlari yuklanmadi";
       return { dataset: emptyDataset(range), source, error: message };
@@ -156,6 +178,7 @@ export function createFinanceAdapter({ mode = "api", fetchImpl, seed }: {
     createProject: create("projects"), updateProject: patch("projects"),
     createTransaction: create("transactions"), updateTransaction: patch("transactions"),
     createSubscription: create("subscriptions"), updateSubscription: patch("subscriptions"),
+    occurrenceAction: (action, id) => transport.occurrenceAction(action, id),
   };
 }
 
@@ -169,7 +192,7 @@ export function emptySummary(range: FinanceRange): FinanceSummary {
 
 export function emptyDataset(range: FinanceRange = { from: "1970-01-01", to: "1970-01-01" }): FinanceDataset {
   return {
-    accounts: [], categories: [], projects: [], transactions: [], subscriptions: [],
+    accounts: [], categories: [], projects: [], transactions: [], subscriptions: [], occurrences: [],
     currencies: FINANCE_CURRENCIES.map((currency) => ({ ...currency, archived: false })),
     summary: emptySummary(range),
   };

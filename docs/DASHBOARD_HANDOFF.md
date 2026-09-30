@@ -164,6 +164,15 @@ affect no balance or total, and are restored from *Arxivni ko‘rsatish*. Nothin
 hard-deleted. An account that still holds a balance cannot be archived, and a
 transfer's debit, credit and commission always archive and restore together.
 
+**Subscriptions** are recurring expense *candidates*. Once a day the Worker creates
+one occurrence per due subscription and checks the linked account's balance **once**:
+enough money produces a draft awaiting *Tasdiqlash*, too little produces
+*Mablag‘ yetarli emas* and the system stops — the owner's *Qayta urinish* is the only
+recheck, and nothing is ever charged automatically. A draft affects no balance and no
+total; an Expense is posted only on confirmation, exactly once, and only then does the
+next due date advance (*Bu safar o‘tkazib yuborish* also advances it, without an
+Expense). Details: `docs/FINANCE.md`.
+
 ## Operations
 
 | Task | How |

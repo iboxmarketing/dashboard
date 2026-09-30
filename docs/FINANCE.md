@@ -91,6 +91,57 @@ A same-currency transfer must have equal source and destination amounts; the API
 rejects anything else, along with a negative or fractional commission, a zero or
 negative amount, the same account on both sides, and a Category on a transfer.
 
+## Subscription occurrences
+
+A subscription becomes a recurring expense **candidate**, never an automatic
+charge. One row per `(subscription, due date)` lives in
+`finance_subscription_occurrences`, and that pair is the primary key — so a
+scheduler rerun, a double-clicked button or a retried request always addresses the
+same row.
+
+**The daily pass** (`runDailySubscriptionSweep`, called from the Worker's cron,
+once per Tashkent day) looks only for a NEW due occurrence. For each active
+**EXPENSE** subscription whose `nextDueDate` has arrived and which has no
+occurrence for that date, it creates one and checks the linked account's balance
+**once**:
+
+| Balance | Occurrence | Effect |
+| --- | --- | --- |
+| enough | `REVIEW_REQUIRED` — the draft | nothing posted, no balance moves |
+| not enough | `INSUFFICIENT_FUNDS` | nothing posted, and the system stops |
+
+If an occurrence already exists the subscription is skipped entirely — **no second
+row and no second balance check**. An `INSUFFICIENT_FUNDS` occurrence is never
+rechecked automatically (owner decision, 2026-09-30); *Qayta urinish* is the only
+recheck there is. Paused (archived) subscriptions and INCOME subscriptions produce
+nothing, and a subscription whose currency differs from its account's is refused —
+no automatic FX anywhere near a charge.
+
+**The draft is the occurrence row.** `REVIEW_REQUIRED` means the system thinks the
+card may have been charged and the owner has not confirmed it, so there is no
+transaction at all: a draft cannot affect a balance, an expense total, a category
+total or cash flow, because nothing exists to affect them.
+
+**The four actions**, all idempotent because each statement is guarded by the
+status it must come from (`lib/finance/occurrence-sql.ts`):
+
+| Action | Effect |
+| --- | --- |
+| **Qayta urinish** (`INSUFFICIENT_FUNDS`) | rechecks the balance once. Enough → the SAME occurrence becomes `REVIEW_REQUIRED`; still short → the row's available and missing amounts are refreshed and it stays put. No new occurrence, no Expense, no due-date change. |
+| **Tasdiqlash** (`REVIEW_REQUIRED`) | one D1 batch: posts the Expense under the id derived from the occurrence, marks it `CONFIRMED`, links the transaction, and advances `nextDueDate` from exactly the resolved date. Repeats post nothing more. |
+| **Hali yechilmadi** | records that the owner looked and nothing was charged. No accounting, no due-date change, no second draft. |
+| **Bu safar o‘tkazib yuborish** | `SKIPPED`, no Expense, no balance change, `nextDueDate` advances. The skipped occurrence stays in history. |
+
+`nextDueDate` advances **only** on `CONFIRMED` or `SKIPPED`, which is also what
+prevents stacked obligations: while the current occurrence is unresolved the due
+date does not move, so no later occurrence can be created. A monthly subscription
+keeps its intended billing day — anchored on `startDate`, so a 31st subscription
+uses 28/29 February and returns to the 31st in March.
+
+**Existing subscriptions** are never backfilled: the sweep considers only the
+current `nextDueDate`, creating one occurrence for it however far in the past it
+is, and nothing is auto-confirmed.
+
 ## Editing and archiving
 
 Every Account, Category and Transaction is editable after creation, and the
@@ -146,8 +197,9 @@ and date-range opening balances are derived from Transactions. A transfer is one
 Transaction row: it moves money between Accounts but is excluded from Income,
 Expense and operating net cash flow. Every aggregate is partitioned by currency.
 
-Subscriptions are templates only. Creating or updating one never creates a
-Transaction.
+Subscriptions are templates. Creating or updating one never creates a
+Transaction; a Transaction appears only when the owner confirms a due occurrence
+(see below).
 
 Income and Expense Transactions require a Category whose kind matches the
 Transaction type. Transfers carry no Category. Category nesting is exactly one
@@ -228,6 +280,13 @@ file, while staging needs only migration `0007`.
 
 Migration `0007_finance_core.sql` is additive. No CRM resync or Analytics
 Backfill is required because no existing analytics table or payload changes.
+
+### Migration 0014: subscription occurrences
+
+`drizzle/0014_subscription_occurrences.sql` creates
+`finance_subscription_occurrences` with `(subscription_id, due_date)` as its
+identity. Additive: no existing table changes and no historical period is
+backfilled. Apply once per database before deploying the build that reads it.
 
 ### Migration 0013: transaction archive
 

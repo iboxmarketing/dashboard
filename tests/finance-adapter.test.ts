@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { FINANCE_ENDPOINTS, FinanceError, createFinanceAdapter, createHttpTransport, emptyDataset } from "../lib/finance-adapter";
+import {
+  FINANCE_ENDPOINTS, FINANCE_OCCURRENCES_ENDPOINT, FinanceError, createFinanceAdapter, createHttpTransport, emptyDataset,
+} from "../lib/finance-adapter";
 import { cloneFixtures } from "../lib/finance-fixtures";
 
 const RANGE = { from: "2026-09-01", to: "2026-09-30" };
@@ -16,6 +18,7 @@ function apiFetch(calls: Array<{ url: string; method: string; body: unknown }> =
     if (init?.method === "PATCH") return json({ ok: true });
     if (url.startsWith(FINANCE_ENDPOINTS.summary)) return json({ summary: fixture.summary });
     if (url === FINANCE_ENDPOINTS.currencies) return json({ currencies: fixture.currencies });
+    if (url === FINANCE_OCCURRENCES_ENDPOINT) return json({ occurrences: [] });
     for (const entity of ["accounts", "transactions", "categories", "projects", "subscriptions"] as const) {
       if (url === `${FINANCE_ENDPOINTS[entity]}${entity === "transactions" ? "" : "?includeArchived=true"}`) return json({ [entity]: fixture[entity] });
     }
@@ -47,7 +50,9 @@ test("API responses hydrate the canonical backend Finance types", async () => {
   assert.equal(Number.isSafeInteger(result.dataset.accounts[0].openingBalanceMinor), true);
   assert.equal(result.dataset.transactions[0].amountMinor, 4_200_000_000);
   assert.equal(result.dataset.summary.range.from, "2026-09-01");
-  assert.equal(calls.length, 7);
+  assert.equal(calls.length, 8, "…plus the subscription occurrences the owner has to act on");
+  assert.ok(calls.some((call) => call.url === FINANCE_OCCURRENCES_ENDPOINT));
+  assert.deepEqual(result.dataset.occurrences, []);
   for (const entity of ["accounts", "categories", "projects", "subscriptions"] as const) {
     assert.ok(calls.some((call) => call.url === `/api/finance/${entity}?includeArchived=true`), entity);
   }

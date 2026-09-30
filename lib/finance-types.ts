@@ -6,6 +6,7 @@
  * archive, transfer, or subscription fields.
  */
 import { FINANCE_CURRENCIES, type SupportedCurrencyCode } from "./finance/money";
+import type { SubscriptionOccurrence } from "./finance/occurrences";
 import type {
   FinanceAccount, FinanceAccountInput, FinanceCategory, FinanceCategoryInput, FinanceCurrency,
   FinanceProject, FinanceProjectInput, FinanceSubscription, FinanceSubscriptionInput,
@@ -37,6 +38,8 @@ export const CADENCE_LABELS: Record<Cadence, string> = {
 export type MoneyByCurrency = Partial<Record<Currency, number>>;
 
 export type FinanceDataset = {
+  /** Due-date rows awaiting the owner: confirm, retry, keep pending or skip. */
+  occurrences: SubscriptionOccurrence[];
   accounts: FinanceAccount[];
   categories: FinanceCategory[];
   projects: FinanceProject[];
@@ -56,5 +59,5 @@ export type NewSubscription = FinanceSubscriptionInput;
 
 export type {
   FinanceAccount, FinanceCategory, FinanceCurrency, FinanceProject, FinanceSubscription,
-  FinanceProjectAmount, FinanceSummary, FinanceTransaction,
+  FinanceProjectAmount, FinanceSummary, FinanceTransaction, SubscriptionOccurrence,
 };

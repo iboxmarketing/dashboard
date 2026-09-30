@@ -13,7 +13,8 @@ import {
   FixtureNotice, LoadingState, Money, MoneyByCurrencyLines, SectionHeading, TransferBreakdown,
 } from "./finance-primitives";
 import { AccountDrawer, CategoryDrawer, ProjectDrawer, SubscriptionDrawer, TransactionDrawer } from "./finance-drawers";
-import { createFinanceAdapter, emptyDataset, type FinanceAdapter, type FinanceSource } from "@/lib/finance-adapter";
+import { createFinanceAdapter, emptyDataset, type FinanceAdapter, type FinanceSource, type OccurrenceAction } from "@/lib/finance-adapter";
+import { OCCURRENCE_LABELS, isUnresolvedOccurrence, subscriptionStateLabel } from "@/lib/finance/occurrences";
 import {
   accountBalanceGroups, accountCurrentBalanceMinor, addDays, cadenceMonths, categoryAmountRows, categoryTree,
   filterTransactions, operatingMaps, projectAmountRows, subscriptionBuckets, type FinanceFilters,
@@ -173,6 +174,9 @@ export function FinanceView({ adapter: injected }: { adapter?: FinanceAdapter } 
 
 function OverviewTab({ dataset }: { dataset: FinanceDataset }) {
   const summary = dataset.summary;
+  // One compact line, deliberately not a KPI card: it is a to-do, not a number.
+  const awaitingConfirmation = dataset.occurrences.filter((row) => row.status === "REVIEW_REQUIRED").length;
+  const awaitingFunds = dataset.occurrences.filter((row) => row.status === "INSUFFICIENT_FUNDS").length;
   const operating = useMemo(() => operatingMaps(summary), [summary]);
   const balances = useMemo(() => accountBalanceGroups(summary), [summary]);
   const expenseRows = useMemo(() => categoryAmountRows(summary.expensesByCategory), [summary.expensesByCategory]);
@@ -182,6 +186,13 @@ function OverviewTab({ dataset }: { dataset: FinanceDataset }) {
 
   return (
     <div className="fin-stack">
+      {(awaitingConfirmation > 0 || awaitingFunds > 0) && (
+        <p className="fin-occurrence-note">
+          {awaitingConfirmation > 0 && <span>{awaitingConfirmation} ta chiqim tasdiqlash kutilmoqda</span>}
+          {awaitingFunds > 0 && <span>{awaitingFunds} ta obunada mablag‘ yetarli emas</span>}
+          <small>Obunalar bo‘limida ko‘rish</small>
+        </p>
+      )}
       <div className="kpi-grid fin-kpi-grid">
         <CurrencyKpiRow label="Kirim" value={operating.income} tone="income" icon={<ArrowDownLeft size={15} />} note="Server summary · tanlangan davr" />
         <CurrencyKpiRow label="Chiqim" value={operating.expense} tone="expense" icon={<ArrowUpRight size={15} />} note="Server summary · tanlangan davr" />
@@ -643,7 +654,7 @@ function SubscriptionTable({ rows, dataset, today }: { rows: readonly FinanceSub
   const projectName = (id: string | null) => dataset.projects.find((p) => p.id === id)?.name ?? "—";
   return (
     <table className="fin-table">
-      <thead><tr><th>Nomi</th><th className="right">Summa</th><th>Hisob</th><th>Kategoriya</th><th>Project</th><th>Davriylik</th><th>Keyingi to‘lov</th></tr></thead>
+      <thead><tr><th>Nomi</th><th className="right">Summa</th><th>Hisob</th><th>Kategoriya</th><th>Project</th><th>Davriylik</th><th>Keyingi to‘lov</th><th>Holat</th></tr></thead>
       <tbody>
         {rows.map((row) => {
           const months = cadenceMonths(row);
@@ -657,11 +668,79 @@ function SubscriptionTable({ rows, dataset, today }: { rows: readonly FinanceSub
               <td>{projectName(row.projectId)}</td>
               <td>{row.cadence === "CUSTOM_MONTHS" && months ? `Har ${months} oy` : CADENCE_LABELS[row.cadence]}</td>
               <td>{row.nextDueDate}{overdue && <span className="fin-badge overdue">Kechikkan</span>}</td>
+              {/* One state per subscription, in the owner's words: Faol, Tasdiqlash
+                  kutilmoqda, Mablag‘ yetarli emas or Pauzada. */}
+              <td>{subscriptionStateLabel(row, dataset.occurrences.find((occurrence) =>
+                occurrence.subscriptionId === row.id && isUnresolvedOccurrence(occurrence.status)) ?? null)}</td>
             </tr>
           );
         })}
       </tbody>
     </table>
+  );
+}
+
+/**
+ * The occurrences waiting for the owner.
+ *
+ * Two questions, two shapes. "Mablag‘ yetarli emas" says what is missing and
+ * offers the one manual recheck; "Tasdiqlash kutilmoqda" is the draft — the system
+ * thinks the card may have been charged and nothing is posted until the owner says
+ * it was. Neither state affects a balance or a total.
+ */
+function OccurrenceQueue({ dataset, adapter, onChanged }: {
+  dataset: FinanceDataset; adapter: FinanceAdapter; onChanged: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const pending = useMemo(
+    () => dataset.occurrences.filter((row) => isUnresolvedOccurrence(row.status))
+      .sort((left, right) => left.dueDate.localeCompare(right.dueDate)),
+    [dataset.occurrences],
+  );
+  const run = async (action: OccurrenceAction, id: string) => {
+    try { setError(null); setBusy(`${action}:${id}`); await adapter.occurrenceAction(action, id); await onChanged(); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Amal bajarilmadi"); }
+    finally { setBusy(null); }
+  };
+  const accountName = (id: string) => dataset.accounts.find((account) => account.id === id)?.name ?? "—";
+  const subscriptionName = (id: string) => dataset.subscriptions.find((row) => row.id === id)?.name ?? "Obuna";
+  if (!pending.length) return null;
+  return (
+    <section className="panel">
+      <SectionHeading title={`Tasdiqlash kutilmoqda (${pending.length})`}
+        subtitle="Bu yozuvlar hali balansga ta’sir qilmaydi — karta/bank yechganini tasdiqlaganingizdan keyin chiqim yoziladi" />
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <ul className="fin-occurrence-list">
+        {pending.map((row) => (
+          <li key={row.id} className={`fin-occurrence ${row.status === "INSUFFICIENT_FUNDS" ? "warning" : ""}`}>
+            <div className="fin-occurrence-head">
+              <strong>{subscriptionName(row.subscriptionId)}</strong>
+              <span className="pill neutral">{OCCURRENCE_LABELS[row.status]}</span>
+            </div>
+            <dl className="fin-transfer-breakdown compact">
+              <div><dt>Summa</dt><dd><Money amountMinor={row.amountMinor} currency={row.currencyCode as Currency} tone="expense" /></dd></div>
+              <div><dt>Hisob</dt><dd>{accountName(row.accountId)}</dd></div>
+              <div><dt>To‘lov sanasi</dt><dd>{row.dueDate}</dd></div>
+              {row.status === "INSUFFICIENT_FUNDS" && <>
+                <div><dt>Mavjud balans</dt><dd><Money amountMinor={row.availableBalanceMinor ?? 0} currency={row.currencyCode as Currency} /></dd></div>
+                <div className="fin-transfer-total"><dt>Yetmayotgan summa</dt>
+                  <dd><Money amountMinor={row.missingAmountMinor ?? 0} currency={row.currencyCode as Currency} tone="expense" /></dd></div>
+              </>}
+            </dl>
+            <div className="fin-row-actions">
+              {row.status === "INSUFFICIENT_FUNDS"
+                ? <button type="button" className="button small" disabled={busy !== null} onClick={() => void run("retry", row.id)}>Qayta urinish</button>
+                : <>
+                  <button type="button" className="button small" disabled={busy !== null} onClick={() => void run("confirm", row.id)}>Tasdiqlash</button>
+                  <button type="button" className="button small secondary" disabled={busy !== null} onClick={() => void run("pending", row.id)}>Hali yechilmadi</button>
+                  <button type="button" className="button small secondary" disabled={busy !== null} onClick={() => void run("skip", row.id)}>Bu safar o‘tkazib yuborish</button>
+                </>}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -693,6 +772,7 @@ function SubscriptionsTab({ dataset, adapter, onChanged }: { dataset: FinanceDat
         <CurrencyKpiRow label="Kutilayotgan to‘lov" value={buckets.upcomingByCurrency} tone="expense"
           icon={<CalendarClock size={15} />} note="Kechikkan + yaqin 30 kun" />
       </div>
+      <OccurrenceQueue dataset={dataset} adapter={adapter} onChanged={onChanged} />
       {dataset.subscriptions.length ? groups.map((group) => (
         group.rows.length ? (
           <section key={group.key} className="panel">

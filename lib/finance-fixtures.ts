@@ -11,6 +11,8 @@ const active = { archived: false };
 
 const core: Omit<FinanceDataset, "summary"> = {
   currencies: FINANCE_CURRENCIES.map((currency) => ({ ...currency, archived: false })),
+  // Occurrences only ever come from the scheduler running against a database.
+  occurrences: [],
   accounts: [
     { id: "acc-1", name: "Asosiy kassa", type: "CASH", currencyCode: "UZS", openingBalanceMinor: 4_000_000_000, archived: false, ...timestamps },
     { id: "acc-2", name: "Kapitalbank hisob", type: "BANK", currencyCode: "UZS", openingBalanceMinor: 1_000_000_000, archived: false, ...timestamps },

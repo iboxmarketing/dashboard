@@ -2,6 +2,7 @@
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 import { runScheduledSync } from "@/lib/scheduled-sync";
+import { runDailySubscriptionSweep } from "@/lib/finance/scheduled-subscriptions";
 
 interface Env {
   ASSETS: Fetcher;
@@ -59,6 +60,10 @@ const worker = {
    */
   async scheduled(_controller: ScheduledController, _env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(runScheduledSync().then(() => undefined, () => undefined));
+    // Finance subscriptions: one pass per Tashkent day, which creates the missing
+    // occurrence for each due subscription and checks its balance once. It never
+    // rechecks an existing occurrence, so it cannot charge or retry on its own.
+    ctx.waitUntil(runDailySubscriptionSweep().then(() => undefined, () => undefined));
   },
 };
 
