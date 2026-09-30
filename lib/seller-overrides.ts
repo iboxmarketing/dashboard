@@ -33,6 +33,19 @@ export type OwnerSellerOverride = {
 
 const OVERRIDE_FIELDS = ["dealId", "sellerId", "sellerName", "attributionSource", "confirmedBy", "confirmedAt", "evidence", "scope"] as const;
 
+/**
+ * Sales Doctor sales credited to former seller Otabek Sulaymonov (owner
+ * confirmation, 2026-10-01). He is not on the current roster, so these keep their
+ * historical sale and revenue while he receives no current workload. Deal 28565
+ * is deliberately absent: its observers name him AND Abubakr Rahimov.
+ */
+const SALES_DOCTOR_OTABEK_DEALS = [
+  "22709", "22749", "22947", "22993", "23205", "23363", "23547", "23549", "23759", "24013",
+  "24331", "24875", "25251", "25659", "26293", "26423", "27701", "28073", "28111", "29679",
+  "29797", "29955", "29961", "30523", "30535", "30747", "31689", "32799", "32939", "33877",
+  "34003",
+] as const;
+
 export const OWNER_CONFIRMED_SELLERS: readonly OwnerSellerOverride[] = Object.freeze([
   Object.freeze({
     dealId: "43407",
@@ -44,6 +57,16 @@ export const OWNER_CONFIRMED_SELLERS: readonly OwnerSellerOverride[] = Object.fr
     evidence: "Owner confirmation. CRM evidence was ambiguous: observers [7893, 13053] minus assignee 12961 left two candidates, so no automatic rule could resolve it.",
     scope: OVERRIDE_SCOPE,
   }),
+  ...SALES_DOCTOR_OTABEK_DEALS.map((dealId) => Object.freeze({
+    dealId,
+    sellerId: "199",
+    sellerName: "Otabek Sulaymonov",
+    attributionSource: OWNER_CONFIRMED,
+    confirmedBy: "business owner",
+    confirmedAt: "2026-10-01",
+    evidence: "Owner confirmation: Otabek Sulaymonov (199) was a Sales Doctor seller and is now a historical seller. He is the only seller among the Deal's observers (the handoff evidence); the only other observers on 29955 (7615, 12497) are neither current nor former sellers.",
+    scope: OVERRIDE_SCOPE,
+  })),
 ]);
 
 const DEAL_ID = /^[1-9]\d*$/;

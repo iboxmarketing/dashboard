@@ -110,22 +110,53 @@ export function stageBelongsToProject(stageId: string, project: ProjectKey) {
  * The owner-approved Sales Doctor roster (2026-10-01), resolved to Bitrix user
  * ids from the synced user dictionary. Keyed by id, never by display name.
  *
- * "Abubakr Rahimov" is deliberately ABSENT: two active users carry the name
- * "Abubakir Rahimov" (ids 223 and 12565). The roster is never extended by a
- * guess; the owner picks the id in Settings.
+ * "Abubakr Rahimov" matches two users (both "Abubakir Rahimov", ids 223 and
+ * 12565). The owner confirmed they are ONE person: 12565 is his current account,
+ * 223 his earlier one (see PROJECT_SELLER_IDENTITY).
  */
 export const SALES_DOCTOR_ROSTER: readonly { id: string; name: string; bitrixName: string }[] = [
   { id: "235", name: "Abdulla Norboyev", bitrixName: "Abdulla Norboyev" },
+  { id: "12565", name: "Abubakr Rahimov", bitrixName: "Abubakir Rahimov" },
   { id: "225", name: "Jasur Shadiev", bitrixName: "Jasur Shadieev" },
   { id: "229", name: "Ikrom Tojiev", bitrixName: "Ikrom Tojiyev" },
   { id: "203", name: "Humoyun Toirjonov", bitrixName: "Humoyun Toirjonov" },
   { id: "13121", name: "Behruz Abdulazizov", bitrixName: "Behruz Abdulazizov" },
 ];
 
-/** Names the roster could not resolve to exactly one Bitrix user. */
-export const SALES_DOCTOR_ROSTER_REVIEW: readonly { name: string; candidateIds: string[]; reason: string }[] = [
-  { name: "Abubakr Rahimov", candidateIds: ["223", "12565"], reason: "Ikkita faol foydalanuvchi: “Abubakir Rahimov” (223 va 12565)" },
-];
+export type SellerIdentityConfig = {
+  /** Roster name → the owner-chosen Bitrix id, for a name the directory cannot resolve alone. */
+  pinnedIds: Readonly<Record<string, string>>;
+  /** An old Bitrix account → the same person's current account. Never two manager rows. */
+  aliases: Readonly<Record<string, string>>;
+  /**
+   * Former sellers the owner confirmed. They keep historical sales and revenue
+   * but are never on the roster, so they receive no current workload.
+   */
+  historicalSellers: readonly { id: string; name: string }[];
+};
+
+/**
+ * Owner decisions about seller identity (2026-10-01, "OWNER CONFIRMATION — SALES
+ * DOCTOR SELLER IDENTITY"). IBOX has none.
+ */
+export const PROJECT_SELLER_IDENTITY: Record<ProjectKey, SellerIdentityConfig> = {
+  IBOX: { pinnedIds: {}, aliases: {}, historicalSellers: [] },
+  SALES_DOCTOR: {
+    pinnedIds: { "Abubakr Rahimov": "12565" },
+    aliases: { "223": "12565" },
+    historicalSellers: [{ id: "199", name: "Otabek Sulaymonov" }],
+  },
+};
+
+/** The one reporting identity for a Bitrix user id within a project. */
+export function canonicalSellerId(project: ProjectKey | null | undefined, id: string): string {
+  if (!project || !id) return id;
+  return PROJECT_SELLER_IDENTITY[project].aliases[id] ?? id;
+}
+
+export function historicalSellerIds(project: ProjectKey): Set<string> {
+  return new Set(PROJECT_SELLER_IDENTITY[project].historicalSellers.map((seller) => seller.id));
+}
 
 /**
  * "SD Sales Owner at Won" (owner-created, 2026-10-01). A Bitrix robot on Sales

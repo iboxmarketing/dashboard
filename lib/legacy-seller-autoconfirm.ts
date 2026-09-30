@@ -12,11 +12,18 @@
  *   RULE 1  the field is already populated → never overwritten. Certified when
  *           the named user is on the roster, otherwise sent to review.
  *   RULE 2  exactly one roster member among the observers → that person sold it.
- *           Two or more → review. Observers but none on the roster → review; an
- *           observer outside the roster is never used.
+ *           Two or more → review; an owner-confirmed former seller among the
+ *           observers counts as one of them. Observers but none on the roster →
+ *           review; an observer outside the roster is never used.
  *   RULE 3  ONLY when the observer list is empty may the current Responsible be
  *           used, and only when they are on the roster. Otherwise review.
  *   RULE 4  order never decides anything: the candidate set is a set.
+ *   OWNER   a git-reviewed owner confirmation for the Deal (lib/seller-overrides.ts)
+ *           names the seller outright — still only into an EMPTY field (Rule 1
+ *           runs first).
+ *
+ * An owner-confirmed alias (an old account of a current seller) is read as that
+ * seller everywhere here; the raw observer ids stay in the decision for audit.
  *
  * Nothing here consults MOVED_BY_ID, FIRST_CALL, a legacy custom field,
  * `UF_CRM_1740741551`, or a job title.
@@ -26,13 +33,14 @@ export type LegacySellerStatus =
   | "CERTIFIED_EXISTING_FIELD"
   | "REVIEW_REQUIRED_NON_SALES_OWNER"
   | "AUTO_CONFIRM_OBSERVER"
+  | "AUTO_CONFIRM_OWNER_CONFIRMED"
   | "REVIEW_REQUIRED_MULTIPLE_SELLERS"
   | "REVIEW_REQUIRED_NO_SELLER_OBSERVER"
   | "AUTO_CONFIRM_CURRENT_RESPONSIBLE_NO_OBSERVER"
   | "REVIEW_REQUIRED_NON_SALES_RESPONSIBLE"
   | "NOT_ELIGIBLE";
 
-export type LegacySellerRule = "RULE_1_EXISTING_FIELD" | "RULE_2_OBSERVER" | "RULE_3_NO_OBSERVER_RESPONSIBLE" | "NONE";
+export type LegacySellerRule = "RULE_1_EXISTING_FIELD" | "OWNER_CONFIRMED" | "RULE_2_OBSERVER" | "RULE_3_NO_OBSERVER_RESPONSIBLE" | "NONE";
 
 export type LegacySellerRow = {
   dealId: string;
@@ -84,14 +92,27 @@ export type LegacySellerContext = {
    * accepted Rule 3 exactly as it was.
    */
   responsibleCategoryIds?: ReadonlySet<string>;
+  /** Old account → current account of the same seller (owner-confirmed). */
+  aliases?: Readonly<Record<string, string>>;
+  /** Owner-confirmed former sellers: a valid existing field value, never a roster member. */
+  historicalSellerIds?: ReadonlySet<string>;
+  /** Deal id → seller id from the git-reviewed owner registry. */
+  ownerConfirmed?: ReadonlyMap<string, string>;
 };
 
 export function classifyLegacySalesOwner(row: LegacySellerRow, context: LegacySellerContext): LegacySellerDecision {
   const approved = context.approvedSellerIds;
+  const canonical = (value: string) => context.aliases?.[value] ?? value;
   const observerIds = [...new Set((row.observerIds ?? []).map(id).filter(Boolean))];
   const assignedManagerId = id(row.assignedManagerId) || null;
   const existingOwnerId = id(row.salesOwnerAtWonId) || null;
-  const sellerObserverCandidates = observerIds.filter((observerId) => approved.has(observerId));
+  // Candidates are people, not accounts: two accounts of one seller are one
+  // candidate. A former seller is a candidate too — never credited from an
+  // observer list alone, but enough to make a roster observer ambiguous.
+  const historical = context.historicalSellerIds ?? new Set<string>();
+  const sellerObserverCandidates = [...new Set(observerIds.map(canonical)
+    .filter((observerId) => approved.has(observerId) || historical.has(observerId)))];
+  const ownerSellerId = context.ownerConfirmed?.get(row.dealId) ?? null;
   const base = {
     dealId: row.dealId, existingOwnerId, observerIds, sellerObserverCandidates, assignedManagerId,
   };
@@ -111,15 +132,23 @@ export function classifyLegacySalesOwner(row: LegacySellerRow, context: LegacySe
 
   // RULE 1 — an existing value is evidence the robot or a human already captured.
   if (existingOwnerId) {
-    return approved.has(existingOwnerId)
+    const holder = canonical(existingOwnerId);
+    return approved.has(holder) || context.historicalSellerIds?.has(holder) || holder === ownerSellerId
       ? decide("CERTIFIED_EXISTING_FIELD", "RULE_1_EXISTING_FIELD", "FIELD_HOLDS_APPROVED_SELLER", existingOwnerId)
       : decide("REVIEW_REQUIRED_NON_SALES_OWNER", "RULE_1_EXISTING_FIELD", "FIELD_HOLDS_NON_ROSTER_USER", null, [existingOwnerId]);
   }
 
+  // OWNER — an attested per-Deal fact outranks every CRM inference.
+  if (ownerSellerId) {
+    return decide("AUTO_CONFIRM_OWNER_CONFIRMED", "OWNER_CONFIRMED", "OWNER_CONFIRMED_SELLER", ownerSellerId);
+  }
   // RULE 2 — the observer list, intersected with the roster. Order is irrelevant.
   if (observerIds.length) {
-    if (sellerObserverCandidates.length === 1) {
+    if (sellerObserverCandidates.length === 1 && approved.has(sellerObserverCandidates[0])) {
       return decide("AUTO_CONFIRM_OBSERVER", "RULE_2_OBSERVER", "SINGLE_ROSTER_OBSERVER", sellerObserverCandidates[0]);
+    }
+    if (sellerObserverCandidates.length === 1) {
+      return decide("REVIEW_REQUIRED_NO_SELLER_OBSERVER", "RULE_2_OBSERVER", "HISTORICAL_SELLER_NEEDS_OWNER", null, sellerObserverCandidates);
     }
     if (sellerObserverCandidates.length > 1) {
       return decide("REVIEW_REQUIRED_MULTIPLE_SELLERS", "RULE_2_OBSERVER", "MULTIPLE_ROSTER_OBSERVERS", null);
@@ -133,8 +162,8 @@ export function classifyLegacySalesOwner(row: LegacySellerRow, context: LegacySe
   if (assignedManagerId && handedOff) {
     return decide("REVIEW_REQUIRED_NON_SALES_RESPONSIBLE", "RULE_3_NO_OBSERVER_RESPONSIBLE", "NO_OBSERVER_RESPONSIBLE_AFTER_HANDOFF", null, [assignedManagerId]);
   }
-  if (assignedManagerId && approved.has(assignedManagerId)) {
-    return decide("AUTO_CONFIRM_CURRENT_RESPONSIBLE_NO_OBSERVER", "RULE_3_NO_OBSERVER_RESPONSIBLE", "NO_OBSERVER_ROSTER_RESPONSIBLE", assignedManagerId);
+  if (assignedManagerId && approved.has(canonical(assignedManagerId))) {
+    return decide("AUTO_CONFIRM_CURRENT_RESPONSIBLE_NO_OBSERVER", "RULE_3_NO_OBSERVER_RESPONSIBLE", "NO_OBSERVER_ROSTER_RESPONSIBLE", canonical(assignedManagerId));
   }
   return decide("REVIEW_REQUIRED_NON_SALES_RESPONSIBLE", "RULE_3_NO_OBSERVER_RESPONSIBLE",
     assignedManagerId ? "NO_OBSERVER_NON_ROSTER_RESPONSIBLE" : "NO_OBSERVER_NO_RESPONSIBLE", null,
@@ -142,7 +171,8 @@ export function classifyLegacySalesOwner(row: LegacySellerRow, context: LegacySe
 }
 
 export function isAutoConfirm(decision: LegacySellerDecision) {
-  return (decision.status === "AUTO_CONFIRM_OBSERVER" || decision.status === "AUTO_CONFIRM_CURRENT_RESPONSIBLE_NO_OBSERVER")
+  return (decision.status === "AUTO_CONFIRM_OBSERVER" || decision.status === "AUTO_CONFIRM_CURRENT_RESPONSIBLE_NO_OBSERVER"
+    || decision.status === "AUTO_CONFIRM_OWNER_CONFIRMED")
     && Boolean(decision.chosenSellerId);
 }
 
@@ -154,6 +184,7 @@ export type LegacySellerSummary = {
   certifiedExistingField: number;
   existingFieldNonSalesOwner: number;
   autoConfirmObserver: number;
+  autoConfirmOwnerConfirmed: number;
   autoConfirmCurrentResponsibleNoObserver: number;
   multipleSalesObservers: number;
   observerButNoSalesperson: number;
@@ -174,6 +205,7 @@ export function summarizeLegacySalesOwners(decisions: LegacySellerDecision[]): L
     certifiedExistingField: count("CERTIFIED_EXISTING_FIELD"),
     existingFieldNonSalesOwner: count("REVIEW_REQUIRED_NON_SALES_OWNER"),
     autoConfirmObserver: count("AUTO_CONFIRM_OBSERVER"),
+    autoConfirmOwnerConfirmed: count("AUTO_CONFIRM_OWNER_CONFIRMED"),
     autoConfirmCurrentResponsibleNoObserver: count("AUTO_CONFIRM_CURRENT_RESPONSIBLE_NO_OBSERVER"),
     multipleSalesObservers: count("REVIEW_REQUIRED_MULTIPLE_SELLERS"),
     observerButNoSalesperson: count("REVIEW_REQUIRED_NO_SELLER_OBSERVER"),

@@ -3,7 +3,7 @@ import { OWNER_OVERRIDES, type OwnerSellerOverride } from "./seller-overrides";
 import { resolveSlaState } from "./sla";
 import { classifyLossReasonGroup, MISSING_LOSS_REASON, classifySalesStatus, fieldDisplayValue, isLowQualityStage, isPaymentStage, isSqlOrDownstreamStage } from "./sales-logic";
 import { distributionStageId, sqlThresholdsByCategory, type StageMeta, type StageSemantics } from "./stage-config";
-import { dealProjectFamily, type ProjectKey } from "./sales-projects";
+import { canonicalSellerId, dealProjectFamily, type ProjectKey } from "./sales-projects";
 import { canonicalDealFieldKey } from "./crm-fields";
 import { resolveDealSource } from "./source-authority";
 import { certifySeller } from "./seller-evidence";
@@ -300,7 +300,8 @@ export function buildAnalyticsRecords(input: {
     const slaBusinessMinutes = businessSlaMinutes(slaStartAt, slaStopAt, input.settings);
     const slaElapsedMinutes = elapsedCalendarMinutes(slaStartAt, slaStopAt);
 
-    const assignedManagerId = string(deal.ASSIGNED_BY_ID);
+    // An owner-confirmed old account is the same person as its current one.
+    const assignedManagerId = canonicalSellerId(input.projectKey, string(deal.ASSIGNED_BY_ID));
     const stageChange = firstStageChange(deal, histories); const slaStart = getSlaStart(created, input.settings);
     const stageMinutes = stageChange ? calculateBusinessMinutes(slaStart, stageChange.at, input.settings) : null;
     // First processing is the CRM-recorded result of the first real qualification
@@ -422,6 +423,11 @@ export function buildAnalyticsRecords(input: {
     else if (mayRecover && salesStatus !== "WON" && assignedManagerId && mainIds.has(currentCategoryId)) {
       salesManagerId = assignedManagerId; salesManagerAttribution = "CURRENT_RESPONSIBLE";
     }
+    // One person, one reporting identity (owner-confirmed aliases,
+    // lib/sales-projects.ts). The account the evidence named is kept for audit.
+    const sellerAccountId = salesManagerId;
+    salesManagerId = canonicalSellerId(input.projectKey, salesManagerId);
+    if (salesManagerId !== sellerAccountId) salesManager = "";
     if (!salesManager && salesManagerId) salesManager = managerName(salesManagerId, input.users);
 
     // Can this attribution be shown on an employee's scorecard? Decided here,
@@ -490,6 +496,7 @@ export function buildAnalyticsRecords(input: {
       wonAt: effectiveWonAt, salesCycleHours, opportunity: Number.isFinite(opportunity) ? opportunity : 0, currencyId: string(deal.CURRENCY_ID), lossReason: effectiveLossReason, lossReasonGroup,
       contactId: contactId || null, companyId: companyId || null, customerKey: contactId ? `contact:${contactId}` : companyId ? `company:${companyId}` : null, duplicateOfDealId: null, stageTimeline,
       salesManagerId: salesManagerId || null, salesManager: salesManager || null, salesManagerAttribution,
+      ...(sellerAccountId !== salesManagerId ? { salesManagerAccountId: sellerAccountId } : {}),
       salesOwnerAtWonId: salesOwnerAtWonId || null,
       salesOwnerAtWonName: salesOwnerAtWonId ? managerName(salesOwnerAtWonId, input.users) : null,
       sellerCertification: sellerEvidence.status, sellerEvidenceReason: sellerEvidence.reason, sellerOutsideRoster: sellerEvidence.outsideRoster,

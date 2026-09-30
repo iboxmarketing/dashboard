@@ -308,6 +308,8 @@ export type AnalyticsRecord = {
   salesManagerId: string | null;
   salesManager: string | null;
   salesManagerAttribution: SalesManagerAttribution;
+  /** The Bitrix account the seller evidence named, when an owner-confirmed alias mapped it to another. */
+  salesManagerAccountId?: string;
   /** Raw value of the canonical Sales Owner at Won field, stored separately from every other actor. */
   salesOwnerAtWonId?: string | null;
   salesOwnerAtWonName?: string | null;

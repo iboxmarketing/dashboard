@@ -1,6 +1,6 @@
 import { authError, requireAdmin } from "@/lib/auth/http";
 import { bitrixCall, bitrixList, getBitrixDomain, safeBitrixMessage } from "@/lib/bitrix";
-import { SALES_PROJECTS, parseProjectKey, recordProject, type ProjectKey } from "@/lib/sales-projects";
+import { PROJECT_SELLER_IDENTITY, SALES_PROJECTS, canonicalSellerId, historicalSellerIds, parseProjectKey, recordProject, type ProjectKey } from "@/lib/sales-projects";
 import { requestProject } from "@/lib/sales-http";
 import { DEAL_OBSERVERS_FIELD, buildDealObserverRead, observerIdList } from "@/lib/deal-observers";
 import {
@@ -375,12 +375,18 @@ async function legacyAutoconfirm(payload: Record<string, unknown>, actor: string
   const field = normalizeSalesOwnerAtWonField(settings.salesOwnerAtWonField);
   const users = userMap(userRows);
   // This project's roster names only (lib/seller-roster.ts).
-  const roster = resolveRoster(PROJECT_SELLER_NAMES[project], directoryUsers(userRows));
+  const roster = resolveRoster(PROJECT_SELLER_NAMES[project], directoryUsers(userRows), PROJECT_SELLER_IDENTITY[project].pinnedIds);
   // Sales Doctor never credits a current Responsible once the Deal has left its
   // Sales funnel (category 17 is onboarding); IBOX keeps its accepted Rule 3.
+  // Owner decisions about identity: an old account reads as its current one, a
+  // former seller is a valid existing value, and a registry entry names the seller.
+  const identity = PROJECT_SELLER_IDENTITY[project];
   const legacyContext = {
     approvedSellerIds: roster.approvedSellerIds,
     ...(project === "SALES_DOCTOR" ? { responsibleCategoryIds: new Set([SALES_PROJECTS.SALES_DOCTOR.salesCategoryId]) } : {}),
+    aliases: identity.aliases,
+    historicalSellerIds: historicalSellerIds(project),
+    ownerConfirmed: new Map([...OWNER_OVERRIDES.values()].map((entry) => [entry.dealId, entry.sellerId])),
   };
   const rosterTable = roster.entries.map((entry) => ({
     providedName: entry.providedName, status: entry.status, userId: entry.userId,
@@ -417,7 +423,11 @@ async function legacyAutoconfirm(payload: Record<string, unknown>, actor: string
       currencyId: record?.currencyId ?? "UZS",
       currentResponsibleId: decision.assignedManagerId,
       currentResponsible: name(decision.assignedManagerId),
-      observers: decision.observerIds.map((id) => ({ id, name: name(id), roster: roster.approvedSellerIds.has(id) })),
+      // The raw Bitrix account stays visible; `sellerId` is the person it belongs to.
+      observers: decision.observerIds.map((id) => ({
+        id, name: name(id), sellerId: canonicalSellerId(project, id),
+        roster: roster.approvedSellerIds.has(canonicalSellerId(project, id)),
+      })),
       sellerObserverCandidates: decision.sellerObserverCandidates.map((id) => ({ id, name: name(id) })),
       existingOwnerId: decision.existingOwnerId,
       existingOwner: name(decision.existingOwnerId),

@@ -14,8 +14,10 @@ import { createSalesBaseCache, salesCacheKey } from "../lib/sales-cache";
 import {
   DEFAULT_PROJECT, PROJECT_KEYS, SALES_DOCTOR_OWNER_AT_WON_FIELD, SALES_DOCTOR_ROSTER, SALES_DOCTOR_STAGES, SALES_PROJECTS,
   dealProjectFamily, parseProjectKey, projectBySlug, projectForCategory, recordProject, scopeSettingsToProject,
+  PROJECT_SELLER_IDENTITY, canonicalSellerId, historicalSellerIds,
   seedSalesDoctorSettings, stageBelongsToProject, withProjectPipelines, type ProjectKey,
 } from "../lib/sales-projects";
+import { OWNER_OVERRIDES } from "../lib/seller-overrides";
 import { PROJECT_SELLER_NAMES, directoryUsers, resolveRoster } from "../lib/seller-roster";
 import { distributionStageId } from "../lib/stage-config";
 import { SALES_OWNER_AT_WON_FIELD } from "../lib/stable-seller-field";
@@ -58,7 +60,8 @@ const IBOX_SELLER = "4151"; // Sanjar Juraev
 const SD_SELLER = "235"; // Abdulla Norboyev
 const SD_SELLER_2 = "13121"; // Behruz Abdulazizov
 const CUSTOMER_CARE = "209"; // Sanjar Sattarov, Customer Care Specialist
-const USERS = new Map([[IBOX_SELLER, "Sanjar Juraev"], [SD_SELLER, "Abdulla Norboyev"], [SD_SELLER_2, "Behruz Abdulazizov"], [CUSTOMER_CARE, "Sanjar Sattarov"]]);
+const USERS = new Map([[IBOX_SELLER, "Sanjar Juraev"], [SD_SELLER, "Abdulla Norboyev"], [SD_SELLER_2, "Behruz Abdulazizov"], [CUSTOMER_CARE, "Sanjar Sattarov"],
+  ["223", "Abubakir Rahimov"], ["12565", "Abubakir Rahimov"], ["199", "Otabek Sulaymonov"]]);
 
 // ---- each project's settings, exactly as the app derives them -----------------
 
@@ -288,15 +291,90 @@ test("L. only Sales Doctor's approved sellers own Sales Doctor's current workloa
     { ID: "223", NAME: "Abubakir", LAST_NAME: "Rahimov", ACTIVE: true }, { ID: "12565", NAME: "Abubakir", LAST_NAME: "Rahimov", ACTIVE: true },
     { ID: "4151", NAME: "Sanjar", LAST_NAME: "Juraev", ACTIVE: true },
   ]);
-  const roster = resolveRoster(PROJECT_SELLER_NAMES.SALES_DOCTOR, directory);
+  // Unpinned, two "Abubakir Rahimov" accounts are never a guess.
+  const unpinned = resolveRoster(PROJECT_SELLER_NAMES.SALES_DOCTOR, directory);
+  const ambiguous = unpinned.entries.find((entry) => entry.providedName === "Abubakr Rahimov")!;
+  assert.equal(ambiguous.status, "ROSTER_MAPPING_REVIEW", "two candidates is never a guess");
+  assert.deepEqual(ambiguous.candidates.map((candidate) => candidate.id).sort(), ["12565", "223"]);
+  // The owner pinned his current account (2026-10-01).
+  const roster = resolveRoster(PROJECT_SELLER_NAMES.SALES_DOCTOR, directory, PROJECT_SELLER_IDENTITY.SALES_DOCTOR.pinnedIds);
   assert.deepEqual([...roster.approvedSellerIds].sort(), SALES_DOCTOR_ROSTER.map((seller) => seller.id).sort(),
-    "the matcher reproduces exactly the hand-verified ids");
+    "the matcher plus the owner's pin reproduce exactly the hand-verified ids");
   const abubakr = roster.entries.find((entry) => entry.providedName === "Abubakr Rahimov")!;
-  assert.equal(abubakr.status, "ROSTER_MAPPING_REVIEW", "two candidates is never a guess");
-  assert.deepEqual(abubakr.candidates.map((candidate) => candidate.id).sort(), ["12565", "223"]);
+  assert.equal(abubakr.status, "RESOLVED");
+  assert.equal(abubakr.userId, "12565");
+  assert.equal(abubakr.matchKind, "OWNER_PINNED");
+  assert.equal(roster.approvedSellerIds.has("223"), false, "the old account is an alias, never a second roster row");
+  assert.equal(roster.approvedSellerIds.has("199"), false, "a historical seller is never on the current roster");
   assert.equal(roster.approvedSellerIds.has("4151"), false, "IBOX's roster never leaks in");
+  // A pin can only choose among the name's own candidates.
+  const stray = resolveRoster(["Abubakr Rahimov"], directory, { "Abubakr Rahimov": "4151" });
+  assert.equal(stray.entries[0].status, "ROSTER_MAPPING_REVIEW");
   // And the sync resolves ONLY the running project's names into ONLY its settings.
-  assert.match(read("lib/sync.ts"), /resolveRoster\(PROJECT_SELLER_NAMES\[project\], directoryUsers\(users\)\);\n\s+await saveSettings\(\{ \.\.\.\(await getSettings\(project\)\), salesStaffIds: \[\.\.\.roster\.approvedSellerIds\] \}, project\);/);
+  assert.match(read("lib/sync.ts"), /resolveRoster\(PROJECT_SELLER_NAMES\[project\], directoryUsers\(users\), PROJECT_SELLER_IDENTITY\[project\]\.pinnedIds\);\n\s+await saveSettings\(\{ \.\.\.\(await getSettings\(project\)\), salesStaffIds: \[\.\.\.roster\.approvedSellerIds\] \}, project\);/);
+});
+
+// ---- N. Owner-confirmed seller identity (2026-10-01) ------------------------------------
+
+test("Abubakr's two accounts are one seller, and Otabek is historical only", () => {
+  const identity = PROJECT_SELLER_IDENTITY.SALES_DOCTOR;
+  const sale = { dealId: "9", wonAt: "2026-02-01T10:00:00Z", salesStatus: "WON", projectLeadMembership: "INCLUDED", salesOwnerAtWonId: null, categoryId: "17", assignedManagerId: CUSTOMER_CARE };
+  const context = {
+    approvedSellerIds: new Set(SALES_DOCTOR_ROSTER.map((seller) => seller.id)),
+    responsibleCategoryIds: new Set(["5"]),
+    aliases: identity.aliases,
+    historicalSellerIds: historicalSellerIds("SALES_DOCTOR"),
+    ownerConfirmed: new Map([["31", "199"]]),
+  };
+  // The old account is read as the current one; the raw id stays in the decision.
+  const old = classifyLegacySalesOwner({ ...sale, observerIds: ["223"] }, context);
+  assert.equal(old.status, "AUTO_CONFIRM_OBSERVER");
+  assert.equal(old.chosenSellerId, "12565", "the field is written with his current account");
+  assert.deepEqual(old.observerIds, ["223"]);
+  // Both accounts on one Deal are one person, not two sellers.
+  assert.equal(classifyLegacySalesOwner({ ...sale, observerIds: ["223", "12565"] }, context).chosenSellerId, "12565");
+  // A former seller beside a current one is ambiguous, never resolved to the current one.
+  assert.equal(classifyLegacySalesOwner({ ...sale, observerIds: ["199", "223"] }, context).status, "REVIEW_REQUIRED_MULTIPLE_SELLERS");
+  // A former seller alone is not auto-credited from observers...
+  const alone = classifyLegacySalesOwner({ ...sale, observerIds: ["199"] }, context);
+  assert.equal(alone.reason, "HISTORICAL_SELLER_NEEDS_OWNER");
+  assert.equal(alone.chosenSellerId, null);
+  // ...only by the owner's per-Deal confirmation, and only into an empty field.
+  const confirmed = classifyLegacySalesOwner({ ...sale, dealId: "31", observerIds: ["199"] }, context);
+  assert.equal(confirmed.status, "AUTO_CONFIRM_OWNER_CONFIRMED");
+  assert.equal(confirmed.chosenSellerId, "199");
+  const filled = classifyLegacySalesOwner({ ...sale, dealId: "31", observerIds: ["199"], salesOwnerAtWonId: "235" }, context);
+  assert.equal(filled.status, "CERTIFIED_EXISTING_FIELD", "a populated field is never overwritten");
+  assert.equal(filled.existingOwnerId, "235");
+  assert.equal(classifyLegacySalesOwner({ ...sale, dealId: "31", salesOwnerAtWonId: "199" }, context).status, "CERTIFIED_EXISTING_FIELD");
+  assert.equal(classifyLegacySalesOwner({ ...sale, salesOwnerAtWonId: "223" }, context).status, "CERTIFIED_EXISTING_FIELD");
+  assert.equal(canonicalSellerId("SALES_DOCTOR", "223"), "12565");
+  assert.equal(canonicalSellerId("IBOX", "223"), "223", "the alias is Sales Doctor's decision only");
+
+  // Every owner-confirmed Otabek sale names 199, and the ambiguous Deal is absent.
+  const otabek = [...OWNER_OVERRIDES.values()].filter((entry) => entry.sellerId === "199");
+  assert.equal(otabek.length, 31);
+  assert.ok(otabek.every((entry) => entry.attributionSource === "OWNER_CONFIRMED" && entry.sellerName === "Otabek Sulaymonov"));
+  assert.equal(OWNER_OVERRIDES.has("28565"), false);
+});
+
+test("an aliased seller reports under one identity, with the raw account kept", () => {
+  const records = buildRecords([{
+    id: "7001", categoryId: "17", stageId: "C17:NEW", responsible: CUSTOMER_CARE,
+    history: [["C5:NEW", "10:01"], ["C5:WON", "12:00"], ["C17:NEW", "13:00"]],
+    fields: { [SALES_DOCTOR_OWNER_AT_WON_FIELD]: "223" },
+  }]);
+  const record = records.find((row) => row.dealId === "7001")! as unknown as { salesManagerId: string; salesManagerAccountId?: string; salesManagerAttribution: string; salesManager: string };
+  assert.equal(record.salesManagerId, "12565");
+  assert.equal(record.salesManagerAccountId, "223");
+  assert.equal(record.salesManagerAttribution, "SALES_OWNER_AT_WON");
+  // An IBOX Deal is never touched by a Sales Doctor alias.
+  const ibox = buildRecords([{
+    id: "7002", categoryId: "13", stageId: "C13:NEW", responsible: CUSTOMER_CARE,
+    history: [["C3:NEW", "10:01"], ["C3:WON", "12:00"], ["C13:NEW", "13:00"]], fields: { [SALES_OWNER_AT_WON_FIELD]: "223" },
+  }]).find((row) => row.dealId === "7002")! as unknown as { salesManagerId: string; salesManagerAccountId?: string };
+  assert.equal(ibox.salesManagerId, "223");
+  assert.equal(ibox.salesManagerAccountId, undefined);
 });
 
 // ---- M. SLA ----------------------------------------------------------------------------

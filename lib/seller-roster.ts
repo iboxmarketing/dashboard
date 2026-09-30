@@ -37,8 +37,8 @@ export const OWNER_APPROVED_SELLER_NAMES = [
 /**
  * Sales Doctor's owner-provided roster, 2026-10-01. Names as the owner wrote
  * them; resolved by the same conservative matcher as IBOX. "Abubakr Rahimov"
- * matches two active users (both "Abubakir Rahimov") and therefore resolves to
- * ROSTER_MAPPING_REVIEW — never to a guessed id.
+ * matches two users (both "Abubakir Rahimov"); the owner pinned his current
+ * account, 12565 (PROJECT_SELLER_IDENTITY in lib/sales-projects.ts).
  */
 export const SALES_DOCTOR_SELLER_NAMES = [
   "Abdulla Norboyev",
@@ -67,7 +67,7 @@ export type RosterResolution = {
   status: RosterStatus;
   userId: string | null;
   canonicalName: string | null;
-  matchKind: "EXACT" | "NEAR" | null;
+  matchKind: "EXACT" | "NEAR" | "OWNER_PINNED" | null;
   /** Everybody who matched in the winning tier — the review evidence. */
   candidates: DirectoryUser[];
 };
@@ -151,11 +151,24 @@ export type ResolvedRoster = {
   needsReview: RosterResolution[];
 };
 
+/**
+ * An owner-pinned id settles a name the matcher cannot: it is used only when that
+ * id is one of the name's own candidates, so a pin can never smuggle in someone
+ * the name does not match.
+ */
+function applyPin(entry: RosterResolution, pinnedId: string | undefined): RosterResolution {
+  if (!pinnedId || entry.status !== "ROSTER_MAPPING_REVIEW") return entry;
+  const pinned = entry.candidates.find((candidate) => candidate.id === pinnedId);
+  if (!pinned) return entry;
+  return { ...entry, status: "RESOLVED", userId: pinned.id, canonicalName: pinned.name, matchKind: "OWNER_PINNED" };
+}
+
 export function resolveRoster(
   providedNames: readonly string[] = OWNER_APPROVED_SELLER_NAMES,
   users: readonly DirectoryUser[] = [],
+  pinnedIds: Readonly<Record<string, string>> = {},
 ): ResolvedRoster {
-  const entries = providedNames.map((name) => resolveRosterName(name, users));
+  const entries = providedNames.map((name) => applyPin(resolveRosterName(name, users), pinnedIds[name]));
   return {
     entries,
     approvedSellerIds: new Set(entries.filter((entry) => entry.status === "RESOLVED" && entry.userId).map((entry) => entry.userId as string)),

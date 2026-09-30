@@ -10,13 +10,13 @@ detailed rules live in `docs/BUSINESS_RULES.md`, the runbooks in
 | | |
 | --- | --- |
 | Worker | `bitrix-deal-dashboard` (Cloudflare Workers, Paid — 30 s CPU) |
-| **Worker version** (what serves traffic) | `65b34e0b-c445-4078-b991-71513db98362` (deployed 2026-09-30T16:05Z) |
-| **Deployed application SHA** (what that version was built from) | `84e1d67` — analytics version 16, Finance migrations `0012`–`0014` applied |
+| **Worker version** (what serves traffic) | `9b684b24-c3cb-47b7-8f11-a2c5e6f3784d` (deployed 2026-09-30T18:27Z) |
+| **Deployed application SHA** (what that version was built from) | `20762b1` — IBOX and Sales Doctor project workspaces; analytics version 16, Finance migrations `0012`–`0014` applied, no new migration |
 | **Release branch** | `release/meeting-2026-09-21` |
-| **Branch HEAD** (latest commit on that branch) | `84e1d67`, plus the documentation-only commit that records this deployment |
+| **Branch HEAD** (latest commit on that branch) | `20762b1`, plus the documentation-only commit that records this deployment |
 | URL | `https://bitrix-deal-dashboard.lively-river-afba.workers.dev` (behind Cloudflare Access) |
 | D1 database | `ibox-dashboard-production`, id `281835a3-f1f4-4f92-be6c-818b05583a00` |
-| Latest Full Sync | `2026-09-24T09:24:57.400Z` (14:24:57 Asia/Tashkent), run `2421c3e2-5762-4048-b53f-bad446536aa7`, analytics version 14 — **a new Full Sync is required** for version 16 records (product-fit outcome and SLA evidence). Until it runs, the stale-data banner asks for the rebuild and the SLA card's average and median read `—`, because no stored record carries SLA evidence yet. |
+| Latest Full Sync | `2026-09-24T09:24:57.400Z` (14:24:57 Asia/Tashkent), run `2421c3e2-5762-4048-b53f-bad446536aa7`, analytics version 14 — **a new Full Sync is required** for version 16 records (product-fit outcome and SLA evidence). Until it runs, the stale-data banner asks for the rebuild and the SLA card's average and median read `—`, because no stored record carries SLA evidence yet. **Sales Doctor needs its own first Full Sync** (Sales Doctor workspace → Settings); until then its pages are empty rather than wrong. |
 | Staging Worker | `bitrix-dashboard-staging` → D1 `ibox-dashboard-staging` (`a97770c8-995d-419d-aa5d-122fbb956610`) |
 | Cron | `*/15 * * * *`; CRM sync runs only while `autoSyncMinutes > 0` (currently `0`, so sync is manual). The same trigger runs the Finance subscription pass once per Tashkent day, which only creates due occurrences — it never charges anything. |
 | Observability | deliberately OFF — public share tokens ride in the URL path and Workers Logs would retain them |
@@ -31,7 +31,11 @@ Three identities, deliberately listed apart:
   A branch HEAD ahead by application code means something is built but not
   deployed — check before assuming production has it.
 
-The previous accepted version was `0be0a05e-d5d8-4ef4-aa80-e71b105989c4`
+The previous accepted version was `65b34e0b-c445-4078-b991-71513db98362`
+(SHA `84e1d67`, one global settings row for both funnels — rolling back to it
+ignores the `dashboard:SALES_DOCTOR` row and the records' `projectKey`, so Sales
+Doctor Deals are again read with IBOX's roster and field; nothing is lost), before
+it `0be0a05e-d5d8-4ef4-aa80-e71b105989c4`
 (SHA `befea48`, before subscription occurrences — rolling back to it leaves
 `finance_subscription_occurrences` in place but unread, so a draft awaiting
 confirmation simply stops being offered until the build returns; nothing posted is
@@ -111,6 +115,15 @@ move a Lead, SQL, Not Relevant, Sales Lost, Cohort/Period Sale or Revenue figure
 
 **Canonical field: `UF_CRM_1790230512` "Sales Owner at Won"** (Settings → *Sales
 Owner at Won maydoni*).
+
+**Sales Doctor has its own: `UF_CRM_1790786031` "SD Sales Owner at Won".** Its
+robot fires on `C5:WON` ЕСТЬ ЗАПУСК! (field empty → current Responsible), before
+the onboarding reassignment and the move to category 17. The two fields are never
+shared: IBOX's robot only fires in category 3, so reading it for a Sales Doctor
+Deal is meaningless. Everything below applies to both projects, each with its own
+field and roster. Sales Doctor history was backfilled into the field only from a
+single SD-roster observer (the handoff), or — for a Deal still in category 5 — a
+roster Responsible; the category-17 Responsible is never used.
 
 - **Robot behaviour.** A Bitrix automation writes the current Responsible person
   into the field when a Deal enters `Оплата получена` **and the field is empty**.

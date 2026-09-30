@@ -288,10 +288,20 @@ The goal is to attribute performance to the seller responsible at the sales outc
   IBOX's `UF_CRM_1790230512` is never read or written for a Sales Doctor Deal.
 - Roster (resolved by id from the owner's names, 2026-10-01): Abdulla Norboyev
   235, Jasur Shadiev 225 (Bitrix "Jasur Shadieev"), Ikrom Tojiev 229 (Bitrix
-  "Ikrom Tojiyev"), Humoyun Toirjonov 203, Behruz Abdulazizov 13121.
-  **Abubakr Rahimov is unresolved**: two active users are named "Abubakir Rahimov"
-  (223, registered 2025-02, last login 2026-03-13; 12565, registered 2026-03-13).
-  Neither is guessed; the owner decides.
+  "Ikrom Tojiyev"), Humoyun Toirjonov 203, Behruz Abdulazizov 13121, and
+  Abubakr Rahimov **12565**.
+- **One person, two accounts** (owner confirmation, 2026-10-01): Bitrix users 223
+  and 12565 are both Abubakr Rahimov. 12565 is his current account and the only
+  one on the roster; 223 is an alias of it (`PROJECT_SELLER_IDENTITY` in
+  `lib/sales-projects.ts`). Seller evidence naming 223 — a field value, an observer,
+  a Responsible — is reported as 12565, so he has one manager row; the record keeps
+  the raw account as `salesManagerAccountId` for audit. The backfill writes 12565.
+- **Historical seller** (owner confirmation, 2026-10-01): Otabek Sulaymonov (199)
+  was a Sales Doctor seller and is not any more. He is never on the roster, so he
+  gets no current Open / NR / Lost / Active Lead work; his historical sales and
+  revenue stay his. His 31 sales are OWNER_CONFIRMED in `lib/seller-overrides.ts`.
+  An observer list alone never credits a former seller, but a former seller among
+  the observers makes a roster observer ambiguous (Deal 28565: Otabek and Abubakr).
 - Historical sales: Bitrix REST stage history carries no actor and there is no
   history of `ASSIGNED_BY_ID`, so "the Responsible at the ЕСТЬ ЗАПУСК! transition"
   cannot be read directly. Reliable evidence is the field itself, an owner

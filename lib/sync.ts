@@ -21,7 +21,7 @@ import { normalizeSafeStableSellerField, normalizeSalesOwnerAtWonField } from ".
 import { PROJECT_SELLER_NAMES, directoryUsers, resolveRoster, rosterDictionaryKey } from "./seller-roster";
 import { runPostSyncReconciliation } from "./post-sync-reconciliation";
 import {
-  DEFAULT_PROJECT, PROJECT_KEYS, SALES_PROJECTS, projectForCategory, type ProjectKey,
+  DEFAULT_PROJECT, PROJECT_KEYS, PROJECT_SELLER_IDENTITY, SALES_PROJECTS, projectForCategory, type ProjectKey,
 } from "./sales-projects";
 import { groupDealsByProject } from "./project-records";
 import { projectSyncKey, type ProjectSyncRecord } from "./project-sync";
@@ -540,7 +540,7 @@ async function lookupStep(job: StoredSyncJob) {
     // This project's names only, into this project's settings only: an IBOX run
     // can never write IBOX sellers into Sales Doctor's roster, or the reverse.
     const project = jobProject(job);
-    const roster = resolveRoster(PROJECT_SELLER_NAMES[project], directoryUsers(users));
+    const roster = resolveRoster(PROJECT_SELLER_NAMES[project], directoryUsers(users), PROJECT_SELLER_IDENTITY[project].pinnedIds);
     await saveSettings({ ...(await getSettings(project)), salesStaffIds: [...roster.approvedSellerIds] }, project);
     await saveDictionary(rosterDictionaryKey(project), roster.entries);
   }

@@ -93,13 +93,25 @@ function readSnapshots(db: Db, dealIds: string[]) {
 /* ================================================================ tests == */
 
 test("the registry holds exactly the approved entry and is seller-only", () => {
-  assert.deepEqual([...OWNER_OVERRIDES.keys()], ["43407"]);
+  // 43407 (2026-09-20) plus the 31 Sales Doctor sales of former seller Otabek
+  // Sulaymonov (owner confirmation, 2026-10-01).
+  const OTABEK = ["22709", "22749", "22947", "22993", "23205", "23363", "23547", "23549", "23759", "24013",
+    "24331", "24875", "25251", "25659", "26293", "26423", "27701", "28073", "28111", "29679",
+    "29797", "29955", "29961", "30523", "30535", "30747", "31689", "32799", "32939", "33877", "34003"];
+  assert.deepEqual([...OWNER_OVERRIDES.keys()], ["43407", ...OTABEK]);
+  for (const dealId of OTABEK) {
+    const otabek = OWNER_OVERRIDES.get(dealId)!;
+    assert.equal(otabek.sellerId, "199");
+    assert.equal(otabek.sellerName, "Otabek Sulaymonov");
+    assert.equal(otabek.attributionSource, "OWNER_CONFIRMED");
+    assert.equal(otabek.scope, "SELLER_ATTRIBUTION_ONLY");
+  }
   const entry = OWNER_OVERRIDES.get("43407")!;
   assert.equal(entry.sellerId, "7893");
   assert.equal(entry.sellerName, "Jamoliddin Kamarov");
   assert.equal(entry.attributionSource, "OWNER_CONFIRMED");
   assert.equal(entry.scope, "SELLER_ATTRIBUTION_ONLY");
-  assert.equal(OWNER_CONFIRMED_SELLERS.length, 1);
+  assert.equal(OWNER_CONFIRMED_SELLERS.length, 1 + OTABEK.length);
   for (const forbidden of ["wonAt", "opportunity", "OPPORTUNITY", "revenue", "salesStatus", "leadStatus", "source", "stageHistory"]) {
     assert.throws(() => indexOwnerOverrides([{ ...override("1"), [forbidden]: "x" } as OwnerSellerOverride]), /out-of-scope fields/, forbidden);
   }
