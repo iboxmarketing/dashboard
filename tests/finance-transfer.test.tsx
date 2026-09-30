@@ -53,7 +53,7 @@ function transfer(over: Partial<FinanceTransaction> = {}): FinanceTransaction {
     fromAccountId: "uzs", toAccountId: "uzs-2",
     sourceAmountMinor: 100_000_000, sourceCurrencyCode: "UZS",
     destinationAmountMinor: 100_000_000, destinationCurrencyCode: "UZS",
-    feeAmountMinor: 0, createdAt: CREATED, updatedAt: CREATED, ...over,
+    feeAmountMinor: 0, archived: false, createdAt: CREATED, updatedAt: CREATED, ...over,
   };
 }
 
@@ -465,7 +465,7 @@ test("the fee reaches expense reporting through one deterministic bucket", () =>
   // the fee as a column on the transfer, and nothing synthesises an EXPENSE row.
   assert.equal((storage.match(/INSERT INTO finance_transactions/g) ?? []).length, 1);
   assert.doesNotMatch(storage, /type: "EXPENSE"|'EXPENSE',/, "nothing synthesises an expense row for a commission");
-  assert.match(storage, /destination_currency_code, fee_amount_minor, created_at/);
+  assert.match(storage, /destination_currency_code, fee_amount_minor, archived, created_at/);
 });
 
 // ---- safe integers: no silent precision loss anywhere ----------------------

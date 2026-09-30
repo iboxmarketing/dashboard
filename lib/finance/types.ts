@@ -72,6 +72,13 @@ export type FinanceTransaction = {
    * read as no fee. See lib/finance/transfer.ts for the accounting rule.
    */
   feeAmountMinor: number | null;
+  /**
+   * Archived transactions are soft-deleted: hidden from normal Finance screens and
+   * excluded from every current balance and total, while their history stays
+   * readable and restorable. Financial records are never hard-deleted for the sake
+   * of a tidy screen.
+   */
+  archived: boolean;
   createdAt: string;
   updatedAt: string;
 };

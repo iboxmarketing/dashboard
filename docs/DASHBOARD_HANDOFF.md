@@ -149,6 +149,14 @@ arrived, and a cross-currency transfer's exchange rate is *derived from the two
 entered amounts for display only* — never fetched, never persisted, never used to
 reconstruct a balance. Details and the rate convention: `docs/FINANCE.md`.
 
+Accounts, categories and transactions are **editable** after creation — including
+an account's opening balance, which recomputes its current balance without
+creating any adjusting entry. **Archiving is a soft delete:** archived accounts,
+categories and records disappear from every normal Finance screen and picker,
+affect no balance or total, and are restored from *Arxivni ko‘rsatish*. Nothing is
+hard-deleted. An account that still holds a balance cannot be archived, and a
+transfer's debit, credit and commission always archive and restore together.
+
 ## Operations
 
 | Task | How |

@@ -91,6 +91,54 @@ A same-currency transfer must have equal source and destination amounts; the API
 rejects anything else, along with a negative or fractional commission, a zero or
 negative amount, the same account on both sides, and a Category on a transfer.
 
+## Editing and archiving
+
+Every Account, Category and Transaction is editable after creation, and the
+Finance screens offer exactly two actions per row — **Tahrirlash** and
+**Arxivlash** (**Tiklash** inside the archive).
+
+**Account.** Name, type and the **opening balance** are editable; the opening
+balance is the canonical stored figure every derived balance starts from, so
+correcting it is how a wrong starting balance is fixed. Editing it creates no
+transaction: the current balance simply recomputes as opening + every active
+transaction delta. The **currency** is locked as soon as any transaction (active
+or archived) references the account, because changing it would reinterpret every
+stored minor amount; it stays editable on an account that has never been used.
+
+**Transaction.** Date, account, amount, category, project, note — and for a
+transfer the source and destination accounts, both amounts and the commission —
+are edited in place with one PATCH, so every balance and total moves exactly
+once. All transfer validations run again on edit, including the safe aggregate
+debit. A record's kind is fixed: an expense is not turned into a transfer in
+place.
+
+**Category.** The name (and parent) are editable, and history keeps pointing at
+the same category id, so a rename changes the displayed name everywhere without
+creating a second category. The **kind** (INCOME/EXPENSE) cannot change once any
+transaction or subscription references the category.
+
+**Archive is a soft delete.** An archived Account, Category or Transaction
+disappears from every normal Finance screen and from every picker; one text
+button per screen, *Arxivni ko‘rsatish*, shows the archived rows, where each can
+be restored. Nothing is hard-deleted — financial records are never destroyed for
+the sake of a tidy screen.
+
+An archived **transaction** affects no balance, no income or expense total and no
+category total. `activeFinanceTransactions` filters them in ONE place at the
+entrance to every calculation, so a transfer's debit, its credit and its
+commission stop counting together and come back together — there is no way to
+archive or restore one side of a transfer.
+
+An archived **account** leaves the account list, the Income/Expense selectors and
+both Transfer selectors, and its historical records stay readable. Archiving is
+**blocked while the account still holds a balance** (`ACCOUNT_BALANCE_NOT_ZERO`,
+message *"Hisobda qoldiq mavjud. Arxivlashdan oldin qoldiqni 0 ga tushiring."*)
+so money can never vanish from the totals people read. Restoring is never
+blocked.
+
+An archived **category** leaves the tree and the transaction picker; the
+transactions that used it keep their reference and read its name.
+
 ## Balances and reporting
 
 An Account stores its opening balance, never a mutable current balance. Current
@@ -180,6 +228,13 @@ file, while staging needs only migration `0007`.
 
 Migration `0007_finance_core.sql` is additive. No CRM resync or Analytics
 Backfill is required because no existing analytics table or payload changes.
+
+### Migration 0013: transaction archive
+
+`drizzle/0013_transaction_archive.sql` adds `finance_transactions.archived`
+(`integer DEFAULT 0 NOT NULL`), so every existing row is active. Additive: no row
+is rewritten and nothing is dropped. Apply once per database, before deploying
+the build that writes the column.
 
 ### Migration 0012: transfer commission
 

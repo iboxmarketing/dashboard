@@ -1,5 +1,5 @@
 import { getD1 } from "@/db";
-import { FINANCE_CURRENCIES } from "./money";
+import { FINANCE_CURRENCIES, addMinor } from "./money";
 import { validateCategoryHierarchy, type AccountInput, type CategoryInput, type ProjectInput, type SubscriptionInput, type TransactionInput } from "./validation";
 import type { FinanceAccount, FinanceCategory, FinanceCurrency, FinanceProject, FinanceSubscription, FinanceTransaction } from "./types";
 
@@ -39,6 +39,9 @@ const transactionRow = (row: Record<string, unknown>): FinanceTransaction => ({
   // A database that has not yet run migration 0012 has no column here; the row
   // then reads as no commission rather than failing to load.
   feeAmountMinor: numberOrNull(row.fee_amount_minor),
+  // Soft delete. A database that has not run migration 0013 has no column here,
+  // so every row reads as active.
+  archived: bool(row.archived),
   createdAt: String(row.created_at), updatedAt: String(row.updated_at),
 });
 
@@ -88,12 +91,53 @@ export async function createFinanceAccount(input: AccountInput) {
 export async function updateFinanceAccount(id: string, input: AccountInput) {
   const existing = requireFound(await getFinanceAccount(id), "Account");
   if (existing.currencyCode !== input.currencyCode) {
+    // Changing the currency would reinterpret every stored minor amount on this
+    // account. Allowed only while the account provably has no history at all —
+    // archived rows count, because restoring one would resurrect that history.
     const used = await getD1().prepare("SELECT 1 AS used FROM finance_transactions WHERE account_id = ? OR from_account_id = ? OR to_account_id = ? LIMIT 1")
       .bind(id, id, id).first<{ used: number }>();
     if (used) throw new FinanceError("Account currency cannot change after transactions exist", 409, "ACCOUNT_CURRENCY_LOCKED");
   }
+  // Archiving hides an account from every active screen, so a balance left on it
+  // would vanish from the totals people read. Blocked with the wording the owner
+  // asked for; restoring (archived -> active) is always allowed.
+  if (input.archived && !existing.archived) {
+    const balance = await financeAccountBalanceMinor(id, existing.openingBalanceMinor);
+    if (balance !== 0) {
+      throw new FinanceError("Hisobda qoldiq mavjud. Arxivlashdan oldin qoldiqni 0 ga tushiring.", 409, "ACCOUNT_BALANCE_NOT_ZERO");
+    }
+  }
   await getD1().prepare("UPDATE finance_accounts SET name = ?, type = ?, currency_code = ?, opening_balance_minor = ?, archived = ?, updated_at = ? WHERE id = ?")
     .bind(input.name, input.type, input.currencyCode, input.openingBalanceMinor, input.archived ? 1 : 0, new Date().toISOString(), id).run();
+}
+
+/**
+ * The account's current balance: its opening balance plus every ACTIVE
+ * transaction that touches it, summed with the checked helper so an
+ * unrepresentable total fails loudly instead of rounding.
+ *
+ * Archived transactions are excluded here exactly as they are in the summary, so
+ * the archive invariant and the number on screen always agree.
+ */
+export async function financeAccountBalanceMinor(id: string, openingBalanceMinor: number) {
+  const result = await getD1().prepare(`SELECT type, account_id, from_account_id, to_account_id,
+      amount_minor, source_amount_minor, destination_amount_minor, fee_amount_minor
+    FROM finance_transactions
+    WHERE archived = 0 AND (account_id = ? OR from_account_id = ? OR to_account_id = ?)`)
+    .bind(id, id, id).all<Record<string, unknown>>();
+  let balance = openingBalanceMinor;
+  for (const row of result.results ?? []) {
+    const type = String(row.type);
+    const minor = (value: unknown) => (value === null || value === undefined ? 0 : Number(value));
+    if (type === "INCOME" && String(row.account_id) === id) balance = addMinor(balance, minor(row.amount_minor));
+    else if (type === "EXPENSE" && String(row.account_id) === id) balance = addMinor(balance, -minor(row.amount_minor));
+    else if (type === "TRANSFER" && String(row.from_account_id) === id) {
+      balance = addMinor(balance, -addMinor(minor(row.source_amount_minor), minor(row.fee_amount_minor)));
+    } else if (type === "TRANSFER" && String(row.to_account_id) === id) {
+      balance = addMinor(balance, minor(row.destination_amount_minor));
+    }
+  }
+  return balance;
 }
 
 export async function listFinanceCategories(includeArchived = false): Promise<FinanceCategory[]> {
@@ -211,6 +255,7 @@ const transactionValues = (input: TransactionInput) => [
   input.date, input.type, input.note, input.projectId, input.accountId, input.amountMinor, input.currencyCode, input.categoryId,
   input.fromAccountId, input.toAccountId, input.sourceAmountMinor, input.sourceCurrencyCode,
   input.destinationAmountMinor, input.destinationCurrencyCode, input.feeAmountMinor,
+  input.archived ? 1 : 0,
 ];
 
 export async function createFinanceTransaction(input: TransactionInput) {
@@ -220,8 +265,8 @@ export async function createFinanceTransaction(input: TransactionInput) {
   await getD1().prepare(`INSERT INTO finance_transactions(
     id, date, type, note, project_id, account_id, amount_minor, currency_code, category_id,
     from_account_id, to_account_id, source_amount_minor, source_currency_code,
-    destination_amount_minor, destination_currency_code, fee_amount_minor, created_at, updated_at
-  ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    destination_amount_minor, destination_currency_code, fee_amount_minor, archived, created_at, updated_at
+  ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(id, ...transactionValues(input), now, now).run();
   return id;
 }
@@ -232,7 +277,7 @@ export async function updateFinanceTransaction(id: string, input: TransactionInp
   await getD1().prepare(`UPDATE finance_transactions SET
     date = ?, type = ?, note = ?, project_id = ?, account_id = ?, amount_minor = ?, currency_code = ?, category_id = ?,
     from_account_id = ?, to_account_id = ?, source_amount_minor = ?, source_currency_code = ?,
-    destination_amount_minor = ?, destination_currency_code = ?, fee_amount_minor = ?, updated_at = ? WHERE id = ?`)
+    destination_amount_minor = ?, destination_currency_code = ?, fee_amount_minor = ?, archived = ?, updated_at = ? WHERE id = ?`)
     .bind(...transactionValues(input), new Date().toISOString(), id).run();
 }
 

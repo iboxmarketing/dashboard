@@ -18,6 +18,18 @@ export function transactionInRange(transaction: FinanceTransaction, range: Finan
   return transaction.date >= range.from && transaction.date <= range.to;
 }
 
+/**
+ * Archived transactions are soft-deleted: they affect no balance and no total.
+ *
+ * Filtered in ONE place, at the entrance to every accounting calculation, so a
+ * transfer's debit, its credit and its commission can never stop counting
+ * separately — archiving one row removes all three effects together, and
+ * restoring it brings all three back.
+ */
+export function activeFinanceTransactions(transactions: readonly FinanceTransaction[]) {
+  return transactions.filter((transaction) => transaction.archived !== true);
+}
+
 export function filterFinanceTransactions(
   transactions: FinanceTransaction[],
   range: FinanceDateRange,
@@ -42,7 +54,7 @@ function accountDelta(transaction: FinanceTransaction, accountId: string) {
 }
 
 export function accountBalanceAt(account: FinanceAccount, transactions: FinanceTransaction[], throughDate?: string) {
-  return transactions
+  return activeFinanceTransactions(transactions)
     .filter((transaction) => !throughDate || transaction.date <= throughDate)
     .reduce((balance, transaction) => addMinor(balance, accountDelta(transaction, account.id)), account.openingBalanceMinor);
 }
@@ -59,7 +71,8 @@ export function buildFinanceSummary(input: {
 }): FinanceSummary {
   const categories = new Map(input.categories.map((category) => [category.id, category]));
   const projects = new Map(input.projects.map((project) => [project.id, project]));
-  const ranged = filterFinanceTransactions(input.transactions, input.range, input.projectId);
+  const active = activeFinanceTransactions(input.transactions);
+  const ranged = filterFinanceTransactions(active, input.range, input.projectId);
   const income = new Map<string, number>();
   const expense = new Map<string, number>();
   const categoryIncome = new Map<string, number>();
@@ -109,8 +122,8 @@ export function buildFinanceSummary(input: {
     accountName: account.name,
     currencyCode: account.currencyCode,
     configuredOpeningBalanceMinor: account.openingBalanceMinor,
-    openingBalanceMinor: accountBalanceAt(account, input.transactions.filter((transaction) => transaction.date < input.range.from)),
-    currentBalanceMinor: accountBalanceAt(account, input.transactions, input.range.to),
+    openingBalanceMinor: accountBalanceAt(account, active.filter((transaction) => transaction.date < input.range.from)),
+    currentBalanceMinor: accountBalanceAt(account, active, input.range.to),
     archived: account.archived,
   }));
   const balancesByCurrency = new Map<string, number>();

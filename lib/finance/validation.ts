@@ -101,6 +101,7 @@ export function validateTransactionInput(payload: unknown): ValidationResult<Tra
       // A commission belongs to a transfer. An Income or Expense carries its own
       // amount, so a fee here would be a second, invisible amount.
       feeAmountMinor: null,
+      archived: input.archived === true,
     } };
   }
 
@@ -136,6 +137,7 @@ export function validateTransactionInput(payload: unknown): ValidationResult<Tra
     fromAccountId, toAccountId, sourceAmountMinor: input.sourceAmountMinor as number, sourceCurrencyCode,
     destinationAmountMinor: input.destinationAmountMinor as number, destinationCurrencyCode,
     feeAmountMinor: feeAmountMinor as number,
+    archived: input.archived === true,
   } };
 }
 

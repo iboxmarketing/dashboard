@@ -36,7 +36,7 @@ function transaction(overrides: Partial<FinanceTransaction>): FinanceTransaction
     id: "t", date: "2026-09-10", type: "INCOME", note: "", projectId: "p1",
     accountId: "cash", amountMinor: 100, currencyCode: "UZS", categoryId: "sales",
     fromAccountId: null, toAccountId: null, sourceAmountMinor: null, sourceCurrencyCode: null,
-    destinationAmountMinor: null, destinationCurrencyCode: null, feeAmountMinor: null,
+    destinationAmountMinor: null, destinationCurrencyCode: null, feeAmountMinor: null, archived: false,
     createdAt: CREATED, updatedAt: CREATED,
     ...overrides,
   };

@@ -218,6 +218,10 @@ aside nav button i { margin-left: auto; width: 7px; height: 7px; border-radius: 
 .fin-transfer-breakdown.compact dt { font-size: 9px; color: #8b95a6; }
 .fin-transfer-breakdown.compact dd { font-size: 10px; }
 .fin-transfer-breakdown.compact .fin-money { font-size: 10px; }
+/* The one low-noise way into the archive: a text button beside the section head. */
+.fin-head-actions { display: inline-flex; align-items: center; gap: 8px; }
+.fin-archive-toggle { height: 29px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: white; color: #6b7688; font-size: 10px; font-weight: 650; }
+.fin-archive-toggle:hover { color: var(--navy); border-color: #c9d2e0; }
 .fin-transfer-preview { margin: 4px 0 10px; padding: 10px 12px; border: 1px solid #e7ebf3; border-radius: 10px; background: #fafbfe; }
 .fin-preview-head { margin: 0 0 8px; color: #7c869a; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
 

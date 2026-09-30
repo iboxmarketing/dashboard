@@ -18,7 +18,7 @@ const tx = (over: Partial<FinanceTransaction> = {}): FinanceTransaction => ({
   id: "t1", date: "2026-09-10", type: "EXPENSE", note: "", projectId: null,
   accountId: "a1", amountMinor: 10_000, currencyCode: "UZS", categoryId: "cat-ex-1",
   fromAccountId: null, toAccountId: null, sourceAmountMinor: null, sourceCurrencyCode: null,
-  destinationAmountMinor: null, destinationCurrencyCode: null, feeAmountMinor: null,
+  destinationAmountMinor: null, destinationCurrencyCode: null, feeAmountMinor: null, archived: false,
   createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z", ...over,
 });
 

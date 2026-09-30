@@ -7,6 +7,12 @@ import type {
 
 /** Client-side filtering and presentation shaping only; accounting totals come from `/api/finance/summary`. */
 export type FinanceFilters = {
+  /**
+   * `false` (the default) shows only active records; `true` shows only archived
+   * ones. Normal Finance screens must never mix the two: an archived record
+   * affects nothing, so showing it beside live rows would misread as money.
+   */
+  archived?: boolean;
   from?: string;
   to?: string;
   types?: readonly TransactionType[];
@@ -20,6 +26,7 @@ export type FinanceFilters = {
 const selected = (values: readonly string[] | undefined, value: string | null) => !values?.length || (value !== null && values.includes(value));
 
 export function matchesTransactionFilters(transaction: FinanceTransaction, filters: FinanceFilters = {}) {
+  if ((transaction.archived === true) !== (filters.archived === true)) return false;
   if (filters.from && transaction.date < filters.from) return false;
   if (filters.to && transaction.date > filters.to) return false;
   if (filters.types?.length && !filters.types.includes(transaction.type)) return false;
@@ -187,6 +194,8 @@ export function transferShape(from: FinanceAccount | null, to: FinanceAccount | 
 }
 
 export type TransactionDraft = {
+  /** Present when an existing record is being edited; the body then keeps its id's row. */
+  archived?: boolean;
   type: TransactionType;
   date: string;
   accountId: string;
@@ -239,7 +248,7 @@ export function buildTransactionBody(draft: TransactionDraft, accounts: readonly
       accountId: from.id, amountMinor: draft.amountMinor!, currencyCode: from.currencyCode,
       categoryId: draft.categoryId, fromAccountId: null, toAccountId: null,
       sourceAmountMinor: null, sourceCurrencyCode: null, destinationAmountMinor: null, destinationCurrencyCode: null,
-      feeAmountMinor: null,
+      feeAmountMinor: null, archived: draft.archived === true,
     };
   }
   const crossCurrency = from.currencyCode !== to!.currencyCode;
@@ -253,5 +262,6 @@ export function buildTransactionBody(draft: TransactionDraft, accounts: readonly
     destinationAmountMinor: crossCurrency ? draft.destinationAmountMinor! : draft.amountMinor!,
     destinationCurrencyCode: to!.currencyCode,
     feeAmountMinor: typeof draft.feeAmountMinor === "number" && draft.feeAmountMinor > 0 ? draft.feeAmountMinor : 0,
+    archived: draft.archived === true,
   };
 }

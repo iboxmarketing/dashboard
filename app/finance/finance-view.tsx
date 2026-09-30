@@ -100,8 +100,10 @@ export function FinanceView({ adapter: injected }: { adapter?: FinanceAdapter } 
   const [tab, setTab] = useState<FinanceTab>("overview");
   const [addOpen, setAddOpen] = useState(false);
   const [addType, setAddType] = useState<TransactionType>("EXPENSE");
+  const [editingTransaction, setEditingTransaction] = useState<FinanceTransaction | null>(null);
 
-  const openAdd = (type: TransactionType) => { setAddType(type); setAddOpen(true); };
+  const openAdd = (type: TransactionType) => { setEditingTransaction(null); setAddType(type); setAddOpen(true); };
+  const openEdit = (transaction: FinanceTransaction) => { setEditingTransaction(transaction); setAddOpen(true); };
 
   return (
     <FinanceCurrencyProvider currencies={dataset.currencies}>
@@ -142,7 +144,8 @@ export function FinanceView({ adapter: injected }: { adapter?: FinanceAdapter } 
         : (
           <>
             {tab === "overview" && <OverviewTab dataset={dataset} />}
-            {tab === "transactions" && <TransactionsTab dataset={dataset} range={range} onAdd={openAdd} />}
+            {tab === "transactions" && <TransactionsTab dataset={dataset} range={range} adapter={adapter}
+              onAdd={openAdd} onEdit={openEdit} onChanged={reload} />}
             {tab === "accounts" && <AccountsTab dataset={dataset} adapter={adapter} onChanged={reload} />}
             {tab === "categories" && <CategoriesTab dataset={dataset} adapter={adapter} onChanged={reload} />}
             {tab === "projects" && <ProjectsTab dataset={dataset} adapter={adapter} onChanged={reload} />}
@@ -150,9 +153,17 @@ export function FinanceView({ adapter: injected }: { adapter?: FinanceAdapter } 
           </>
         )}
 
-        <TransactionDrawer key={`${addOpen}-${addType}`} open={addOpen} dataset={dataset} initialType={addType}
-          onClose={() => setAddOpen(false)}
-          onSave={async (body) => { await adapter.createTransaction(body); await reload(); }} />
+        {/* Keyed so opening a different record mounts a fresh form: an edit must
+            start from that record's own values, never the previous one's. */}
+        <TransactionDrawer key={`${addOpen}-${addType}-${editingTransaction?.id ?? "new"}`} open={addOpen}
+          dataset={dataset} initialType={addType} transaction={editingTransaction}
+          onClose={() => { setAddOpen(false); setEditingTransaction(null); }}
+          onSave={async (body, id) => {
+            // One write per save: PATCH edits the row in place, so an edit never
+            // leaves the old amounts behind as a second record.
+            if (id) await adapter.updateTransaction(id, body); else await adapter.createTransaction(body);
+            await reload();
+          }} />
       </section>
     </FinanceCurrencyProvider>
   );
@@ -286,9 +297,16 @@ function TransferCell({ row, currencies }: { row: FinanceTransaction; currencies
   return <TransferBreakdown row={row} currencies={currencies} variant="compact" />;
 }
 
-function TransactionsTab({ dataset, range, onAdd }: {
-  dataset: FinanceDataset; range: FinanceRange; onAdd: (type: TransactionType) => void;
+function TransactionsTab({ dataset, range, adapter, onAdd, onEdit, onChanged }: {
+  dataset: FinanceDataset; range: FinanceRange; adapter: FinanceAdapter;
+  onAdd: (type: TransactionType) => void;
+  onEdit: (transaction: FinanceTransaction) => void;
+  onChanged: () => Promise<void>;
 }) {
+  // Archived records are a separate view, never mixed into the live list: an
+  // archived row affects no balance, so showing it beside live ones misreads as money.
+  const [showArchive, setShowArchive] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [types, setTypes] = useState<string[]>([]);
   const [accountIds, setAccountIds] = useState<string[]>([]);
   const [categoryIds, setCategoryIds] = useState<string[]>([]);
@@ -300,6 +318,7 @@ function TransactionsTab({ dataset, range, onAdd }: {
   // every render.
   const rows = useMemo(() => {
     const filters: FinanceFilters = {
+      archived: showArchive,
       from: range.from, to: range.to,
       types: types as TransactionType[],
       accountIds, categoryIds, projectIds,
@@ -308,7 +327,18 @@ function TransactionsTab({ dataset, range, onAdd }: {
     };
     return filterTransactions(dataset.transactions, filters)
       .sort((left, right) => right.date.localeCompare(left.date));
-  }, [dataset.transactions, range.from, range.to, types, accountIds, categoryIds, projectIds, currencies, search]);
+  }, [dataset.transactions, showArchive, range.from, range.to, types, accountIds, categoryIds, projectIds, currencies, search]);
+  const archivedCount = useMemo(() => dataset.transactions.filter((row) => row.archived).length, [dataset.transactions]);
+  /**
+   * Archive is a soft delete and restore is its exact inverse: one PATCH flips one
+   * flag, and the server recomputes every balance and total from the remaining
+   * active rows. A transfer's debit, credit and commission therefore leave and
+   * come back together — there is no second row to keep in step.
+   */
+  const setArchived = async (transaction: FinanceTransaction, archived: boolean) => {
+    try { setActionError(null); await adapter.updateTransaction(transaction.id, { archived }); await onChanged(); }
+    catch (error) { setActionError(error instanceof Error ? error.message : "Yozuv holati saqlanmadi"); }
+  };
   const accountName = (id: string | null) => dataset.accounts.find((a) => a.id === id)?.name ?? "—";
   const categoryName = (id: string | null) => dataset.categories.find((c) => c.id === id)?.name ?? "—";
   const projectName = (id: string | null) => dataset.projects.find((p) => p.id === id)?.name ?? "—";
@@ -322,11 +352,11 @@ function TransactionsTab({ dataset, range, onAdd }: {
           <MultiSelect label="Turi" allLabel="Barcha turlar" selected={types} onChange={setTypes}
             options={TRANSACTION_TYPES.map((type) => ({ id: type, name: TRANSACTION_TYPE_LABELS[type] }))} />
           <MultiSelect label="Hisob" allLabel="Barcha hisoblar" selected={accountIds} onChange={setAccountIds}
-            options={dataset.accounts.map((account) => ({ id: account.id, name: account.name }))} />
+            options={dataset.accounts.filter((account) => !account.archived).map((account) => ({ id: account.id, name: account.name }))} />
           <MultiSelect label="Kategoriya" allLabel="Barcha kategoriyalar" selected={categoryIds} onChange={setCategoryIds}
-            options={dataset.categories.map((category) => ({ id: category.id, name: category.parentId ? `— ${category.name}` : category.name }))} />
+            options={dataset.categories.filter((category) => !category.archived).map((category) => ({ id: category.id, name: category.parentId ? `— ${category.name}` : category.name }))} />
           <MultiSelect label="Project" allLabel="Barcha projectlar" selected={projectIds} onChange={setProjectIds}
-            options={dataset.projects.map((project) => ({ id: project.id, name: project.name }))} />
+            options={dataset.projects.filter((project) => !project.archived).map((project) => ({ id: project.id, name: project.name }))} />
           <MultiSelect label="Valyuta" allLabel="Barcha valyutalar" selected={currencies} onChange={setCurrencies}
             options={CURRENCIES.map((currency) => ({ id: currency, name: currency }))} />
           {(active > 0 || search) && (
@@ -335,13 +365,20 @@ function TransactionsTab({ dataset, range, onAdd }: {
           <button type="button" className="button small" onClick={() => onAdd("EXPENSE")}><Plus size={14} />Yozuv qo‘shish</button>
         </div>
       </div>
+      {actionError && <p className="form-error" role="alert">{actionError}</p>}
 
       <section className="panel">
-        <SectionHeading title={`${rows.length} yozuv`} subtitle="Valyutalar aralashtirilmaydi — har yozuv o‘z valyutasida" />
+        <SectionHeading title={showArchive ? `${rows.length} arxivlangan yozuv` : `${rows.length} yozuv`}
+          subtitle={showArchive
+            ? "Arxivlangan yozuvlar hech qanday balans va hisobotga ta’sir qilmaydi"
+            : "Valyutalar aralashtirilmaydi — har yozuv o‘z valyutasida"}
+          action={<button type="button" className="fin-archive-toggle" onClick={() => setShowArchive((value) => !value)}>
+            {showArchive ? "Aktiv yozuvlar" : `Arxivni ko‘rsatish${archivedCount ? ` (${archivedCount})` : ""}`}
+          </button>} />
         {rows.length ? (
           <table className="fin-table">
             <thead>
-              <tr><th>Sana</th><th>Turi</th><th>Hisob</th><th>Kategoriya</th><th>Project</th><th>Izoh</th><th className="right">Summa</th></tr>
+              <tr><th>Sana</th><th>Turi</th><th>Hisob</th><th>Kategoriya</th><th>Project</th><th>Izoh</th><th className="right">Summa</th><th /></tr>
             </thead>
             <tbody>
               {rows.map((row) => (
@@ -360,11 +397,21 @@ function TransactionsTab({ dataset, range, onAdd }: {
                         amounts imply (cross-currency only) and the commission charged. */}
                     {row.type === "TRANSFER" && <TransferCell row={row} currencies={dataset.currencies} />}
                   </td>
+                  <td className="right fin-row-actions">
+                    {row.archived
+                      ? <button type="button" className="button small secondary" onClick={() => void setArchived(row, false)}>Tiklash</button>
+                      : <>
+                        <button type="button" className="button small secondary" onClick={() => onEdit(row)}>Tahrirlash</button>
+                        <button type="button" className="button small secondary" onClick={() => void setArchived(row, true)}>Arxivlash</button>
+                      </>}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
-        ) : <EmptyState title="Yozuv topilmadi" hint="Filtrlarni o‘zgartiring yoki yangi yozuv qo‘shing."
+        ) : showArchive
+          ? <EmptyState title="Arxiv bo‘sh" hint="Arxivlangan yozuv yo‘q." />
+          : <EmptyState title="Yozuv topilmadi" hint="Filtrlarni o‘zgartiring yoki yangi yozuv qo‘shing."
               action={<button type="button" className="button small" onClick={() => onAdd("EXPENSE")}>Yozuv qo‘shish</button>} />}
       </section>
     </div>
@@ -376,8 +423,14 @@ function TransactionsTab({ dataset, range, onAdd }: {
 function AccountsTab({ dataset, adapter, onChanged }: { dataset: FinanceDataset; adapter: FinanceAdapter; onChanged: () => Promise<void> }) {
   const [editing, setEditing] = useState<FinanceAccount | null>(null);
   const [open, setOpen] = useState(false);
+  const [showArchive, setShowArchive] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const balances = accountBalanceGroups(dataset.summary);
+  const visible = dataset.accounts.filter((account) => account.archived === showArchive);
+  const archivedCount = dataset.accounts.filter((account) => account.archived).length;
+  /** Whether any record — active or archived — references this account. */
+  const hasHistory = (accountId: string) => dataset.transactions.some((row) =>
+    row.accountId === accountId || row.fromAccountId === accountId || row.toAccountId === accountId);
 
   const archive = async (account: FinanceAccount) => {
     try { setActionError(null); await adapter.updateAccount(account.id, { archived: !account.archived }); await onChanged(); }
@@ -386,10 +439,18 @@ function AccountsTab({ dataset, adapter, onChanged }: { dataset: FinanceDataset;
 
   return (
     <div className="fin-stack">
-      <SectionHeading title="Hisoblar" subtitle="Joriy balans yozuvlardan hisoblanadi — qo‘lda tahrirlanmaydi"
-        action={<button type="button" className="button" onClick={() => { setEditing(null); setOpen(true); }}><Plus size={15} />Yangi hisob</button>} />
+      <SectionHeading title={showArchive ? "Arxivlangan hisoblar" : "Hisoblar"}
+        subtitle={showArchive
+          ? "Arxivlangan hisoblar aktiv ro‘yxatda va yozuv formalarida ko‘rinmaydi"
+          : "Joriy balans boshlang‘ich qoldiq va yozuvlardan hisoblanadi"}
+        action={<div className="fin-head-actions">
+          <button type="button" className="fin-archive-toggle" onClick={() => setShowArchive((value) => !value)}>
+            {showArchive ? "Aktiv hisoblar" : `Arxivni ko‘rsatish${archivedCount ? ` (${archivedCount})` : ""}`}
+          </button>
+          <button type="button" className="button" onClick={() => { setEditing(null); setOpen(true); }}><Plus size={15} />Yangi hisob</button>
+        </div>} />
       {actionError && <p className="form-error" role="alert">{actionError}</p>}
-      {dataset.accounts.length ? (
+      {visible.length ? (
         <>
           <div className="fin-cards">
             {balances.groups.map((group) => (
@@ -401,9 +462,9 @@ function AccountsTab({ dataset, adapter, onChanged }: { dataset: FinanceDataset;
           </div>
           <section className="panel">
             <table className="fin-table">
-              <thead><tr><th>Nomi</th><th>Turi</th><th>Valyuta</th><th className="right">Boshlang‘ich</th><th className="right">Joriy</th><th>Holat</th><th /></tr></thead>
+              <thead><tr><th>Nomi</th><th>Turi</th><th>Valyuta</th><th className="right">Boshlang‘ich</th><th className="right">Joriy</th><th /></tr></thead>
               <tbody>
-                {dataset.accounts.map((account) => {
+                {visible.map((account) => {
                   const currentBalanceMinor = accountCurrentBalanceMinor(dataset.summary, account.id);
                   return (
                     <tr key={account.id} className={account.archived ? "fin-row-archived" : ""}>
@@ -414,12 +475,13 @@ function AccountsTab({ dataset, adapter, onChanged }: { dataset: FinanceDataset;
                       <td className="right">{currentBalanceMinor === null
                         ? <span className="fin-money muted" title="Server summary’da balans yo‘q">—</span>
                         : <Money amountMinor={currentBalanceMinor} currency={account.currencyCode as Currency} />}</td>
-                      <td><ArchiveStatusBadge archived={account.archived} /></td>
                       <td className="right fin-row-actions">
-                        <button type="button" className="button small secondary" onClick={() => { setEditing(account); setOpen(true); }}>Tahrirlash</button>
-                        <button type="button" className="button small secondary" onClick={() => void archive(account)}>
-                          {account.archived ? "Tiklash" : "Arxivlash"}
-                        </button>
+                        {account.archived
+                          ? <button type="button" className="button small secondary" onClick={() => void archive(account)}>Tiklash</button>
+                          : <>
+                            <button type="button" className="button small secondary" onClick={() => { setEditing(account); setOpen(true); }}>Tahrirlash</button>
+                            <button type="button" className="button small secondary" onClick={() => void archive(account)}>Arxivlash</button>
+                          </>}
                       </td>
                     </tr>
                   );
@@ -428,10 +490,12 @@ function AccountsTab({ dataset, adapter, onChanged }: { dataset: FinanceDataset;
             </table>
           </section>
         </>
-      ) : <EmptyState title="Hisob yo‘q" hint="Pul qayerda turganini ko‘rish uchun birinchi hisobni qo‘shing."
+      ) : showArchive
+        ? <EmptyState title="Arxiv bo‘sh" hint="Arxivlangan hisob yo‘q." />
+        : <EmptyState title="Hisob yo‘q" hint="Pul qayerda turganini ko‘rish uchun birinchi hisobni qo‘shing."
             action={<button type="button" className="button" onClick={() => { setEditing(null); setOpen(true); }}>Yangi hisob</button>} />}
       {open && (
-        <AccountDrawer open={open} account={editing} onClose={() => setOpen(false)}
+        <AccountDrawer open={open} account={editing} hasHistory={editing ? hasHistory(editing.id) : false} onClose={() => setOpen(false)}
           onSave={async (body, id) => { if (id) await adapter.updateAccount(id, body); else await adapter.createAccount(body); await onChanged(); }} />
       )}
     </div>
@@ -444,8 +508,12 @@ function CategoriesTab({ dataset, adapter, onChanged }: { dataset: FinanceDatase
   const [kind, setKind] = useState<CategoryKind>("EXPENSE");
   const [editing, setEditing] = useState<FinanceCategory | null>(null);
   const [open, setOpen] = useState(false);
+  const [showArchive, setShowArchive] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const tree = categoryTree(dataset.categories, kind);
+  // Archived categories leave the normal tree and the transaction picker, while
+  // historical records keep pointing at the same category id and read its name.
+  const tree = categoryTree(dataset.categories.filter((category) => category.archived === showArchive), kind);
+  const archivedCount = dataset.categories.filter((category) => category.archived).length;
 
   const archive = async (category: FinanceCategory) => {
     try { setActionError(null); await adapter.updateCategory(category.id, { archived: !category.archived }); await onChanged(); }
@@ -454,8 +522,16 @@ function CategoriesTab({ dataset, adapter, onChanged }: { dataset: FinanceDatase
 
   return (
     <div className="fin-stack">
-      <SectionHeading title="Kategoriyalar" subtitle="Kirim va chiqim kategoriyalari aralashmaydi"
-        action={<button type="button" className="button" onClick={() => { setEditing(null); setOpen(true); }}><Plus size={15} />Yangi kategoriya</button>} />
+      <SectionHeading title={showArchive ? "Arxivlangan kategoriyalar" : "Kategoriyalar"}
+        subtitle={showArchive
+          ? "Arxivlangan kategoriya yangi yozuvlarda tanlanmaydi; eski yozuvlar o‘z kategoriyasida qoladi"
+          : "Kirim va chiqim kategoriyalari aralashmaydi"}
+        action={<div className="fin-head-actions">
+          <button type="button" className="fin-archive-toggle" onClick={() => setShowArchive((value) => !value)}>
+            {showArchive ? "Aktiv kategoriyalar" : `Arxivni ko‘rsatish${archivedCount ? ` (${archivedCount})` : ""}`}
+          </button>
+          <button type="button" className="button" onClick={() => { setEditing(null); setOpen(true); }}><Plus size={15} />Yangi kategoriya</button>
+        </div>} />
       {actionError && <p className="form-error" role="alert">{actionError}</p>}
       <div className="fin-type-switch" role="group" aria-label="Kategoriya turi">
         <button type="button" className={kind === "EXPENSE" ? "active" : ""} onClick={() => setKind("EXPENSE")}>Chiqim kategoriyalari</button>
@@ -468,7 +544,6 @@ function CategoriesTab({ dataset, adapter, onChanged }: { dataset: FinanceDatase
               <li key={parent.id}>
                 <div className={`fin-tree-row ${parent.archived ? "fin-row-archived" : ""}`}>
                   <span className="fin-tree-name"><Layers size={13} aria-hidden="true" />{parent.name}</span>
-                  <ArchiveStatusBadge archived={parent.archived} />
                   <span className="fin-row-actions">
                     <button type="button" className="button small secondary" onClick={() => { setEditing(parent); setOpen(true); }}>Tahrirlash</button>
                     <button type="button" className="button small secondary" onClick={() => void archive(parent)}>
@@ -481,7 +556,6 @@ function CategoriesTab({ dataset, adapter, onChanged }: { dataset: FinanceDatase
                     {children.map((child) => (
                       <li key={child.id} className={`fin-tree-row ${child.archived ? "fin-row-archived" : ""}`}>
                         <span className="fin-tree-name sub">{child.name}</span>
-                        <ArchiveStatusBadge archived={child.archived} />
                         <span className="fin-row-actions">
                           <button type="button" className="button small secondary" onClick={() => { setEditing(child); setOpen(true); }}>Tahrirlash</button>
                           <button type="button" className="button small secondary" onClick={() => void archive(child)}>

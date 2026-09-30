@@ -40,25 +40,41 @@ function DrawerFooter({ onCancel, onSave, saving, saveLabel = "Saqlash" }: {
  * amount is derived — the app does not know today's rate and guessing it would
  * silently invent money.
  */
-export function TransactionDrawer({ open, dataset, initialType = "EXPENSE", onClose, onSave }: {
+export function TransactionDrawer({ open, dataset, initialType = "EXPENSE", transaction = null, onClose, onSave }: {
   open: boolean;
   dataset: FinanceDataset;
   initialType?: TransactionType;
+  /** An existing record to edit. Absent for a new one. */
+  transaction?: FinanceTransaction | null;
   onClose: () => void;
-  onSave: (body: NewTransaction) => Promise<void>;
+  onSave: (body: NewTransaction, id: string | null) => Promise<void>;
 }) {
+  /**
+   * Selectors offer ACTIVE accounts, categories and projects only — an archived
+   * one must not receive new activity. The record being edited keeps whatever it
+   * already references, because editing must never silently move money.
+   */
   const accounts = useMemo(() => activeOnly(dataset.accounts), [dataset.accounts]);
   const projects = useMemo(() => activeOnly(dataset.projects), [dataset.projects]);
-  const [type, setType] = useState<TransactionType>(initialType);
-  const [date, setDate] = useState(today());
-  const [accountId, setAccountId] = useState("");
-  const [toAccountId, setToAccountId] = useState("");
-  const [categoryId, setCategoryId] = useState("");
-  const [projectId, setProjectId] = useState("");
-  const [description, setDescription] = useState("");
-  const [amount, setAmount] = useState("");
-  const [toAmount, setToAmount] = useState("");
-  const [fee, setFee] = useState("");
+  // A minor amount becomes an input string in the currency it is denominated in.
+  const moneyOf = (amountMinor: number | null | undefined, currencyCode: string | null | undefined) => {
+    const definition = dataset.currencies.find((currency) => currency.code === currencyCode);
+    return amountMinor === null || amountMinor === undefined || !definition ? "" : moneyInputValue(amountMinor, definition);
+  };
+  const editing = transaction;
+  const [type, setType] = useState<TransactionType>(editing?.type ?? initialType);
+  const [date, setDate] = useState(editing?.date ?? today());
+  const [accountId, setAccountId] = useState(editing ? editing.accountId ?? editing.fromAccountId ?? "" : "");
+  const [toAccountId, setToAccountId] = useState(editing?.toAccountId ?? "");
+  const [categoryId, setCategoryId] = useState(editing?.categoryId ?? "");
+  const [projectId, setProjectId] = useState(editing?.projectId ?? "");
+  const [description, setDescription] = useState(editing?.note ?? "");
+  const [amount, setAmount] = useState(editing
+    ? moneyOf(editing.type === "TRANSFER" ? editing.sourceAmountMinor : editing.amountMinor,
+      editing.type === "TRANSFER" ? editing.sourceCurrencyCode : editing.currencyCode)
+    : "");
+  const [toAmount, setToAmount] = useState(editing ? moneyOf(editing.destinationAmountMinor, editing.destinationCurrencyCode) : "");
+  const [fee, setFee] = useState(editing ? moneyOf(editing.feeAmountMinor, editing.sourceCurrencyCode) : "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -95,6 +111,7 @@ export function TransactionDrawer({ open, dataset, initialType = "EXPENSE", onCl
   const dirty = Boolean(accountId || amount || description);
 
   const reset = () => {
+    if (editing) return setError(null);
     setType(initialType); setDate(today()); setAccountId(""); setToAccountId("");
     setCategoryId(""); setProjectId(""); setDescription(""); setAmount(""); setToAmount(""); setFee(""); setError(null);
   };
@@ -109,12 +126,14 @@ export function TransactionDrawer({ open, dataset, initialType = "EXPENSE", onCl
       // The commission is entered in the SOURCE account currency; empty means none.
       feeAmountMinor: fromCurrency && fee !== "" ? parseMoneyInput(fee, fromCurrency) : 0,
       categoryId: categoryId || null, projectId: projectId || null,
+      // Editing never changes whether a record is archived; that is its own action.
+      archived: editing?.archived === true,
     };
     const check = validateTransaction(draft, accounts);
     if (!check.ok) return setError(check.error);
     setSaving(true); setError(null);
     try {
-      await onSave(buildTransactionBody(draft, accounts, description.trim()) as NewTransaction);
+      await onSave(buildTransactionBody(draft, accounts, description.trim()) as NewTransaction, editing?.id ?? null);
       reset(); onClose();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Saqlanmadi");
@@ -122,16 +141,21 @@ export function TransactionDrawer({ open, dataset, initialType = "EXPENSE", onCl
   };
 
   return (
-    <Drawer open={open} title="Yangi yozuv" context="Finance" dirty={dirty && !saving} onClose={() => { reset(); onClose(); }}
+    <Drawer open={open} title={editing ? "Yozuvni tahrirlash" : "Yangi yozuv"} context="Finance" dirty={dirty && !saving}
+      onClose={() => { reset(); onClose(); }}
       footer={<DrawerFooter onCancel={() => { reset(); onClose(); }} onSave={save} saving={saving} />}>
-      <div className="fin-type-switch" role="group" aria-label="Yozuv turi">
-        {TRANSACTION_TYPES.map((option) => (
-          <button key={option} type="button" className={type === option ? "active" : ""}
-            onClick={() => { setType(option); setCategoryId(""); setToAccountId(""); setToAmount(""); setFee(""); }}>
-            {TRANSACTION_TYPE_LABELS[option]}
-          </button>
-        ))}
-      </div>
+      {/* The kind of a saved record stays fixed: an expense does not become a
+          transfer in place. Its fields are all editable. */}
+      {editing
+        ? <p className="fin-preview-head">{TRANSACTION_TYPE_LABELS[type]}</p>
+        : <div className="fin-type-switch" role="group" aria-label="Yozuv turi">
+          {TRANSACTION_TYPES.map((option) => (
+            <button key={option} type="button" className={type === option ? "active" : ""}
+              onClick={() => { setType(option); setCategoryId(""); setToAccountId(""); setToAmount(""); setFee(""); }}>
+              {TRANSACTION_TYPE_LABELS[option]}
+            </button>
+          ))}
+        </div>}
 
       <FormField label="Sana" required><DateInput value={date} onChange={(event) => setDate(event.target.value)} data-autofocus /></FormField>
 
@@ -211,9 +235,23 @@ export function TransactionDrawer({ open, dataset, initialType = "EXPENSE", onCl
   );
 }
 
-export function AccountDrawer({ open, account, onClose, onSave }: {
+/**
+ * Account drawer.
+ *
+ * The opening balance is editable after creation: it is the canonical stored
+ * figure every derived balance starts from, so correcting it is how a wrong
+ * starting balance gets fixed. Changing it creates no transaction and touches no
+ * history — the current balance simply recomputes as opening + active deltas.
+ *
+ * The currency stays locked once the account has any history, because changing it
+ * would reinterpret every stored minor amount; it is editable only while the
+ * account has never been used.
+ */
+export function AccountDrawer({ open, account, hasHistory = true, onClose, onSave }: {
   open: boolean;
   account: FinanceAccount | null;
+  /** Whether any transaction references this account (archived ones included). */
+  hasHistory?: boolean;
   onClose: () => void;
   onSave: (body: NewAccount, id: string | null) => Promise<void>;
 }) {
@@ -249,16 +287,19 @@ export function AccountDrawer({ open, account, onClose, onSave }: {
           {ACCOUNT_TYPES.map((option) => <option key={option} value={option}>{ACCOUNT_TYPE_LABELS[option]}</option>)}
         </SelectInput>
       </FormField>
-      <FormField label="Valyuta" required hint={account ? "Mavjud hisobning valyutasini o‘zgartirish balanslarni buzadi" : undefined}>
-        <SelectInput value={currency} onChange={(event) => setCurrency(event.target.value as Currency)} disabled={Boolean(account)}>
+      <FormField label="Valyuta" required
+        hint={account && hasHistory ? "Yozuvlari bor hisobning valyutasi o‘zgartirilmaydi — saqlangan summalar boshqa ma’no oladi" : undefined}>
+        <SelectInput value={currency} onChange={(event) => setCurrency(event.target.value as Currency)}
+          disabled={Boolean(account) && hasHistory}>
           {CURRENCIES.map((option) => <option key={option} value={option}>{option}</option>)}
         </SelectInput>
       </FormField>
-      <FormField label="Boshlang‘ich balans" hint="Joriy balans yozuvlardan hisoblanadi — qo‘lda tahrirlanmaydi">
+      <FormField label="Boshlang‘ich balans"
+        hint="Hisob ochilgandagi qoldiq. Tahrirlash mumkin — joriy balans shu summa va yozuvlardan qayta hisoblanadi, yangi yozuv yaratilmaydi.">
         <NumberInput value={openingBalance} step={currencyDefinition ? moneyInputStep(currencyDefinition) : "any"}
-          onChange={(event) => setOpeningBalance(event.target.value)} disabled={Boolean(account)} />
+          onChange={(event) => setOpeningBalance(event.target.value)} />
       </FormField>
-      {account && currencyDefinition && <p className="field-hint">Saqlangan boshlang‘ich balans: {formatMoney(account.openingBalanceMinor, currencyDefinition)}. Joriy balans faqat server summary’dan o‘qiladi.</p>}
+      {account && currencyDefinition && <p className="field-hint">Saqlangan boshlang‘ich balans: {formatMoney(account.openingBalanceMinor, currencyDefinition)}. Joriy balans yozuvlardan hisoblanadi.</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
     </Drawer>
   );

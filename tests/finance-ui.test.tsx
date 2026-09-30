@@ -83,10 +83,13 @@ test("income and expense category is required while Finance Project remains opti
   assert.doesNotMatch(html, /Kategoriyasiz/);
 });
 
-test("Account uses openingBalanceMinor and never exposes an editable current balance", () => {
+test("Account edits the stored opening balance and never an editable current balance", () => {
   const html = renderToStaticMarkup(<AccountDrawer open account={dataset.accounts[0]} onClose={() => {}} onSave={async () => {}} />);
   assert.match(html, /Boshlang‘ich balans/);
-  assert.match(html, /Joriy balans faqat server summary’dan o‘qiladi/);
+  // The opening balance is the canonical stored figure and is editable; the
+  // current balance is always derived and is never typed in.
+  assert.match(html, /Joriy balans yozuvlardan hisoblanadi/);
+  assert.doesNotMatch(html, /Joriy balans.*<input|name="currentBalance"/);
   assert.match(drawers, /openingBalanceMinor/);
   assert.doesNotMatch(drawers, /currentBalanceMinor:\s*/);
   assert.match(view, /accountCurrentBalanceMinor\(dataset\.summary, account\.id\)/);
