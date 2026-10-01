@@ -13,7 +13,7 @@ project):
 | Sales funnel | category 3 | category 5 "Sales Doctor" |
 | Post-sale funnel | category 13 | category 17 "SD Обучение/Сопровождение" |
 | Distribution (SLA start) | `C3:NEW` | `C5:NEW` РАСПРЕДЕЛЁННЫЕ СДЕЛКИ |
-| SQL from | configured / ОБРАБОТКА | `C5:PREPAYMENT_INVOICE` ОБРАБОТКА (SORT 30) and later |
+| Quality | stage history (SQL from ОБРАБОТКА) | **current stage** — see below |
 | Sale | `C3:WON` Оплата получена | `C5:WON` ЕСТЬ ЗАПУСК! |
 | Sales Lost | `C3:LOSE` | `C5:LOSE` ЗАКРЫТО И НЕ РЕАЛИЗОВАНО |
 | Not Relevant | `C3:UC_C0725V` | `C5:UC_X51N7T` Not Relevant (Marketing) |
@@ -35,10 +35,22 @@ project):
 - Each project has its own settings, roster, seller field, SLA calendar and target,
   stage mapping and cached analytics. Saving one project's settings drops stage ids
   of the other project's funnels and never touches the other row.
-- Sales Doctor quality mirrors IBOX's accepted principles: Not Relevant is NR and
-  never SQL; an ordinary ЗАКРЫТО И НЕ РЕАЛИЗОВАНО is SQL and Sales Lost even when
-  closed directly; ЕСТЬ ЗАПУСК! is a sale and SQL, and stays one after the move to
-  category 17. Sales Doctor has no product-fit outcome.
+- **Sales Doctor quality is decided by the Deal's CURRENT stage** (owner rule,
+  2026-10-01, superseding the ОБРАБОТКА threshold; `currentStageQuality` in
+  `lib/sales-projects.ts`):
+  - Saralanmagan: РАСПРЕДЕЛЁННЫЕ СДЕЛКИ or НЕ ОТВЕЧАЕТ — only these two.
+  - Saralangan: every other Lead. Saralangan = SQL + Not Relevant.
+  - Not Relevant: current stage Not Relevant (Marketing). Never SQL.
+  - SQL: Saralangan minus Not Relevant — every open qualified stage,
+    ЗАКРЫТО И НЕ РЕАЛИЗОВАНО, and every sale. No stage-history or SORT threshold.
+  - Sales Lost: current stage ЗАКРЫТО И НЕ РЕАЛИЗОВАНО, always SQL.
+  - Sale: current stage ЕСТЬ ЗАПУСК!, or the Deal is now in category 17. A Won
+    visit the Deal has since left for an open category-5 stage is not a sale.
+  - The failure reason (`UF_CRM_1748329407554`) decides none of these; it stays a
+    diagnostic. IBOX's routing patterns (which match "SD") therefore never reach a
+    Sales Doctor Deal.
+  - A Deal that has left both Sales Doctor funnels keeps the general came-from
+    rules. Sales Doctor has no product-fit outcome. IBOX is unchanged.
 - Call-center and unrelated funnels are excluded.
 - The same Bitrix card moves between funnels. Count its `dealId` once.
 

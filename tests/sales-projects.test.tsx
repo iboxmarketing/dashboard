@@ -14,7 +14,7 @@ import { createSalesBaseCache, salesCacheKey } from "../lib/sales-cache";
 import {
   DEFAULT_PROJECT, PROJECT_KEYS, SALES_DOCTOR_OWNER_AT_WON_FIELD, SALES_DOCTOR_ROSTER, SALES_DOCTOR_STAGES, SALES_PROJECTS,
   dealProjectFamily, parseProjectKey, projectBySlug, projectForCategory, recordProject, scopeSettingsToProject,
-  PROJECT_SELLER_IDENTITY, canonicalSellerId, historicalSellerIds,
+  PROJECT_SELLER_IDENTITY, canonicalSellerId, currentStageQuality, historicalSellerIds,
   seedSalesDoctorSettings, stageBelongsToProject, withProjectPipelines, type ProjectKey,
 } from "../lib/sales-projects";
 import { OWNER_OVERRIDES } from "../lib/seller-overrides";
@@ -375,6 +375,93 @@ test("an aliased seller reports under one identity, with the raw account kept", 
   }]).find((row) => row.dealId === "7002")! as unknown as { salesManagerId: string; salesManagerAccountId?: string };
   assert.equal(ibox.salesManagerId, "223");
   assert.equal(ibox.salesManagerAccountId, undefined);
+});
+
+// ---- O. Sales Doctor quality from the current stage (owner rule, 2026-10-01) -------------
+
+const REASON_FIELD = "UF_CRM_1748329407554";
+const ROUTING_TEXT = "это уже клиент SD (Not Relevant)";
+
+/** Builds with a failure-reason field configured, and the IBOX routing patterns that match "SD". */
+function buildWithReasons(cases: DealCase[]) {
+  const reasonSettings = (project: ProjectKey) => ({
+    ...SETTINGS[project], failureReasonField: REASON_FIELD, routingReasonPatterns: ["sd", "передан"],
+  });
+  const deals: RawDeal[] = cases.map((c) => ({
+    ID: c.id, TITLE: `Deal ${c.id}`, DATE_CREATE: at("10:01"), ASSIGNED_BY_ID: c.responsible, CATEGORY_ID: c.categoryId,
+    STAGE_ID: c.stageId, MOVED_TIME: at("17:00"), SOURCE_ID: "WEB", OPPORTUNITY: "1000000", CURRENCY_ID: "UZS",
+    observers: c.observers ?? [], ...c.fields,
+  } as RawDeal));
+  const histories: RawStageHistory[] = cases.flatMap((c) => c.history.map(([stageId, clock]) => ({
+    OWNER_ID: c.id, CATEGORY_ID: /^C(\d+):/.exec(stageId)![1], STAGE_ID: stageId, CREATED_TIME: at(clock),
+  } as RawStageHistory)));
+  const pipelines = new Map(PROJECT_KEYS.flatMap((key) => [
+    [SALES_PROJECTS[key].salesCategoryId, SALES_PROJECTS[key].salesCategoryName],
+    [SALES_PROJECTS[key].postSaleCategoryId, SALES_PROJECTS[key].postSaleCategoryName],
+  ] as [string, string][]));
+  const records = [];
+  for (const [project, group] of groupDealsByProject(deals, histories, "IBOX")) {
+    records.push(...buildAnalyticsRecords({
+      deals: group.deals, stageHistories: group.histories, settings: reasonSettings(project), projectKey: project,
+      users: USERS, pipelines, stages, sources, stageMeta, domain: null, stageHistoryAvailable: true,
+    }));
+  }
+  return new Map((records as unknown as DashboardRecord[]).map((row) => [row.dealId, row]));
+}
+
+test("Sales Doctor quality is the current stage, never the failure reason", () => {
+  const reason = { [REASON_FIELD]: ROUTING_TEXT };
+  const byId = buildWithReasons([
+    { id: "6001", categoryId: "5", stageId: "C5:NEW", responsible: SD_SELLER, history: [["C5:NEW", "10:01"]] },
+    { id: "6002", categoryId: "5", stageId: "C5:PREPARATION", responsible: SD_SELLER, history: [["C5:NEW", "10:01"], ["C5:PREPARATION", "11:00"]] },
+    // A direct close from distribution, with a "routing" reason: still SQL and Sales Lost.
+    { id: "6003", categoryId: "5", stageId: "C5:LOSE", responsible: SD_SELLER, history: [["C5:NEW", "10:01"], ["C5:LOSE", "11:00"]], fields: reason },
+    // Not Relevant even after an SQL visit, whatever the reason says.
+    { id: "6004", categoryId: "5", stageId: "C5:UC_X51N7T", responsible: SD_SELLER,
+      history: [["C5:NEW", "10:01"], ["C5:PREPAYMENT_INVOICE", "10:30"], ["C5:UC_X51N7T", "11:00"]], fields: { [REASON_FIELD]: "Отсрочка (Сделка провалена)" } },
+    // An open stage that never visited ОБРАБОТКА is SQL; Saralangan needs no threshold.
+    { id: "6005", categoryId: "5", stageId: "C5:EXECUTING", responsible: SD_SELLER, history: [["C5:NEW", "10:01"], ["C5:EXECUTING", "11:00"]] },
+    // A Won visit the Deal has since left is not a sale (Deal 43523).
+    { id: "6006", categoryId: "5", stageId: "C5:PREPAYMENT_INVOICE", responsible: SD_SELLER,
+      history: [["C5:NEW", "10:01"], ["C5:WON", "11:00"], ["C5:PREPAYMENT_INVOICE", "11:00"]] },
+    { id: "6007", categoryId: "17", stageId: "C17:NEW", responsible: CUSTOMER_CARE, history: [["C5:NEW", "10:01"], ["C5:WON", "12:00"], ["C17:NEW", "13:00"]] },
+    { id: "6008", categoryId: "5", stageId: "C5:WON", responsible: SD_SELLER, history: [["C5:NEW", "10:01"], ["C5:WON", "12:00"]] },
+    // IBOX keeps its rule: the same reason text still routes an IBOX close.
+    { id: "3101", categoryId: "3", stageId: "C3:LOSE", responsible: IBOX_SELLER, history: [["C3:NEW", "10:01"], ["C3:LOSE", "11:00"]], fields: reason },
+  ]);
+  const verdict = (id: string) => {
+    const row = byId.get(id)!;
+    return { status: row.salesStatus, group: row.lossReasonGroup, sql: Boolean(row.qualified), lost: isSalesLost(row) };
+  };
+  assert.deepEqual(verdict("6001"), { status: "ACTIVE", group: "NONE", sql: false, lost: false });
+  assert.deepEqual(verdict("6002"), { status: "ACTIVE", group: "NONE", sql: false, lost: false });
+  assert.deepEqual(verdict("6003"), { status: "LOST", group: "SALES", sql: true, lost: true });
+  assert.equal(byId.get("6003")!.lossReason, ROUTING_TEXT, "the reason is kept as a diagnostic");
+  assert.deepEqual(verdict("6004"), { status: "LOW_QUALITY", group: "MARKETING", sql: false, lost: false });
+  assert.deepEqual(verdict("6005"), { status: "ACTIVE", group: "NONE", sql: true, lost: false });
+  assert.deepEqual(verdict("6006"), { status: "ACTIVE", group: "NONE", sql: true, lost: false });
+  assert.deepEqual(verdict("6007"), { status: "WON", group: "NONE", sql: true, lost: false });
+  assert.deepEqual(verdict("6008"), { status: "WON", group: "NONE", sql: true, lost: false });
+  assert.equal(byId.get("3101")!.lossReasonGroup, "ROUTING", "IBOX quality logic is unchanged");
+  assert.equal(Boolean(byId.get("3101")!.qualified), false);
+
+  // The partition the owner reconciles: Saralangan = SQL + NR; Lost and Sale are inside SQL.
+  const sd = population([...byId.values()], "SALES_DOCTOR");
+  const metrics = buildDashboardMetrics(sd, sd.filter((row) => row.salesStatus === "WON"));
+  assert.equal(metrics.counts.leads, 8);
+  assert.equal(metrics.counts.unclassified_leads, 2);
+  assert.equal(metrics.counts.classified_leads, 6);
+  assert.equal(metrics.counts.classified_leads, metrics.counts.sql + metrics.counts.not_relevant);
+  assert.equal(metrics.counts.sales_lost, 1);
+  assert.equal(metrics.counts.cohort_sales, 2);
+  assert.equal(metrics.classificationConflicts, 0);
+});
+
+test("the current-stage rule is Sales Doctor's alone", () => {
+  assert.equal(currentStageQuality("IBOX", "3", "C3:LOSE"), null);
+  assert.equal(currentStageQuality(undefined, "5", "C5:LOSE"), null, "a project-unaware build keeps the general rules");
+  assert.equal(currentStageQuality("SALES_DOCTOR", "31", "C31:NEW"), null, "a Deal outside both funnels keeps its came-from rules");
+  assert.deepEqual(currentStageQuality("SALES_DOCTOR", "17", "C17:UC_0ZP82L"), { salesStatus: "WON", lossReasonGroup: "NONE", qualified: true });
 });
 
 // ---- M. SLA ----------------------------------------------------------------------------

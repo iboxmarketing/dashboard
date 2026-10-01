@@ -3,7 +3,7 @@ import { OWNER_OVERRIDES, type OwnerSellerOverride } from "./seller-overrides";
 import { resolveSlaState } from "./sla";
 import { classifyLossReasonGroup, MISSING_LOSS_REASON, classifySalesStatus, fieldDisplayValue, isLowQualityStage, isPaymentStage, isSqlOrDownstreamStage } from "./sales-logic";
 import { distributionStageId, sqlThresholdsByCategory, type StageMeta, type StageSemantics } from "./stage-config";
-import { canonicalSellerId, dealProjectFamily, type ProjectKey } from "./sales-projects";
+import { canonicalSellerId, currentStageQuality, dealProjectFamily, type ProjectKey } from "./sales-projects";
 import { canonicalDealFieldKey } from "./crm-fields";
 import { resolveDealSource } from "./source-authority";
 import { certifySeller } from "./seller-evidence";
@@ -236,7 +236,11 @@ export function buildAnalyticsRecords(input: {
     const acceptsAsQualified = (stageId: string, name: string, categoryId: string, semantic = "") =>
       isSqlOrDownstreamStage({ stageId, stage: name, categoryId, semantic, thresholds: stageThresholds, stageMeta: input.stageMeta, config: stageSemantics });
     const qualifiedEvent = stageTimeline.find((entry) => mainIds.has(entry.categoryId) && acceptsAsQualified(entry.stageId, entry.stage, entry.categoryId));
-    const salesStatus = baseSalesStatus;
+    // Sales Doctor decides quality from the current stage alone (owner rule,
+    // 2026-10-01); IBOX, and a Deal outside both Sales Doctor funnels, keep the
+    // rules below unchanged.
+    const stageQuality = currentStageQuality(input.projectKey, currentCategoryId, currentStageId);
+    const salesStatus = stageQuality?.salesStatus ?? baseSalesStatus;
     // lossReasonGroup must be known before `qualified` below, because ordinary
     // Sales closures and routed/transferred ones are treated differently.
     // Neither this block nor lossReasonGroup depends on qualified, so hoisting
@@ -248,7 +252,7 @@ export function buildAnalyticsRecords(input: {
     const reasonKey = reasonField ? canonicalDealFieldKey(reasonField) : "";
     const lossReason = reasonKey ? fieldDisplayValue(deal[reasonKey] ?? deal[reasonField as string], fieldOptions.get(reasonKey) ?? fieldOptions.get(reasonField as string)) : "";
     const effectiveLossReason = lossReason || ((salesStatus === "LOST" || salesStatus === "LOW_QUALITY") ? MISSING_LOSS_REASON : "");
-    const lossReasonGroup = classifyLossReasonGroup({
+    const lossReasonGroup = stageQuality ? stageQuality.lossReasonGroup : classifyLossReasonGroup({
       status: salesStatus, reason: effectiveLossReason, routingPatterns: input.settings.routingReasonPatterns,
       // A configured product-fit stage decides the group from the stage the Deal
       // actually closed in, never from the failure reason text.
@@ -265,7 +269,9 @@ export function buildAnalyticsRecords(input: {
     // it must still count as a seller-qualified lost lead. Routed/transferred
     // closures are excluded from this rule — they never had a chance to
     // convert here at all, so they are neither SQL nor Sales Lost.
-    const qualified = salesStatus === "LOW_QUALITY"
+    const qualified = stageQuality
+      ? stageQuality.qualified
+      : salesStatus === "LOW_QUALITY"
       ? false
       : Boolean(qualifiedEvent)
         || salesStatus === "WON"

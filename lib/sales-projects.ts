@@ -174,7 +174,41 @@ export const SALES_DOCTOR_STAGES = {
   won: "C5:WON", // ЕСТЬ ЗАПУСК!
   salesLost: "C5:LOSE", // ЗАКРЫТО И НЕ РЕАЛИЗОВАНО
   notRelevant: "C5:UC_X51N7T", // Not Relevant (Marketing)
+  /** The only stages that are Saralanmagan (owner rule, 2026-10-01). */
+  unclassified: ["C5:NEW", "C5:PREPARATION"], // РАСПРЕДЕЛЁННЫЕ СДЕЛКИ, НЕ ОТВЕЧАЕТ
 } as const;
+
+export type StageQuality = {
+  salesStatus: "ACTIVE" | "LOW_QUALITY" | "LOST" | "WON";
+  lossReasonGroup: "MARKETING" | "SALES" | "NONE";
+  qualified: boolean;
+};
+
+/**
+ * Sales Doctor quality from the Deal's CURRENT stage (owner rule, 2026-10-01).
+ *
+ *   РАСПРЕДЕЛЁННЫЕ СДЕЛКИ, НЕ ОТВЕЧАЕТ   Saralanmagan
+ *   Not Relevant (Marketing)              Not Relevant — never SQL
+ *   ЗАКРЫТО И НЕ РЕАЛИЗОВАНО              SQL and Sales Lost
+ *   ЕСТЬ ЗАПУСК!, or now in category 17   SQL and a sale
+ *   every other category-5 stage          SQL, still open
+ *
+ * The failure reason never decides any of these; it stays a diagnostic. A Won
+ * visit in the history that the Deal has since left (back to an open stage in
+ * category 5) is not a sale. Null for IBOX, and for a Deal that has left both
+ * Sales Doctor funnels: those keep the general rules.
+ */
+export function currentStageQuality(project: ProjectKey | null | undefined, categoryId: string, stageId: string): StageQuality | null {
+  if (project !== "SALES_DOCTOR") return null;
+  const registry = SALES_PROJECTS.SALES_DOCTOR;
+  if (categoryId === registry.postSaleCategoryId) return { salesStatus: "WON", lossReasonGroup: "NONE", qualified: true };
+  if (categoryId !== registry.salesCategoryId) return null;
+  if (stageId === SALES_DOCTOR_STAGES.won) return { salesStatus: "WON", lossReasonGroup: "NONE", qualified: true };
+  if (stageId === SALES_DOCTOR_STAGES.notRelevant) return { salesStatus: "LOW_QUALITY", lossReasonGroup: "MARKETING", qualified: false };
+  if (stageId === SALES_DOCTOR_STAGES.salesLost) return { salesStatus: "LOST", lossReasonGroup: "SALES", qualified: true };
+  if ((SALES_DOCTOR_STAGES.unclassified as readonly string[]).includes(stageId)) return { salesStatus: "ACTIVE", lossReasonGroup: "NONE", qualified: false };
+  return { salesStatus: "ACTIVE", lossReasonGroup: "NONE", qualified: true };
+}
 
 /** Mon–Fri 10:00–18:00 Asia/Tashkent, as approved for Sales Doctor. */
 const WORKDAY = { enabled: true, start: "10:00", end: "18:00" };
