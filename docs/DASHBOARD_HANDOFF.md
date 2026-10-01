@@ -10,7 +10,7 @@ detailed rules live in `docs/BUSINESS_RULES.md`, the runbooks in
 | | |
 | --- | --- |
 | Worker | `bitrix-deal-dashboard` (Cloudflare Workers, Paid — 30 s CPU) |
-| **Worker version** (what serves traffic) | `c02b9735-847d-4699-ac80-d9be4c2159dd` (deployed 2026-10-01T09:45Z) |
+| **Worker version** (what serves traffic) | `c02b9735-847d-4699-ac80-d9be4c2159dd` (deployed 2026-10-01T09:42Z) |
 | **Deployed application SHA** (what that version was built from) | `a8ccf8d` — IBOX and Sales Doctor project workspaces (`20762b1`), Sales Doctor seller identity (`3e57fbb`), current-stage Sales Doctor quality (`ba7455a`), no stale sale state for a Sales Doctor non-sale and project-scoped settings (`a8ccf8d`), and the owner-approved seller-field clear (`55924ae`); analytics version 16, Finance migrations `0012`–`0014` applied, no new migration |
 | **Release branch** | `release/meeting-2026-09-21` |
 | **Branch HEAD** (latest commit on that branch) | `55924ae`, plus the documentation-only commit that records this deployment |
