@@ -1,6 +1,6 @@
 import { authError, requireAdmin } from "@/lib/auth/http";
 import { bitrixCall, bitrixList, getBitrixDomain, safeBitrixMessage } from "@/lib/bitrix";
-import { PROJECT_SELLER_IDENTITY, SALES_PROJECTS, canonicalSellerId, historicalSellerIds, parseProjectKey, recordProject, type ProjectKey } from "@/lib/sales-projects";
+import { PROJECT_SELLER_IDENTITY, SALES_PROJECTS, canonicalSellerId, currentStageQuality, historicalSellerIds, parseProjectKey, recordProject, type ProjectKey } from "@/lib/sales-projects";
 import { requestProject } from "@/lib/sales-http";
 import { DEAL_OBSERVERS_FIELD, buildDealObserverRead, observerIdList } from "@/lib/deal-observers";
 import {
@@ -12,7 +12,7 @@ import { canonicalDealFieldKey } from "@/lib/crm-fields";
 import { employeeFieldValue } from "@/lib/seller-writeback";
 import { classifyBackfill, isWritable, summarizeBackfill, type BackfillDecision } from "@/lib/seller-backfill";
 import { OWNER_OVERRIDES } from "@/lib/seller-overrides";
-import { writeSalesOwnerAtWon } from "@/lib/seller-writeback";
+import { clearSalesOwnerAtWon, writeSalesOwnerAtWon } from "@/lib/seller-writeback";
 import { normalizeSalesOwnerAtWonField } from "@/lib/stable-seller-field";
 import {
   applyBackfilledOwner, applyConfirmedSeller, getDictionary, getSettings, listAnalyticsRecords,
@@ -170,6 +170,7 @@ export async function POST(request: Request) {
     if (action === "backfill") return await runBackfill(payload, actor, project);
     if (action === "legacy-autoconfirm") return await legacyAutoconfirm(payload, actor, project);
     if (action === "confirm") return await confirmSeller(payload, actor, project);
+    if (action === "clear-owner-field") return await clearOwnerField(payload, actor, project);
     return Response.json({ error: "Amal noto‘g‘ri" }, { status: 400 });
   } catch (error) {
     return Response.json({ error: safeBitrixMessage(error) }, { status: 500 });
@@ -504,3 +505,36 @@ async function legacyAutoconfirm(payload: Record<string, unknown>, actor: string
     pending: Math.max(0, summary.autoConfirmTotal - results.length),
   });
 }
+
+/* ------------------------------------------------- owner-approved field clear */
+
+const CLEAR_LIMIT = 10;
+
+/**
+ * Empties Sales Doctor's seller-at-won field on Deals the owner named, each with
+ * the value they expect to remove. Sales Doctor only: there the current stage
+ * says whether a Deal is a sale (lib/sales-projects.ts), so a current sale can
+ * never lose its seller here. Every attempt is audited with before/after.
+ */
+async function clearOwnerField(payload: Record<string, unknown>, actor: string, project: ProjectKey) {
+  if (project !== "SALES_DOCTOR") return Response.json({ error: "Faqat Sales Doctor uchun" }, { status: 400 });
+  const deals = Array.isArray(payload.deals) ? payload.deals as { dealId?: unknown; expectedOwnerId?: unknown }[] : [];
+  const wanted = deals.map((deal) => ({ dealId: String(deal.dealId ?? ""), expectedId: String(deal.expectedOwnerId ?? "") }))
+    .filter((deal) => EMPLOYEE_ID.test(deal.dealId) && EMPLOYEE_ID.test(deal.expectedId));
+  if (!wanted.length || wanted.length !== deals.length || wanted.length > CLEAR_LIMIT) {
+    return Response.json({ error: "Deal ro‘yxati noto‘g‘ri" }, { status: 400 });
+  }
+  const settings = await getSettings(project);
+  const field = normalizeSalesOwnerAtWonField(settings.salesOwnerAtWonField);
+  const isCurrentSale = (categoryId: string, stageId: string) => currentStageQuality(project, categoryId, stageId)?.salesStatus === "WON";
+  const results = [];
+  for (const deal of wanted) {
+    results.push(await clearSalesOwnerAtWon({ ...deal, field, isCurrentSale }, { call: bitrixCall, pauseMs: 250 }));
+  }
+  await recordSellerAudit(results.map((result) => ({
+    dealId: result.dealId, actor, action: `OWNER_FIELD_CLEAR_${result.status}`,
+    payload: { field, before: result.before, after: result.after, categoryId: result.categoryId, stageId: result.stageId, errorCode: result.errorCode ?? null },
+  })));
+  return Response.json({ field, results });
+}
+

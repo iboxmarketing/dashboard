@@ -110,3 +110,54 @@ function errorCode(error: unknown) {
   if (typeof code === "string" && code) return code;
   return error instanceof Error && error.message ? error.message.slice(0, 60) : "UNKNOWN";
 }
+
+export type SellerClearStatus =
+  | "CLEARED" | "ALREADY_EMPTY" | "SKIPPED_VALUE_CHANGED" | "SKIPPED_CURRENT_SALE" | "SKIPPED_NO_FIELD" | "FAILED_VERIFY" | "FAILED";
+
+export type SellerClearResult = {
+  dealId: string;
+  status: SellerClearStatus;
+  /** The value found before the clear, and the value read back after it. */
+  before: string | null;
+  after: string | null;
+  categoryId: string | null;
+  stageId: string | null;
+  errorCode?: string;
+};
+
+/**
+ * Clears a Sales Owner at Won value that an owner reviewed and rejected — the
+ * one sanctioned way to undo a backfill write. Compare-and-clear: the field is
+ * emptied only while it still holds exactly `expectedId`, and only while the
+ * caller's `isCurrentSale` says the Deal is not a sale right now (a current sale
+ * keeps its seller). Only that single field is sent. The Deal is read back
+ * afterwards, and the clear counts only when the field is really empty.
+ */
+export async function clearSalesOwnerAtWon(
+  input: { dealId: string; expectedId: string; field: string | null | undefined; isCurrentSale: (categoryId: string, stageId: string) => boolean },
+  options: WriteOptions,
+): Promise<SellerClearResult> {
+  const field = normalizeSalesOwnerAtWonField(input.field);
+  const base: SellerClearResult = { dealId: input.dealId, status: "FAILED", before: null, after: null, categoryId: null, stageId: null };
+  if (!field) return { ...base, status: "SKIPPED_NO_FIELD", errorCode: "NO_CANONICAL_FIELD" };
+  if (!EMPLOYEE_ID.test(input.expectedId)) return { ...base, errorCode: "INVALID_EXPECTED_ID" };
+  const key = canonicalDealFieldKey(field);
+  const read = async () => {
+    const response = await options.call<Record<string, unknown>>("crm.deal.get", { id: input.dealId });
+    const deal = (response.result ?? {}) as Record<string, unknown>;
+    return { value: employeeFieldValue(deal[key] ?? deal[field]), categoryId: String(deal.CATEGORY_ID ?? ""), stageId: String(deal.STAGE_ID ?? "") };
+  };
+  try {
+    const current = await read();
+    const seen = { ...base, before: current.value || null, categoryId: current.categoryId, stageId: current.stageId };
+    if (!current.value) return { ...seen, status: "ALREADY_EMPTY", after: null };
+    if (current.value !== input.expectedId) return { ...seen, status: "SKIPPED_VALUE_CHANGED", after: current.value };
+    if (input.isCurrentSale(current.categoryId, current.stageId)) return { ...seen, status: "SKIPPED_CURRENT_SALE", after: current.value };
+    await options.call("crm.deal.update", { id: input.dealId, fields: { [key]: "" } });
+    if (options.pauseMs) await (options.sleep ?? defaultSleep)(options.pauseMs);
+    const after = await read();
+    return { ...seen, status: after.value ? "FAILED_VERIFY" : "CLEARED", after: after.value || null };
+  } catch (error) {
+    return { ...base, errorCode: errorCode(error) };
+  }
+}

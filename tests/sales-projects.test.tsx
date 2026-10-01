@@ -19,6 +19,7 @@ import {
 } from "../lib/sales-projects";
 import { OWNER_OVERRIDES } from "../lib/seller-overrides";
 import { isSnapshotCandidate, isStaleSnapshot } from "../lib/sales-snapshots";
+import { clearSalesOwnerAtWon } from "../lib/seller-writeback";
 import { PROJECT_SELLER_NAMES, directoryUsers, resolveRoster } from "../lib/seller-roster";
 import { distributionStageId } from "../lib/stage-config";
 import { SALES_OWNER_AT_WON_FIELD } from "../lib/stable-seller-field";
@@ -500,6 +501,43 @@ test("a transient Sales Doctor Won visit leaves no sale, no seller credit and no
   const storage = read("lib/storage.ts");
   assert.match(storage, /records\.filter\(isStaleSnapshot\)/);
   assert.doesNotMatch(read("lib/sales-snapshots.ts"), /raw_stage_history/, "raw history is never deleted");
+});
+
+test("an owner-approved clear empties only that field, only on a non-sale holding the expected value", async () => {
+  const field = SALES_DOCTOR_OWNER_AT_WON_FIELD;
+  const isCurrentSale = (categoryId: string, stageId: string) => currentStageQuality("SALES_DOCTOR", categoryId, stageId)?.salesStatus === "WON";
+  const fake = (deal: Record<string, unknown>) => {
+    const updates: Record<string, unknown>[] = [];
+    const call = (async (method: string, params?: Record<string, unknown>) => {
+      if (method === "crm.deal.get") return { result: { ...deal } };
+      if (method === "crm.deal.update") { updates.push(params!.fields as Record<string, unknown>); Object.assign(deal, params!.fields); return { result: true }; }
+      throw new Error(method);
+    }) as never;
+    return { call, updates };
+  };
+  // A non-sale holding the expected seller: cleared, nothing else sent, read back empty.
+  const lost = fake({ ID: "29101", CATEGORY_ID: "5", STAGE_ID: "C5:LOSE", [field]: "203", TITLE: "x" });
+  const cleared = await clearSalesOwnerAtWon({ dealId: "29101", expectedId: "203", field, isCurrentSale }, { call: lost.call });
+  assert.equal(cleared.status, "CLEARED");
+  assert.equal(cleared.before, "203");
+  assert.equal(cleared.after, null, "verified by reading the Deal back");
+  assert.deepEqual(lost.updates, [{ [field]: "" }], "only the one field is written");
+  // A current sale keeps its seller.
+  for (const deal of [{ CATEGORY_ID: "5", STAGE_ID: "C5:WON" }, { CATEGORY_ID: "17", STAGE_ID: "C17:NEW" }]) {
+    const sale = fake({ ID: "1", ...deal, [field]: "203" });
+    assert.equal((await clearSalesOwnerAtWon({ dealId: "1", expectedId: "203", field, isCurrentSale }, { call: sale.call })).status, "SKIPPED_CURRENT_SALE");
+    assert.deepEqual(sale.updates, []);
+  }
+  // A value that changed since the owner looked is never cleared.
+  const moved = fake({ ID: "2", CATEGORY_ID: "5", STAGE_ID: "C5:LOSE", [field]: "235" });
+  assert.equal((await clearSalesOwnerAtWon({ dealId: "2", expectedId: "203", field, isCurrentSale }, { call: moved.call })).status, "SKIPPED_VALUE_CHANGED");
+  assert.deepEqual(moved.updates, []);
+  const empty = fake({ ID: "3", CATEGORY_ID: "5", STAGE_ID: "C5:LOSE" });
+  assert.equal((await clearSalesOwnerAtWon({ dealId: "3", expectedId: "203", field, isCurrentSale }, { call: empty.call })).status, "ALREADY_EMPTY");
+  // The route serves Sales Doctor only and audits every attempt.
+  const route = read("app/api/admin/seller-attribution/route.ts");
+  assert.match(route, /if \(project !== "SALES_DOCTOR"\) return Response\.json\(\{ error: "Faqat Sales Doctor uchun" \}, \{ status: 400 \}\);/);
+  assert.match(route, /action: `OWNER_FIELD_CLEAR_\$\{result\.status\}`/);
 });
 
 test("every rebuild path materialises through the snapshot step that drops stale Sales Doctor rows", () => {
