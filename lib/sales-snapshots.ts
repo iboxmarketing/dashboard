@@ -84,3 +84,19 @@ WHERE excluded.manager_id IS NOT NULL
 export function isSnapshotCandidate(record: { salesStatus: string; wonAt: string | null; projectLeadMembership?: string | null }) {
   return record.salesStatus === "WON" && Boolean(record.wonAt) && record.projectLeadMembership !== "EXCLUDED";
 }
+
+/**
+ * Snapshots that must be DROPPED, not kept: a Sales Doctor Deal that is not a
+ * sale now (its current stage decides — lib/sales-projects.ts). The snapshot is
+ * a derived cache of a sale the builder once saw; for such a Deal it is stale,
+ * and keeping it would rehydrate the old sale date and seller the moment the
+ * Deal is won again (won_at is immutable, and an equal-rank seller cannot
+ * replace it). Raw stage history is never touched, so the Won visit stays
+ * auditable there. IBOX keeps its frozen-sale semantics.
+ */
+export function isStaleSnapshot(record: { projectKey?: string | null; salesStatus: string }) {
+  return record.projectKey === "SALES_DOCTOR" && record.salesStatus !== "WON";
+}
+
+export const SALES_SNAPSHOT_DELETE = "DELETE FROM deal_sales_snapshots WHERE deal_id = ?";
+

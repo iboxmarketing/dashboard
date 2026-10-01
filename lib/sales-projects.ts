@@ -222,7 +222,7 @@ const OFFDAY = { enabled: false, start: "10:00", end: "18:00" };
  * portal) and the sync history window. After that the two configurations are
  * independent — changing one never changes the other.
  */
-export function seedSalesDoctorSettings(companyWide: Pick<DashboardSettings, "holidays" | "marketingChannelField" | "historyDays" | "slaMinutes" | "failureReasonFieldByPipeline">): DashboardSettings {
+export function seedSalesDoctorSettings(companyWide: Pick<DashboardSettings, "holidays" | "marketingChannelField" | "historyDays" | "slaMinutes">): DashboardSettings {
   const project = SALES_PROJECTS.SALES_DOCTOR;
   return {
     ...defaultSettings,
@@ -247,9 +247,10 @@ export function seedSalesDoctorSettings(companyWide: Pick<DashboardSettings, "ho
     salesManagerField: null,
     marketingChannelField: companyWide.marketingChannelField,
     failureReasonField: null,
-    failureReasonFieldByPipeline: companyWide.failureReasonFieldByPipeline?.[project.salesCategoryId]
-      ? { [project.salesCategoryId]: companyWide.failureReasonFieldByPipeline[project.salesCategoryId] }
-      : {},
+    // Never read from IBOX's row: a project's settings never hold the other's
+    // categories. The failure reason is a diagnostic for Sales Doctor; Full Sync
+    // detects the field.
+    failureReasonFieldByPipeline: {},
     autoSyncMinutes: 0,
   };
 }
@@ -308,10 +309,24 @@ const STAGE_LIST_KEYS = [
 
 /**
  * A settings object with every stage list limited to this project's own funnels,
- * and its funnels pinned to the registry. Applied on SAVE: a project's rules can
+ * and its funnels pinned to the registry. Applied on every read AND every write
+ * (lib/storage.ts), so no path — Settings, Full Sync, the roster step — can carry
+ * one project's stage ids into the other's row. Before projects existed one
+ * global row held both funnels; that row is IBOX's now. A project's rules can
  * then only ever name its own stages, so editing one project cannot change what
  * the other project's Deals mean.
  */
+/**
+ * True when a settings object carries another project's stage ids, failure-reason
+ * categories or stage limits — the leak `scopeSettingsToProject` removes.
+ */
+export function hasForeignProjectConfig(settings: DashboardSettings, project: ProjectKey): boolean {
+  const own = projectCategoryIds(project);
+  return STAGE_LIST_KEYS.some((key) => (settings[key] ?? []).some((stageId) => !stageBelongsToProject(stageId, project)))
+    || Object.keys(settings.failureReasonFieldByPipeline ?? {}).some((categoryId) => !own.includes(String(categoryId)))
+    || Object.keys(settings.stageLimits ?? {}).some((stageId) => /^C\d+:/.test(stageId) && !stageBelongsToProject(stageId, project));
+}
+
 export function scopeSettingsToProject(settings: DashboardSettings, project: ProjectKey): DashboardSettings {
   const scoped = { ...withProjectPipelines(settings, project) };
   for (const key of STAGE_LIST_KEYS) {

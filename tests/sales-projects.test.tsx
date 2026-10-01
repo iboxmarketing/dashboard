@@ -14,10 +14,11 @@ import { createSalesBaseCache, salesCacheKey } from "../lib/sales-cache";
 import {
   DEFAULT_PROJECT, PROJECT_KEYS, SALES_DOCTOR_OWNER_AT_WON_FIELD, SALES_DOCTOR_ROSTER, SALES_DOCTOR_STAGES, SALES_PROJECTS,
   dealProjectFamily, parseProjectKey, projectBySlug, projectForCategory, recordProject, scopeSettingsToProject,
-  PROJECT_SELLER_IDENTITY, canonicalSellerId, currentStageQuality, historicalSellerIds,
+  PROJECT_SELLER_IDENTITY, canonicalSellerId, currentStageQuality, hasForeignProjectConfig, historicalSellerIds,
   seedSalesDoctorSettings, stageBelongsToProject, withProjectPipelines, type ProjectKey,
 } from "../lib/sales-projects";
 import { OWNER_OVERRIDES } from "../lib/seller-overrides";
+import { isSnapshotCandidate, isStaleSnapshot } from "../lib/sales-snapshots";
 import { PROJECT_SELLER_NAMES, directoryUsers, resolveRoster } from "../lib/seller-roster";
 import { distributionStageId } from "../lib/stage-config";
 import { SALES_OWNER_AT_WON_FIELD } from "../lib/stable-seller-field";
@@ -462,6 +463,76 @@ test("the current-stage rule is Sales Doctor's alone", () => {
   assert.equal(currentStageQuality(undefined, "5", "C5:LOSE"), null, "a project-unaware build keeps the general rules");
   assert.equal(currentStageQuality("SALES_DOCTOR", "31", "C31:NEW"), null, "a Deal outside both funnels keeps its came-from rules");
   assert.deepEqual(currentStageQuality("SALES_DOCTOR", "17", "C17:UC_0ZP82L"), { salesStatus: "WON", lossReasonGroup: "NONE", qualified: true });
+});
+
+// ---- P. Transient Won and project-scoped settings (pre-push blockers) --------------------
+
+test("a transient Sales Doctor Won visit leaves no sale, no seller credit and no snapshot", () => {
+  const deal = {
+    ID: "43523", TITLE: "43523", DATE_CREATE: at("10:01"), ASSIGNED_BY_ID: SD_SELLER_2, CATEGORY_ID: "5",
+    STAGE_ID: "C5:PREPAYMENT_INVOICE", MOVED_TIME: at("12:00"), SOURCE_ID: "WEB", OPPORTUNITY: "720000", CURRENCY_ID: "UZS",
+    observers: [], [SALES_DOCTOR_OWNER_AT_WON_FIELD]: SD_SELLER_2,
+  } as unknown as RawDeal;
+  const history = ([["C5:NEW", "10:01"], ["C5:PREPAYMENT_INVOICE", "10:30"], ["C5:WON", "11:00"], ["C5:PREPAYMENT_INVOICE", "11:00"]] as [string, string][])
+    .map(([stageId, clock]) => ({ OWNER_ID: "43523", CATEGORY_ID: "5", STAGE_ID: stageId, CREATED_TIME: at(clock) } as RawStageHistory));
+  // The stale derived snapshot an earlier build froze from the Won visit.
+  const snapshots = new Map([["43523", {
+    dealId: "43523", wonAt: at("11:00"), managerId: SD_SELLER_2, managerName: "Behruz Abdulazizov", attributionSource: "SALES_OWNER_AT_WON",
+  }]]);
+  const pipelines = new Map([["5", "Sales Doctor"], ["17", "SD Обучение/Сопровождение"]]);
+  const [record] = buildAnalyticsRecords({
+    deals: [deal], stageHistories: history, settings: SD_SETTINGS, projectKey: "SALES_DOCTOR", snapshots,
+    users: USERS, pipelines, stages, sources, stageMeta, domain: null, stageHistoryAvailable: true,
+  }) as unknown as (DashboardRecord & { sellerCertification: string; salesManagerAttribution: string; salesManagerId: string | null })[];
+  assert.equal(record.salesStatus, "ACTIVE", "not a sale");
+  assert.equal(record.wonAt, null, "no sale date, from history or from the snapshot");
+  assert.notEqual(record.salesManagerAttribution, "SALES_OWNER_AT_WON");
+  assert.notEqual(record.sellerCertification, "CERTIFIED");
+  assert.notEqual(record.sellerCertification, "OWNER_CONFIRMED");
+  assert.ok((record as unknown as { stageTimeline: { stageId: string }[] }).stageTimeline.some((entry) => entry.stageId === "C5:WON"),
+    "the Won visit stays in the timeline for audit");
+  // The derived snapshot is dropped, never re-written.
+  assert.equal(isSnapshotCandidate(record as never), false);
+  assert.equal(isStaleSnapshot(record as never), true);
+  // A legitimate sale keeps everything, and IBOX keeps its frozen-sale semantics.
+  assert.equal(isStaleSnapshot({ projectKey: "SALES_DOCTOR", salesStatus: "WON" }), false);
+  assert.equal(isStaleSnapshot({ projectKey: "IBOX", salesStatus: "ACTIVE" }), false);
+  const storage = read("lib/storage.ts");
+  assert.match(storage, /records\.filter\(isStaleSnapshot\)/);
+  assert.doesNotMatch(read("lib/sales-snapshots.ts"), /raw_stage_history/, "raw history is never deleted");
+});
+
+test("project settings never carry the other project's configuration", () => {
+  // Production's IBOX row as found: the pre-project global row, with Sales Doctor in it.
+  const leaked = {
+    ...IBOX_SETTINGS,
+    qualifiedStageIds: ["C5:PREPAYMENT_INVOICE"], lowQualityStageIds: ["C3:UC_C0725V", "C5:UC_X51N7T"],
+    paymentStageIds: ["C3:WON", "C5:WON"], closedLostStageIds: ["C3:LOSE", "C5:LOSE"], distributionStageIds: ["C3:NEW", "C5:NEW"],
+    productFitStageIds: ["C3:UC_FKITQ2"], failureReasonFieldByPipeline: { "3": "UF_CRM_1748329407554", "5": "UF_CRM_1742389301" },
+    stageLimits: { "C3:NEW": 4, "C5:NEW": 4 },
+  } as DashboardSettings;
+  assert.equal(hasForeignProjectConfig(leaked, "IBOX"), true);
+  const ibox = scopeSettingsToProject(leaked, "IBOX");
+  assert.equal(hasForeignProjectConfig(ibox, "IBOX"), false);
+  const text = JSON.stringify(ibox);
+  assert.doesNotMatch(text, /"C5:|"C17:/, "no Sales Doctor stage id survives in IBOX");
+  assert.deepEqual(ibox.failureReasonFieldByPipeline, { "3": "UF_CRM_1748329407554" });
+  assert.deepEqual(ibox.productFitStageIds, ["C3:UC_FKITQ2"], "IBOX's product fit is kept");
+  assert.deepEqual(ibox.paymentStageIds, ["C3:WON"]);
+  // And the reverse.
+  const sd = scopeSettingsToProject({ ...SD_SETTINGS, qualifiedStageIds: ["C3:UC_9SUEMM", "C5:PREPAYMENT_INVOICE"],
+    failureReasonFieldByPipeline: { "3": "UF_CRM_1748329407554" } } as DashboardSettings, "SALES_DOCTOR");
+  assert.doesNotMatch(JSON.stringify(sd), /"C3:|"C13:/);
+  assert.deepEqual(sd.failureReasonFieldByPipeline, {});
+  assert.equal(hasForeignProjectConfig(SD_SETTINGS, "SALES_DOCTOR"), false, "the Sales Doctor seed is clean");
+  assert.deepEqual(seedSalesDoctorSettings(leaked).failureReasonFieldByPipeline, {}, "the seed never reads IBOX's map");
+
+  // Every write and every read is scoped, so no path can cross-contaminate.
+  const storage = read("lib/storage.ts");
+  assert.match(storage, /\.\.\.scopeSettingsToProject\(settings, project\)/, "saveSettings writes only the project's own configuration");
+  assert.match(storage, /if \(hasForeignProjectConfig\(parsed, project\)\) await saveSettings\(parsed, project\);\n\s+return scopeSettingsToProject\(parsed, project\);/,
+    "a leaked row is cleaned in storage on read");
+  assert.doesNotMatch(storage, /withProjectPipelines\(/, "no unscoped settings path remains");
 });
 
 // ---- M. SLA ----------------------------------------------------------------------------

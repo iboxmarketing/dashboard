@@ -195,6 +195,14 @@ export function buildAnalyticsRecords(input: {
     const dealId = string(deal.ID); const created = timestamp(deal.DATE_CREATE); if (!dealId || !created) return [];
     const histories = orderedHistory(historiesByDeal.get(dealId) ?? []); const currentCategoryId = string(deal.CATEGORY_ID || "0"); const currentStageId = string(deal.STAGE_ID);
     const currentStage = stageName(currentStageId, input.stages);
+    // Sales Doctor decides quality from the current stage alone (owner rule,
+    // 2026-10-01); IBOX, and a Deal outside both Sales Doctor funnels, keep the
+    // general rules (null here).
+    const stageQuality = currentStageQuality(input.projectKey, currentCategoryId, currentStageId);
+    // A Sales Doctor Deal that is not a sale NOW carries no sale-derived state:
+    // no sale date, no frozen snapshot, no seller-at-won credit. A transient Won
+    // visit stays in the stage history (and the timeline) for audit only.
+    const notCurrentSale = Boolean(stageQuality) && stageQuality!.salesStatus !== "WON";
     const firstMainHistory = histories.find((row) => mainIds.has(string(row.CATEGORY_ID)));
     const projectLeadMembership = decideCanonicalLeadMembership({
       enteredSalesCategory: mainIds.has(currentCategoryId) || firstMainHistory
@@ -221,7 +229,7 @@ export function buildAnalyticsRecords(input: {
     // a revenue date, so a missing MOVED_TIME leaves wonAt null on purpose.
     const currentPaymentAt = currentStageIsPayment ? timestamp(deal.MOVED_TIME) : null;
     const wonEvent = paymentHistory ?? postSaleHistory;
-    const wonAt = (wonEvent ? timestamp(wonEvent.CREATED_TIME) : null)?.toISOString() ?? currentPaymentAt?.toISOString() ?? null;
+    const wonAt = notCurrentSale ? null : (wonEvent ? timestamp(wonEvent.CREATED_TIME) : null)?.toISOString() ?? currentPaymentAt?.toISOString() ?? null;
     const currentHistory = [...histories].reverse().find((row) => string(row.STAGE_ID) === currentStageId && (!row.CATEGORY_ID || string(row.CATEGORY_ID) === currentCategoryId));
     const baseSalesStatus = classifySalesStatus({
       stage: currentStage, stageId: currentStageId, semantic: string(currentHistory?.STAGE_SEMANTIC_ID),
@@ -236,10 +244,6 @@ export function buildAnalyticsRecords(input: {
     const acceptsAsQualified = (stageId: string, name: string, categoryId: string, semantic = "") =>
       isSqlOrDownstreamStage({ stageId, stage: name, categoryId, semantic, thresholds: stageThresholds, stageMeta: input.stageMeta, config: stageSemantics });
     const qualifiedEvent = stageTimeline.find((entry) => mainIds.has(entry.categoryId) && acceptsAsQualified(entry.stageId, entry.stage, entry.categoryId));
-    // Sales Doctor decides quality from the current stage alone (owner rule,
-    // 2026-10-01); IBOX, and a Deal outside both Sales Doctor funnels, keep the
-    // rules below unchanged.
-    const stageQuality = currentStageQuality(input.projectKey, currentCategoryId, currentStageId);
     const salesStatus = stageQuality?.salesStatus ?? baseSalesStatus;
     // lossReasonGroup must be known before `qualified` below, because ordinary
     // Sales closures and routed/transferred ones are treated differently.
@@ -338,7 +342,7 @@ export function buildAnalyticsRecords(input: {
       ? "QUALIFICATION_STAGE"
       : histories.length ? "NO_PROCESSING" : "NO_PROCESSING_EVIDENCE";
 
-    const snapshot = snapshots.get(dealId);
+    const snapshot = notCurrentSale ? undefined : snapshots.get(dealId);
     // The canonical seller field: a Bitrix robot writes the Responsible person
     // into it when the Deal reaches payment and the field is still empty, so the
     // value predates the operator/onboarding handoff. Stored separately from
@@ -351,7 +355,7 @@ export function buildAnalyticsRecords(input: {
       : "";
     // A value that names no known Bitrix user proves nothing, so it is recorded
     // for audit but does not silence the legacy evidence chain.
-    const usableOwnerAtWonId = salesOwnerAtWonId && input.users.has(salesOwnerAtWonId) ? salesOwnerAtWonId : "";
+    const usableOwnerAtWonId = !notCurrentSale && salesOwnerAtWonId && input.users.has(salesOwnerAtWonId) ? salesOwnerAtWonId : "";
     // Settings written before field canonicalization may still contain Bitrix's
     // camelCase spelling. Deal SELECT payloads use UF_CRM_*; read the canonical
     // key first while retaining the raw-key fallback for controlled fixtures and

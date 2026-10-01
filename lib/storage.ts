@@ -1,8 +1,8 @@
 import { getD1 } from "@/db";
 import { DASHBOARD_TIMELINE_FIELD, STAGE_FUNNEL_FIELDS, STAGE_HISTORY_COUNT_FIELD, dashboardRemovedPaths } from "./dashboard-record";
 import { defaultSettings } from "./business-time";
-import { DEFAULT_PROJECT, SALES_PROJECTS, seedSalesDoctorSettings, withProjectPipelines, type ProjectKey } from "./sales-projects";
-import { SALES_SNAPSHOT_UPSERT, isSnapshotCandidate } from "./sales-snapshots";
+import { DEFAULT_PROJECT, SALES_PROJECTS, hasForeignProjectConfig, scopeSettingsToProject, seedSalesDoctorSettings, type ProjectKey } from "./sales-projects";
+import { SALES_SNAPSHOT_DELETE, SALES_SNAPSHOT_UPSERT, isSnapshotCandidate, isStaleSnapshot } from "./sales-snapshots";
 import { SELLER_CONFIRMATION_UPSERT, writeSucceeded } from "./seller-confirmation-sql";
 import { stageIdList } from "./stage-config";
 import { resolveDashboardMetricIds } from "./dashboard-metrics";
@@ -77,7 +77,7 @@ export async function getSettings(project: ProjectKey = DEFAULT_PROJECT): Promis
   const key = SALES_PROJECTS[project].settingsKey;
   const row = await getD1().prepare("SELECT value FROM app_settings WHERE key = ?").bind(key).first<{ value: string }>();
   if (!row?.value) {
-    if (project === DEFAULT_PROJECT) return withProjectPipelines(defaultSettings, project);
+    if (project === DEFAULT_PROJECT) return scopeSettingsToProject(defaultSettings, project);
     const seeded = seedSalesDoctorSettings(await getSettings(DEFAULT_PROJECT));
     await getD1()
       .prepare("INSERT OR IGNORE INTO app_settings(key, value, updated_at) VALUES(?, ?, ?)")
@@ -85,9 +85,14 @@ export async function getSettings(project: ProjectKey = DEFAULT_PROJECT): Promis
       .run();
     // Whatever landed — this seed, or a concurrent one — is what everyone reads.
     const stored = await getD1().prepare("SELECT value FROM app_settings WHERE key = ?").bind(key).first<{ value: string }>();
-    return withProjectPipelines(stored?.value ? parseStoredSettings(stored.value) : seeded, project);
+    return scopeSettingsToProject(stored?.value ? parseStoredSettings(stored.value) : seeded, project);
   }
-  return withProjectPipelines(parseStoredSettings(row.value), project);
+  const parsed = parseStoredSettings(row.value);
+  // The row is never read with another project's configuration in it. A row
+  // that still carries some (the pre-project global row, now IBOX's) is cleaned
+  // once, in storage: the next read finds nothing to clean.
+  if (hasForeignProjectConfig(parsed, project)) await saveSettings(parsed, project);
+  return scopeSettingsToProject(parsed, project);
 }
 
 function parseStoredSettings(value: string): DashboardSettings {
@@ -137,7 +142,8 @@ export async function saveSettings(settings: DashboardSettings, project: Project
   await getD1()
     .prepare("INSERT INTO app_settings(key, value, updated_at) VALUES(?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
     .bind(SALES_PROJECTS[project].settingsKey, JSON.stringify({
-      ...withProjectPipelines(settings, project),
+      // Only this project's funnels, stages, failure-reason categories and limits.
+      ...scopeSettingsToProject(settings, project),
       salesManagerField: normalizeSafeStableSellerField(settings.salesManagerField),
     }), now)
     .run();
@@ -391,6 +397,12 @@ export async function saveSalesSnapshots(records: AnalyticsRecord[]) {
   for (let index = 0; index < won.length; index += 40) {
     const statements = won.slice(index, index + 40).map((record) => db.prepare(SALES_SNAPSHOT_UPSERT)
       .bind(record.dealId, record.wonAt, record.salesManagerId, record.salesManager, record.salesManagerAttribution, new Date().toISOString()));
+    if (statements.length) await db.batch(statements);
+  }
+  // A Sales Doctor Deal that is no longer a sale loses its derived snapshot.
+  const stale = records.filter(isStaleSnapshot);
+  for (let index = 0; index < stale.length; index += 40) {
+    const statements = stale.slice(index, index + 40).map((record) => db.prepare(SALES_SNAPSHOT_DELETE).bind(record.dealId));
     if (statements.length) await db.batch(statements);
   }
 }
