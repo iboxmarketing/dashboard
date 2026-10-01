@@ -502,6 +502,20 @@ test("a transient Sales Doctor Won visit leaves no sale, no seller credit and no
   assert.doesNotMatch(read("lib/sales-snapshots.ts"), /raw_stage_history/, "raw history is never deleted");
 });
 
+test("every rebuild path materialises through the snapshot step that drops stale Sales Doctor rows", () => {
+  // Full Sync and the stored-data rebuild both write the rebuilt records, then
+  // pass the SAME records to saveSalesSnapshots, which deletes the snapshot of
+  // every Sales Doctor Deal that is not a sale now. A hosted record built before
+  // the fix is therefore cleaned by the next rebuild of either kind.
+  for (const path of ["lib/sync.ts", "lib/analytics-backfill.ts"]) {
+    assert.match(read(path), /await upsertAnalyticsRecords\(records\);\n\s+await saveSalesSnapshots\(records\);/, path);
+  }
+  const storage = read("lib/storage.ts");
+  const writer = storage.slice(storage.indexOf("export async function saveSalesSnapshots"), storage.indexOf("// --------------------------------------------------------- seller confirmations"));
+  assert.match(writer, /const stale = records\.filter\(isStaleSnapshot\);/);
+  assert.match(writer, /db\.prepare\(SALES_SNAPSHOT_DELETE\)\.bind\(record\.dealId\)/);
+});
+
 test("project settings never carry the other project's configuration", () => {
   // Production's IBOX row as found: the pre-project global row, with Sales Doctor in it.
   const leaked = {
