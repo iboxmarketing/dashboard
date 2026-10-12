@@ -83,6 +83,11 @@ export function useAuth(adapter: AuthAdapter) {
         if (cancelled) return;
         // A server or network failure is not "signed out" — saying so would send
         // the user to a login form that cannot possibly work.
+        if (caught instanceof AuthError && caught.kind === "FORBIDDEN") {
+          setFatal(null);
+          setState({ status: "forbidden", message: caught.message });
+          return;
+        }
         setFatal(caught instanceof AuthError ? caught.message : "Sessiyani tekshirib bo‘lmadi.");
       }
     };
@@ -155,6 +160,14 @@ export function AuthGate({ adapter, children }: {
 
   if (fatal) return <div className="auth-screen"><AuthErrorState message={fatal} onRetry={auth.refresh} /></div>;
   if (state.status === "loading") return <AuthLoadingScreen />;
+  if (state.status === "forbidden") {
+    return (
+      <div className="auth-screen">
+        <AuthErrorState message={state.message} onRetry={auth.refresh} />
+        <button type="button" className="auth-screen-exit" onClick={() => void auth.logout()}>Chiqish</button>
+      </div>
+    );
+  }
   if (state.status === "unauthenticated") {
     return <div className="auth-screen"><LoginScreen onLogin={auth.login} initialError={state.error} notice={state.notice} /></div>;
   }

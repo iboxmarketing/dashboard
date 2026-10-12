@@ -11,7 +11,7 @@ import { UserDrawer } from "../app/auth/user-drawer";
 import { UsersTable, matchesUserFilters } from "../app/auth/users-screen";
 import { isManagementView, isSalesView } from "../app/dashboard-client";
 import {
-  AUTH_ENDPOINTS, AuthError, FORBIDDEN_MESSAGE, GENERIC_LOGIN_ERROR,
+  AUTH_ENDPOINTS, AUTH_TIMEOUT_MESSAGE, AuthError, FORBIDDEN_MESSAGE, GENERIC_LOGIN_ERROR, ME_TIMEOUT_MS,
   createAuthAdapter, createHttpAuthAdapter, readUser,
 } from "../lib/auth-adapter";
 import { createFixtureAuthAdapter } from "./auth-fixture-adapter";
@@ -27,6 +27,7 @@ import {
 import { PERMISSIONS, ROLES, type AuthUser } from "../lib/auth-types";
 
 const client = readFileSync(new URL("../app/dashboard-client.tsx", import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
 const permissionsSource = readFileSync(new URL("../lib/auth-permissions.ts", import.meta.url), "utf8");
 const adapterSource = readFileSync(new URL("../lib/auth-adapter.ts", import.meta.url), "utf8");
@@ -165,13 +166,60 @@ test("the shell renders loading until /api/auth/me answers, and never guesses si
   assert.doesNotMatch(html, /Foydalanuvchilar|Dashboard<\/span>/);
 });
 
-test("me() treats 401 and 403 as not-signed-in and a 500 as an error", async () => {
+test("me() treats 401 as not-signed-in, 403 as forbidden, and a 500 as an error", async () => {
   const respond = (status: number) => createHttpAuthAdapter((async () => new Response(
     JSON.stringify({ error: "nope" }), { status, headers: { "content-type": "application/json" } },
   )) as unknown as typeof fetch);
-  assert.equal(await respond(401).me(), null);
-  assert.equal(await respond(403).me(), null);
+  assert.equal(await respond(401).me(), null, "401 → login screen");
+  // 403 is not "signed out": the shell shows access denied, not a login form.
+  await assert.rejects(() => respond(403).me(), (error: unknown) => error instanceof AuthError && error.kind === "FORBIDDEN");
   await assert.rejects(() => respond(500).me(), (error: unknown) => error instanceof AuthError && error.kind === "SERVER");
+});
+
+/* ---------- fresh-session bootstrap: the check always ends ---------- */
+
+test("the startup session check always settles: valid, network failure and timeout", async () => {
+  const valid = createHttpAuthAdapter((async () => new Response(JSON.stringify({ user: { id: "1", email: "a@ibox.uz", role: "ADMIN", permissions: [] } }),
+    { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch);
+  assert.equal((await valid.me())?.email, "a@ibox.uz", "valid session → dashboard");
+  const offline = createHttpAuthAdapter((async () => { throw new TypeError("Failed to fetch"); }) as unknown as typeof fetch);
+  await assert.rejects(() => offline.me(), (error: unknown) => error instanceof AuthError && error.kind === "NETWORK");
+  // A request that never answers — and ignores the abort signal — still ends.
+  const hung = createHttpAuthAdapter((() => new Promise<Response>(() => {})) as unknown as typeof fetch, { meTimeoutMs: 20 });
+  const started = Date.now();
+  await assert.rejects(() => hung.me(), (error: unknown) => error instanceof AuthError && error.kind === "TIMEOUT" && error.message === AUTH_TIMEOUT_MESSAGE);
+  assert.ok(Date.now() - started < 1_000, "bounded by the timeout, not by the request");
+  assert.equal(ME_TIMEOUT_MS, 15_000);
+  // The abort signal reaches the request too.
+  let signal: AbortSignal | undefined;
+  const aborting = createHttpAuthAdapter(((_: string, init?: RequestInit) => { signal = init?.signal ?? undefined; return new Promise<Response>(() => {}); }) as unknown as typeof fetch, { meTimeoutMs: 10 });
+  await assert.rejects(() => aborting.me());
+  assert.equal(signal?.aborted, true);
+});
+
+test("no auth state leaves the loading screen on forever", () => {
+  const shell = read("app/auth/auth-shell.tsx");
+  // Every outcome of the startup check leaves "loading": a user, null (login),
+  // FORBIDDEN (access denied), or any other failure (error + Retry).
+  assert.match(shell, /setState\(user\n\s+\? user\.mustChangePassword \? \{ status: "mustChangePassword", user \} : \{ status: "authenticated", user \}\n\s+: \{ status: "unauthenticated", error: null, notice: null \}\);/);
+  assert.match(shell, /if \(caught instanceof AuthError && caught\.kind === "FORBIDDEN"\) \{\n\s+setFatal\(null\);\n\s+setState\(\{ status: "forbidden", message: caught\.message \}\);/);
+  assert.match(shell, /setFatal\(caught instanceof AuthError \? caught\.message : "Sessiyani tekshirib bo‘lmadi\."\);/);
+  // The gate renders a terminal screen for each: error + Retry, access denied + Retry/exit.
+  assert.match(shell, /if \(fatal\) return <div className="auth-screen"><AuthErrorState message=\{fatal\} onRetry=\{auth\.refresh\} \/><\/div>;/);
+  assert.match(shell, /if \(state\.status === "forbidden"\) \{\n\s+return \(\n\s+<div className="auth-screen">\n\s+<AuthErrorState message=\{state\.message\} onRetry=\{auth\.refresh\} \/>/);
+  const denied = renderToStaticMarkup(<AuthErrorState message={FORBIDDEN_MESSAGE} onRetry={() => {}} />);
+  assert.match(denied, /Qayta urinish/);
+});
+
+test("the server-rendered loading screen offers a reload even when no JavaScript runs", () => {
+  // Production served HTML whose bundles all 404'd (2026-10-09): the spinner is
+  // server-rendered, so only HTML + CSS can rescue a visitor in that state.
+  const html = renderToStaticMarkup(<AuthLoadingScreen />);
+  assert.match(html, /Tekshirilmoqda…/);
+  assert.match(html, /class="auth-loading-stall">Sahifa yuklanmadi\. <a href="">Qayta yuklash<\/a>/);
+  const styles = read("app/globals.css");
+  assert.match(styles, /\.auth-loading-stall \{\n\s+visibility: hidden;[^}]*animation: auth-stall-reveal 0s linear 15s forwards;/);
+  assert.match(styles, /@keyframes auth-stall-reveal \{ to \{ visibility: visible; \} \}/);
 });
 
 /* ---------- 6. login screen ---------- */

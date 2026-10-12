@@ -39,6 +39,9 @@ export class AuthError extends Error {
  */
 export const GENERIC_LOGIN_ERROR = "Email yoki parol noto‘g‘ri, yoki hisob faol emas.";
 export const FORBIDDEN_MESSAGE = "Bu bo‘limga kirish huquqingiz yo‘q.";
+export const AUTH_TIMEOUT_MESSAGE = "Sessiyani tekshirish juda uzoq davom etdi. Qayta urinib ko‘ring.";
+/** The startup session check never waits longer than this: a hung request ends in Retry. */
+export const ME_TIMEOUT_MS = 15_000;
 
 function errorKind(status: number): AuthErrorKind {
   if (status === 401) return "INVALID_CREDENTIALS";
@@ -81,22 +84,38 @@ export type AuthAdapter = {
   updateUser(body: UserPatch): Promise<void>;
 };
 
-export function createHttpAuthAdapter(fetchImpl: typeof fetch = fetch): AuthAdapter {
+export function createHttpAuthAdapter(fetchImpl: typeof fetch = fetch, { meTimeoutMs = ME_TIMEOUT_MS }: { meTimeoutMs?: number } = {}): AuthAdapter {
   /**
    * `genericOn401` is set only for login. Everywhere else a 401 or a 400 carries
    * the server's own message — "Joriy parol noto‘g‘ri", "Parol kamida 12 ta
    * belgidan iborat bo‘lishi kerak" — and replacing those with the login
    * sentence would tell a user changing their password that their email is wrong.
    */
-  const call = async (path: string, init?: RequestInit, genericOn401 = false, authenticated = true) => {
+  const call = async (path: string, init?: RequestInit, genericOn401 = false, authenticated = true, timeoutMs = 0) => {
     let response: Response;
+    const controller = timeoutMs > 0 ? new AbortController() : null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Raced as well as aborted: a fetch that ignores the signal still cannot hold
+    // the caller past the deadline.
+    const deadline = controller
+      ? new Promise<never>((_, reject) => {
+        timer = setTimeout(() => { controller.abort(); reject(new AuthError("TIMEOUT", AUTH_TIMEOUT_MESSAGE)); }, timeoutMs);
+      })
+      : null;
     try {
-      response = await fetchImpl(path, {
+      const request = fetchImpl(path, {
         ...init,
         headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
         credentials: "same-origin",
+        ...(controller ? { signal: controller.signal } : {}),
       });
-    } catch { throw new AuthError("NETWORK", "Serverga ulanmadi. Internetni tekshirib qayta urinib ko‘ring."); }
+      response = await (deadline ? Promise.race([request, deadline]) : request);
+    } catch (error) {
+      if (error instanceof AuthError) throw error;
+      throw new AuthError("NETWORK", "Serverga ulanmadi. Internetni tekshirib qayta urinib ko‘ring.");
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
     if (response.status === 204) return null;
     const isJson = /\bjson\b/i.test(response.headers.get("content-type") ?? "");
     const payload = isJson ? await response.json().catch(() => null) as Record<string, unknown> | null : null;
@@ -126,10 +145,11 @@ export function createHttpAuthAdapter(fetchImpl: typeof fetch = fetch): AuthAdap
   return {
     source: "api",
     me: async () => {
-      try { return userFrom(await call(AUTH_ENDPOINTS.me, undefined, false, false)); }
+      try { return userFrom(await call(AUTH_ENDPOINTS.me, undefined, false, false, meTimeoutMs)); }
       catch (error) {
         // 401 at startup simply means "not signed in", not a failure to report.
-        if (error instanceof AuthError && (error.status === 401 || error.status === 403)) return null;
+        // A 403 is not "signed out": the shell shows it as access denied.
+        if (error instanceof AuthError && error.status === 401) return null;
         throw error;
       }
     },

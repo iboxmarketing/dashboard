@@ -67,6 +67,8 @@ export type AuthState =
   | { status: "loading" }
   | { status: "unauthenticated"; error: string | null; notice: string | null }
   | { status: "mustChangePassword"; user: AuthUser }
-  | { status: "authenticated"; user: AuthUser };
+  | { status: "authenticated"; user: AuthUser }
+  /** Signed in, but the server refuses this account any access (403). */
+  | { status: "forbidden"; message: string };
 
-export type AuthErrorKind = "INVALID_CREDENTIALS" | "INACTIVE" | "FORBIDDEN" | "SERVER" | "NETWORK" | "VALIDATION";
+export type AuthErrorKind = "INVALID_CREDENTIALS" | "INACTIVE" | "FORBIDDEN" | "SERVER" | "NETWORK" | "VALIDATION" | "TIMEOUT";

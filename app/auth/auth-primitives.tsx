@@ -28,6 +28,9 @@ export function AuthLoadingScreen({ label = "Tekshirilmoqda…" }: { label?: str
       <div className="auth-card auth-card-centered">
         <Loader2 size={24} className="spin" aria-hidden="true" />
         <p>{label}</p>
+        {/* Server-rendered and revealed by CSS alone after 15 s, so it still
+            appears when the page's JavaScript never loads or never hydrates. */}
+        <p className="auth-loading-stall">Sahifa yuklanmadi. <a href="">Qayta yuklash</a></p>
       </div>
     </div>
   );

@@ -1030,6 +1030,15 @@ button:focus-visible, a:focus-visible, summary:focus-visible,
   min-height: 100vh; display: grid; place-content: center; justify-items: center;
   gap: 14px; padding: 28px 16px; background: var(--bg);
 }
+/* "Tekshirilmoqda…" can never be the last word: if the app has not replaced it
+   within 15 s (JavaScript failed to load or hydrate), a reload link appears.
+   Pure CSS on purpose — it must work when no script runs at all. */
+.auth-loading-stall {
+  visibility: hidden; margin: 0; font-size: 13px; color: var(--muted);
+  animation: auth-stall-reveal 0s linear 15s forwards;
+}
+.auth-loading-stall a { color: inherit; text-decoration: underline; }
+@keyframes auth-stall-reveal { to { visibility: visible; } }
 .auth-card {
   width: 100%; max-width: 396px; background: var(--panel); border: 1px solid var(--line);
   border-radius: 16px; box-shadow: var(--shadow); padding: 28px 26px; display: grid; gap: 14px;
