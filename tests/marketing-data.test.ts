@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
+import { assignAds, classifyAd, collectAdEvidence, summarizeAssignment } from "../lib/marketing/assignment";
 import { buildDealAttribution, stableId } from "../lib/marketing/attribution";
 import { ICP_FIELD, marketingSelect, resolveMarketingFields } from "../lib/marketing/fields";
 import { countIcp, icpClassFromLabel, readIcp } from "../lib/marketing/icp";
@@ -153,7 +154,8 @@ test("attribution is project-aware: the Deal's own project, never another's", ()
   // Materialized only for a Deal whose record has a project (recordProject), and read back per project.
   assert.match(store, /\.map\(\(record\) => \(\{ record, project: recordProject\(record\), deal: byId\.get\(record\.dealId\) \}\)\)/);
   assert.match(store, /FROM marketing_deal_attribution WHERE project_key = \? AND lead_created_at >= \? AND lead_created_at <= \?/);
-  assert.match(store, /const clauses = \["project_key = \?", "date >= \?", "date <= \?"\];/, "spend is read per project");
+  // A project's spend is exactly its assigned ads' spend.
+  assert.match(store, /return rows\.filter\(\(row\) => assignment\.get\(row\.adId\) === project\);/);
   // The tracking D1 is SELECT-only.
   const trackingSql = store.slice(store.indexOf("export async function lookupTracking"), store.indexOf("/* ---------------------------------------------- materialize"));
   assert.doesNotMatch(trackingSql, /\b(INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP)\b/i);
@@ -362,6 +364,58 @@ test("Meta Insights: parse, paging, newest-first windows, token never in an erro
   await assert.rejects(() => fetchDailyInsights(failing, account, "2026-10-01", "2026-10-01", "TOKEN"), (error: Error) => !error.message.includes("TOKEN") && /OAuthException:190/.test(error.message));
 });
 
+/* ------------------------------------------------- ad-level spend assignment */
+
+test("spend is assigned per ad: one project → that project; non-dashboard, mixed and no-Deal ads never leak", () => {
+  const evidence = collectAdEvidence(
+    [
+      { adId: "A_IBOX", projectKey: "IBOX" }, { adId: "A_IBOX", projectKey: "IBOX" },
+      { adId: "A_SD", projectKey: "SALES_DOCTOR" },
+      { adId: "A_BOTH", projectKey: "IBOX" }, { adId: "A_BOTH", projectKey: "SALES_DOCTOR" },
+      { adId: "A_IBOX_KZ", projectKey: "IBOX" },
+    ],
+    [
+      { adId: "A_IBOX", categoryId: "13" },        // IBOX post-sale: still IBOX
+      { adId: "A_SD", categoryId: "17" },          // SD post-sale: still SD
+      { adId: "A_KZ", categoryId: "41" }, { adId: "A_KZ", categoryId: "33" }, // two non-dashboard funnels
+      { adId: "A_CAT1", categoryId: "1" },
+      { adId: "A_IBOX_KZ", categoryId: "41" },     // the same ad also fed IBOX KZ
+    ],
+  );
+  const assignment = assignAds(evidence, ["A_IBOX", "A_SD", "A_BOTH", "A_KZ", "A_CAT1", "A_IBOX_KZ", "A_NEW"]);
+  assert.deepEqual(Object.fromEntries(assignment), {
+    A_IBOX: "IBOX", A_SD: "SALES_DOCTOR", A_BOTH: "MIXED", A_KZ: "MIXED", A_CAT1: "NON_DASHBOARD", A_IBOX_KZ: "MIXED", A_NEW: "UNASSIGNED",
+  });
+  assert.equal(classifyAd({ projects: new Set(), otherCategories: new Set(["33"]) }), "NON_DASHBOARD");
+  // Never by account, never by campaign: neither is an input to the decision.
+  assert.doesNotMatch(read("lib/marketing/assignment.ts"), /campaign_id|ad_account|campaignId|adAccountId/);
+  assert.doesNotMatch(read("lib/marketing/jobs.ts"), /projectKey/, "ingest assigns no project");
+  const dailyTable = MARKETING_SCHEMA_STATEMENTS.find((statement) => statement.startsWith("CREATE TABLE IF NOT EXISTS marketing_meta_daily"))!;
+  assert.doesNotMatch(dailyTable, /project_key/, "no stored project on spend rows");
+
+  const rows = [
+    { adId: "A_IBOX", spendMinor: 1000, currency: "USD" }, { adId: "A_SD", spendMinor: 500, currency: "USD" },
+    { adId: "A_BOTH", spendMinor: 300, currency: "USD" }, { adId: "A_CAT1", spendMinor: 200, currency: "USD" },
+    { adId: "A_NEW", spendMinor: 100, currency: "USD" }, { adId: "A_NEW", spendMinor: 100, currency: "USD" },
+  ];
+  const buckets = summarizeAssignment(rows, assignment, (minor, currency) => minorToUzs(minor, currency, FX));
+  assert.deepEqual([buckets.IBOX.spendUzs, buckets.SALES_DOCTOR.spendUzs, buckets.NON_DASHBOARD.spendUzs, buckets.MIXED.spendUzs, buckets.UNASSIGNED.spendUzs],
+    [118_000, 59_000, 23_600, 35_400, 23_600]);
+  assert.deepEqual([buckets.UNASSIGNED.ads, buckets.UNASSIGNED.adDays], [1, 2]);
+  const total = Object.values(buckets).reduce((sum, bucket) => sum + (bucket.spendUzs ?? 0), 0);
+  assert.equal(total, minorToUzs(2200, "USD", FX), "every ad-day lands in exactly one bucket");
+});
+
+test("campaign and ad set spend inside a project roll up its assigned ads only", () => {
+  const assignment = new Map([["A1", "IBOX"], ["A2", "MIXED"]]);
+  const all = [spend("A1", 1000, { campaignId: "C1", adsetId: "S1" }), spend("A2", 9000, { campaignId: "C1", adsetId: "S1" })];
+  const ibox = all.filter((row) => assignment.get(row.adId) === "IBOX"); // what listSpend returns for IBOX
+  const [campaign] = buildEntities({ level: "campaign", cohort: [], attribution: new Map(), spend: ibox, fx: FX });
+  const [adset] = buildEntities({ level: "adset", cohort: [], attribution: new Map(), spend: ibox, fx: FX });
+  assert.equal(campaign.spendUzs, 118_000, "the MIXED ad of the same campaign is not forced in");
+  assert.equal(adset.spendUzs, 118_000);
+});
+
 /* ------------------------------------------------ isolation and guards */
 
 test("marketing is additive: no Sales, Finance or Auth module imports it, and its APIs are guarded", () => {
@@ -372,6 +426,7 @@ test("marketing is additive: no Sales, Finance or Auth module imports it, and it
   for (const route of ["summary", "entities", "deals", "icp", "coverage"]) {
     assert.match(read(`app/api/marketing/${route}/route.ts`), /export async function GET\(request: Request\) \{\n  const denied = await authorizePermission\(request, "dashboard"\);\n  if \(denied\) return denied;/, route);
   }
+  assert.match(read("app/api/marketing/spend-assignment/route.ts"), /export async function GET\(request: Request\) \{\n  const denied = await authorizePermission\(request, "settings"\);/);
   for (const route of ["backfill", "meta-sync"]) {
     assert.match(read(`app/api/marketing/${route}/route.ts`), /export async function POST\(request: Request\) \{\n  const denied = await authorizePermission\(request, "settings"\);\n  if \(denied\) return denied;/, route);
   }

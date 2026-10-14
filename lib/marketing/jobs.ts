@@ -5,7 +5,7 @@ import { getDictionary, saveDictionary } from "../storage";
 import type { AnalyticsRecord } from "../types";
 import { fetchCreatives, fetchDailyInsights, fetchMetaAccount, MetaApiError, nextWindow, normalizeAccountId, type MetaDailyRow } from "./meta-insights";
 import { attributionBackfillPageSql } from "./sql";
-import { campaignProjects, getMarketingSettings, getTrackingD1, materializeAttribution, upsertMetaDaily } from "./store";
+import { getMarketingSettings, getTrackingD1, materializeAttribution, upsertMetaDaily } from "./store";
 
 /* ------------------------------------------------- attribution backfill */
 
@@ -76,7 +76,7 @@ export const META_SYNC_KEY = "metaInsightsSync";
 export const META_TOKEN_SECRET = "META_ADS_ACCESS_TOKEN";
 
 export type MetaSyncAccount = {
-  id: string; currency: string | null; timezone: string | null; projectKey: string | null;
+  id: string; currency: string | null; timezone: string | null;
   /** Next window ends here (YYYY-MM-DD); null when the account is complete. */
   cursor: string | null; error: string | null; rows: number;
 };
@@ -95,13 +95,13 @@ function metaToken(): string | null {
 function dateKey(date: Date) { return date.toISOString().slice(0, 10); }
 
 /** Ad accounts: the Marketing setting, else every account the tracking D1 has seen a lead from. */
-async function adAccounts(): Promise<{ id: string; projectKey: string | null }[]> {
+async function adAccounts(): Promise<{ id: string }[]> {
   const settings = await getMarketingSettings();
   if (settings.adAccounts.length) return settings.adAccounts;
   const tracking = getTrackingD1();
   if (!tracking) return [];
   const result = await tracking.prepare("SELECT DISTINCT ad_account_id FROM meta_leads WHERE ad_account_id IS NOT NULL AND ad_account_id <> ''").all<{ ad_account_id: string }>();
-  return (result.results ?? []).map((row) => normalizeAccountId(row.ad_account_id)).filter((id): id is string => Boolean(id)).map((id) => ({ id, projectKey: null }));
+  return (result.results ?? []).map((row) => normalizeAccountId(row.ad_account_id)).filter((id): id is string => Boolean(id)).map((id) => ({ id }));
 }
 
 export async function startMetaSync(days = 365, fetchImpl: typeof fetch = fetch): Promise<MetaSyncState> {
@@ -118,9 +118,9 @@ export async function startMetaSync(days = 365, fetchImpl: typeof fetch = fetch)
   for (const account of await adAccounts()) {
     try {
       const info = await fetchMetaAccount(fetchImpl, account.id, token);
-      accounts.push({ id: account.id, currency: info.currency, timezone: info.timezone, projectKey: account.projectKey, cursor: base.to, error: null, rows: 0 });
+      accounts.push({ id: account.id, currency: info.currency, timezone: info.timezone, cursor: base.to, error: null, rows: 0 });
     } catch (error) {
-      accounts.push({ id: account.id, currency: null, timezone: null, projectKey: account.projectKey, cursor: null, error: error instanceof MetaApiError ? error.code : "UNKNOWN", rows: 0 });
+      accounts.push({ id: account.id, currency: null, timezone: null, cursor: null, error: error instanceof MetaApiError ? error.code : "UNKNOWN", rows: 0 });
     }
   }
   const state: MetaSyncState = { ...base, accounts, status: accounts.some((account) => account.cursor) ? "running" : "error", reason: accounts.length ? null : "NO_AD_ACCOUNTS" };
@@ -149,11 +149,9 @@ export async function stepMetaSync(fetchImpl: typeof fetch = fetch): Promise<Met
   if (window) {
     try {
       const rows: MetaDailyRow[] = await fetchDailyInsights(fetchImpl, { id: account.id, currency: account.currency ?? "USD", timezone: account.timezone }, window.since, window.until, token);
-      const projects = account.projectKey ? null : await campaignProjects();
       let creatives = new Map<string, { creativeId: string | null; videoId: string | null; imageHash: string | null }>();
       try { creatives = await fetchCreatives(fetchImpl, [...new Set(rows.map((row) => row.adId))], token); } catch { /* creative identity is optional in V1 */ }
       for (const row of rows) {
-        row.projectKey = account.projectKey ?? (row.campaignId ? projects?.get(row.campaignId) ?? null : null);
         const creative = creatives.get(row.adId);
         if (creative) Object.assign(row, creative);
       }

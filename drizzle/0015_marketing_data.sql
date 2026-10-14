@@ -32,7 +32,6 @@ CREATE TABLE IF NOT EXISTS marketing_meta_daily (
   date TEXT NOT NULL,
   ad_id TEXT NOT NULL,
   ad_account_id TEXT NOT NULL,
-  project_key TEXT,
   campaign_id TEXT, campaign_name TEXT,
   adset_id TEXT, adset_name TEXT,
   ad_name TEXT,
@@ -50,4 +49,3 @@ CREATE INDEX IF NOT EXISTS idx_mmd_date ON marketing_meta_daily(date);
 CREATE INDEX IF NOT EXISTS idx_mmd_campaign ON marketing_meta_daily(campaign_id, date);
 CREATE INDEX IF NOT EXISTS idx_mmd_adset ON marketing_meta_daily(adset_id, date);
 CREATE INDEX IF NOT EXISTS idx_mmd_ad ON marketing_meta_daily(ad_id, date);
-CREATE INDEX IF NOT EXISTS idx_mmd_project ON marketing_meta_daily(project_key, date);

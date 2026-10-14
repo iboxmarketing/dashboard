@@ -70,9 +70,29 @@ idempotent.
 
 `level=ad&time_increment=1`, one row per `(date, ad_id)`; a re-fetch replaces
 that day. Spend `spend_minor` + `currency`; impressions, clicks, reach;
-creative/video/image ids when Meta returns them. `project_key` from the
-Marketing setting's account→project map, else the campaign's attributed Deals
-when they are all in one project, else null (reported as unassigned spend).
+creative/video/image ids when Meta returns them. **No project is stored on a
+spend row.**
+
+### Spend → project, per AD (owner rule, 2026-10-14)
+
+Never a whole ad account, never a whole campaign — one account (even one
+campaign) feeds IBOX, Sales Doctor and funnels the dashboard does not report
+(KZ 41/33, category 1). On every read each ad is classified from its Deals: the
+dashboard's attribution (Deal → project) plus the tracking D1's lead → Deal →
+current Bitrix category, which also sees non-dashboard funnels.
+
+| Evidence for the ad | Spend goes to |
+| --- | --- |
+| one dashboard project, nothing else | that project |
+| only non-dashboard funnels | NON_DASHBOARD |
+| two or more projects/funnels | MIXED (never forced into a project) |
+| no attributed Deal yet | UNASSIGNED |
+
+A project's Campaign and Ad set spend are rollups of its assigned ads. An ad
+that gets its first Deal later is assigned from then on, with no re-ingestion.
+`GET /api/marketing/spend-assignment` (settings permission) reports all five
+buckets for a range. Granularity: ad × day, Meta's finest stable daily level.
+
 `POST /api/marketing/meta-sync` `{action:"start", days}` then `{action:"step"}`:
 7-day windows, newest first, checkpointed per account. Needs the Worker secret
 `META_ADS_ACCESS_TOKEN` (ads_read); without it the job reports `blocked`.
@@ -92,7 +112,8 @@ Meta daily rows have no such breakdown.
 | `GET /api/marketing/entities?level=campaign\|adset\|ad\|creative\|placement\|landing` | `rows[]`: id, name, campaignId, adsetId (parents), leadCount, saralanganCount, icpEvaluatedCount, icpFitCount, icpUnsetCount, icpFitRate, sqlCount, inPipelineCount, saleCount, revenueUzs, spendUzs, spendByCurrency, impressions, clicks, cmcUzs, roas, cplUzs, … — `id:"__unattributed__"` holds Deals with no ID at that level |
 | `GET /api/marketing/deals?metric=lead\|icp_fit\|icp_other\|icp_unset\|sql\|pipeline\|sale` | `deals[]` with outcome flags, ICP, IDs/names, channel, conflict |
 | `GET /api/marketing/icp` | `icp` totals, `byChannel`, `byManager` (funnel owner) — for Overview/Managers |
-| `GET /api/marketing/coverage` | `coverage` {deals, withCampaignId, withAdsetId, withAdId, metaInstantForm, website, otherSource, unknown, conflicts, notYetAttributed}, `unassignedSpend` |
+| `GET /api/marketing/coverage` | `coverage` {deals, withCampaignId, withAdsetId, withAdId, metaInstantForm, website, otherSource, unknown, conflicts, notYetAttributed} |
+| `GET /api/marketing/spend-assignment` | `buckets` {IBOX, SALES_DOCTOR, NON_DASHBOARD, MIXED, UNASSIGNED}: ads, adDays, spendByCurrency, spendUzs; `unresolvedAds` (settings permission) |
 | `POST /api/marketing/backfill`, `/meta-sync`, `/settings` | jobs and the Marketing setting (`settings` permission) |
 
 ## Operations

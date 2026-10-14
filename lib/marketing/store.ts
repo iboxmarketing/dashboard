@@ -12,6 +12,7 @@ import type { IcpClass } from "./icp";
 import type { MetaDailyRow } from "./meta-insights";
 import type { AttributionView, SpendRow } from "./metrics";
 import { DEFAULT_MARKETING_USD_TO_UZS, type MarketingFx } from "./money";
+import { assignAds, collectAdEvidence } from "./assignment";
 import { MARKETING_SCHEMA_STATEMENTS } from "./schema";
 import { ATTRIBUTION_UPSERT, DAILY_UPSERT, attributionBindings, dailyBindings } from "./sql";
 
@@ -39,8 +40,11 @@ export function getTrackingD1(): D1 | null {
 export type MarketingSettings = {
   /** Owner decision 2026-10-14: a reporting rate, not Finance FX. */
   usdToUzs: number;
-  /** Meta ad accounts to ingest, each optionally pinned to a dashboard project. */
-  adAccounts: { id: string; projectKey: string | null }[];
+  /**
+   * Meta ad accounts to ingest. Deliberately NOT tied to a project: an account
+   * feeds several funnels, so spend is assigned per ad (lib/marketing/assignment.ts).
+   */
+  adAccounts: { id: string }[];
 };
 
 const MARKETING_SETTINGS_KEY = "marketing";
@@ -53,7 +57,7 @@ export async function getMarketingSettings(db: D1 = getD1()): Promise<MarketingS
   return {
     usdToUzs: Number.isSafeInteger(rate) && rate > 0 ? rate : DEFAULT_MARKETING_USD_TO_UZS,
     adAccounts: Array.isArray(parsed.adAccounts)
-      ? parsed.adAccounts.filter((item) => /^\d{5,25}$/.test(String(item?.id ?? ""))).map((item) => ({ id: String(item.id), projectKey: item.projectKey ?? null }))
+      ? parsed.adAccounts.filter((item) => /^\d{5,25}$/.test(String(item?.id ?? ""))).map((item) => ({ id: String(item.id) }))
       : [],
   };
 }
@@ -187,30 +191,71 @@ export async function upsertMetaDaily(rows: readonly MetaDailyRow[], db: D1 = ge
   }
 }
 
-/** campaign_id → project, where every attributed Deal of the campaign is in one project. */
-export async function campaignProjects(db: D1 = getD1()) {
-  await ensureMarketingSchema(db);
-  const result = await db.prepare(`SELECT campaign_id, min(project_key) AS project_key FROM marketing_deal_attribution
-    WHERE campaign_id IS NOT NULL GROUP BY campaign_id HAVING count(DISTINCT project_key) = 1`).all<{ campaign_id: string; project_key: string }>();
-  return new Map((result.results ?? []).map((row) => [row.campaign_id, row.project_key]));
-}
-
 export type SpendFilter = { campaignId?: string | null; adsetId?: string | null; adId?: string | null };
 
-export async function listSpend(project: string, fromDate: string, toDate: string, filter: SpendFilter = {}, db: D1 = getD1()): Promise<SpendRow[]> {
+type DailyDbRow = { date: string; ad_id: string; ad_account_id: string; campaign_id: string | null; campaign_name: string | null; adset_id: string | null;
+  adset_name: string | null; ad_name: string | null; creative_id: string | null; spend_minor: number; currency: string; impressions: number; clicks: number };
+
+/** Every account's ad-day spend in [fromDate, toDate], before project assignment. */
+export async function listSpendRows(fromDate: string, toDate: string, filter: SpendFilter = {}, db: D1 = getD1()): Promise<SpendRow[]> {
   await ensureMarketingSchema(db);
-  const clauses = ["project_key = ?", "date >= ?", "date <= ?"];
-  const binds: unknown[] = [project, fromDate, toDate];
+  const clauses = ["date >= ?", "date <= ?"];
+  const binds: unknown[] = [fromDate, toDate];
   if (filter.campaignId) { clauses.push("campaign_id = ?"); binds.push(filter.campaignId); }
   if (filter.adsetId) { clauses.push("adset_id = ?"); binds.push(filter.adsetId); }
   if (filter.adId) { clauses.push("ad_id = ?"); binds.push(filter.adId); }
   const result = await db.prepare(`SELECT date, ad_id, ad_account_id, campaign_id, campaign_name, adset_id, adset_name, ad_name, creative_id,
-      spend_minor, currency, impressions, clicks FROM marketing_meta_daily WHERE ${clauses.join(" AND ")}`).bind(...binds)
-    .all<{ date: string; ad_id: string; ad_account_id: string; campaign_id: string | null; campaign_name: string | null; adset_id: string | null;
-      adset_name: string | null; ad_name: string | null; creative_id: string | null; spend_minor: number; currency: string; impressions: number; clicks: number }>();
+      spend_minor, currency, impressions, clicks FROM marketing_meta_daily WHERE ${clauses.join(" AND ")}`).bind(...binds).all<DailyDbRow>();
   return (result.results ?? []).map((row) => ({
     date: row.date, adId: row.ad_id, adAccountId: row.ad_account_id, campaignId: row.campaign_id, campaignName: row.campaign_name,
     adsetId: row.adset_id, adsetName: row.adset_name, adName: row.ad_name, creativeId: row.creative_id,
     spendMinor: Number(row.spend_minor), currency: row.currency, impressions: Number(row.impressions), clicks: Number(row.clicks),
   }));
+}
+
+/**
+ * Per-ad destination evidence: the dashboard's attribution (Deal → project) and,
+ * when bound, the tracking D1's lead → Deal → current Bitrix category — which
+ * also sees Deals in funnels the dashboard never syncs (41, 33, 1). SELECT only.
+ */
+export async function loadAdEvidence(adIds: readonly string[], db: D1 = getD1(), tracking: D1 | null = getTrackingD1()) {
+  await ensureMarketingSchema(db);
+  const attribution: { adId: string | null; projectKey: string | null }[] = [];
+  const categories: { adId: string | null; categoryId: string | null }[] = [];
+  for (let index = 0; index < adIds.length; index += 80) {
+    const ids = adIds.slice(index, index + 80);
+    const marks = ids.map(() => "?").join(",");
+    const own = await db.prepare(`SELECT DISTINCT ad_id, project_key FROM marketing_deal_attribution WHERE ad_id IN (${marks})`).bind(...ids)
+      .all<{ ad_id: string; project_key: string }>();
+    attribution.push(...(own.results ?? []).map((row) => ({ adId: row.ad_id, projectKey: row.project_key })));
+    if (!tracking) continue;
+    const [leads, site] = await tracking.batch([
+      tracking.prepare(`SELECT DISTINCT m.ad_id AS ad_id, h.category_id AS category_id FROM meta_leads m
+        JOIN bitrix_delivery d ON d.lead_id = m.lead_id JOIN deal_health h ON h.deal_id = d.deal_id
+        WHERE m.ad_id IN (${marks}) AND h.category_id IS NOT NULL`).bind(...ids),
+      tracking.prepare(`SELECT DISTINCT COALESCE(json_extract(w.attribution_json, '$.last_paid_touch.ad_id'), json_extract(w.attribution_json, '$.first_touch.ad_id')) AS ad_id,
+        h.category_id AS category_id FROM website_leads w JOIN deal_health h ON h.deal_id = w.deal_id
+        WHERE COALESCE(json_extract(w.attribution_json, '$.last_paid_touch.ad_id'), json_extract(w.attribution_json, '$.first_touch.ad_id')) IN (${marks})
+          AND h.category_id IS NOT NULL`).bind(...ids),
+    ]);
+    for (const row of [...((leads.results ?? []) as { ad_id: string; category_id: string }[]), ...((site.results ?? []) as { ad_id: string; category_id: string }[])]) {
+      categories.push({ adId: String(row.ad_id), categoryId: String(row.category_id) });
+    }
+  }
+  return collectAdEvidence(attribution, categories);
+}
+
+/** One project's spend: only the ads assigned to it (Campaign/Ad set totals are rollups of these). */
+export async function listSpend(project: string, fromDate: string, toDate: string, filter: SpendFilter = {}, db: D1 = getD1()): Promise<SpendRow[]> {
+  const rows = await listSpendRows(fromDate, toDate, filter, db);
+  const assignment = assignAds(await loadAdEvidence([...new Set(rows.map((row) => row.adId))], db), rows.map((row) => row.adId));
+  return rows.filter((row) => assignment.get(row.adId) === project);
+}
+
+/** Every ad-day in the range, bucketed: IBOX, SALES_DOCTOR, NON_DASHBOARD, MIXED, UNASSIGNED. */
+export async function spendAssignmentReport(fromDate: string, toDate: string, db: D1 = getD1()) {
+  const rows = await listSpendRows(fromDate, toDate, {}, db);
+  const adIds = [...new Set(rows.map((row) => row.adId))];
+  const assignment = assignAds(await loadAdEvidence(adIds, db), adIds);
+  return { rows, assignment };
 }

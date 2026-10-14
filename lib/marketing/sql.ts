@@ -41,11 +41,11 @@ export function attributionBindings(row: MarketingDealAttribution, now: string) 
 }
 
 
-export const DAILY_UPSERT = `INSERT INTO marketing_meta_daily(date, ad_id, ad_account_id, project_key, campaign_id, campaign_name,
+export const DAILY_UPSERT = `INSERT INTO marketing_meta_daily(date, ad_id, ad_account_id, campaign_id, campaign_name,
   adset_id, adset_name, ad_name, creative_id, video_id, image_hash, spend_minor, currency, impressions, clicks, reach, account_timezone, fetched_at)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(date, ad_id) DO UPDATE SET
-  ad_account_id = excluded.ad_account_id, project_key = excluded.project_key,
+  ad_account_id = excluded.ad_account_id,
   campaign_id = excluded.campaign_id, campaign_name = excluded.campaign_name, adset_id = excluded.adset_id,
   adset_name = excluded.adset_name, ad_name = excluded.ad_name,
   creative_id = COALESCE(excluded.creative_id, marketing_meta_daily.creative_id),
@@ -55,7 +55,7 @@ ON CONFLICT(date, ad_id) DO UPDATE SET
   clicks = excluded.clicks, reach = excluded.reach, account_timezone = excluded.account_timezone, fetched_at = excluded.fetched_at`;
 
 export function dailyBindings(row: MetaDailyRow, fetchedAt: string) {
-  return [row.date, row.adId, row.adAccountId, row.projectKey, row.campaignId, row.campaignName, row.adsetId, row.adsetName,
+  return [row.date, row.adId, row.adAccountId, row.campaignId, row.campaignName, row.adsetId, row.adsetName,
     row.adName, row.creativeId, row.videoId, row.imageHash, row.spendMinor, row.currency, row.impressions, row.clicks,
     row.reach, row.accountTimezone, fetchedAt];
 }

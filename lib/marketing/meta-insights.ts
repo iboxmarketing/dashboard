@@ -22,7 +22,7 @@ export const INSIGHT_FIELDS = [
 export type MetaAccount = { id: string; currency: string; timezone: string | null; name?: string | null };
 
 export type MetaDailyRow = SpendRow & {
-  adsetName: string | null; projectKey: string | null; reach: number | null;
+  adsetName: string | null; reach: number | null;
   videoId: string | null; imageHash: string | null; accountTimezone: string | null;
 };
 
@@ -80,7 +80,7 @@ export function parseInsightRow(row: InsightRow, account: MetaAccount): MetaDail
     currency,
     impressions: count(row.impressions), clicks: count(row.clicks),
     reach: row.reach === undefined ? null : count(row.reach),
-    accountTimezone: account.timezone, projectKey: null,
+    accountTimezone: account.timezone,
   };
 }
 

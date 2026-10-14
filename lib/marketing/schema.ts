@@ -7,7 +7,9 @@
  *   sync never produces a second row for a Deal.
  * marketing_meta_daily        Meta Ads Insights, one row per (date, ad_id): a
  *   re-fetch of the same day replaces that day's numbers and never adds spend.
- *   Money is spend_minor (integer, ISO minor units) + currency.
+ *   Money is spend_minor (integer, ISO minor units) + currency. No project is
+ *   stored: an ad's project is decided on every read from its Deals
+ *   (lib/marketing/assignment.ts), so it follows Deals that arrive later.
  *
  * Neither table is read by any existing Sales, Finance or Auth query.
  */
@@ -40,7 +42,6 @@ export const MARKETING_SCHEMA_STATEMENTS: readonly string[] = [
   date TEXT NOT NULL,
   ad_id TEXT NOT NULL,
   ad_account_id TEXT NOT NULL,
-  project_key TEXT,
   campaign_id TEXT, campaign_name TEXT,
   adset_id TEXT, adset_name TEXT,
   ad_name TEXT,
@@ -58,5 +59,4 @@ export const MARKETING_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX IF NOT EXISTS idx_mmd_campaign ON marketing_meta_daily(campaign_id, date)",
   "CREATE INDEX IF NOT EXISTS idx_mmd_adset ON marketing_meta_daily(adset_id, date)",
   "CREATE INDEX IF NOT EXISTS idx_mmd_ad ON marketing_meta_daily(ad_id, date)",
-  "CREATE INDEX IF NOT EXISTS idx_mmd_project ON marketing_meta_daily(project_key, date)",
 ];
