@@ -20,6 +20,8 @@ import { canonicalDealFieldKey, canonicalizeFieldOptions } from "./crm-fields";
 import { normalizeSafeStableSellerField, normalizeSalesOwnerAtWonField } from "./stable-seller-field";
 import { PROJECT_SELLER_NAMES, directoryUsers, resolveRoster, rosterDictionaryKey } from "./seller-roster";
 import { runPostSyncReconciliation } from "./post-sync-reconciliation";
+import { marketingSelect, resolveMarketingFields, type MarketingFieldResolution } from "./marketing/fields";
+import { materializeAttribution } from "./marketing/store";
 import {
   DEFAULT_PROJECT, PROJECT_KEYS, PROJECT_SELLER_IDENTITY, SALES_PROJECTS, projectForCategory, type ProjectKey,
 } from "./sales-projects";
@@ -329,6 +331,9 @@ export async function startSync(options: { days?: number; full?: boolean; pipeli
   // Only this project's row is written; the other project's settings are never touched.
   await saveSettings({ ...settings, selectedPipelineNames: [scopedMain.name], postSalePipelineNames: [scopedPostSale.name] }, project);
   await saveDictionary("crmFields", crmFields);
+  // Marketing attribution fields, resolved against this same live metadata —
+  // never guessed (lib/marketing/fields.ts). Kept when the field list failed.
+  if (crmFields.length) await saveDictionary("marketingFields", resolveMarketingFields(crmFields));
   if (mode === "full") await clearPipelineScope([scopedMain.id, scopedPostSale.id]);
 
   const timestamp = now.toISOString();
@@ -368,6 +373,10 @@ async function dealStep(job: StoredSyncJob) {
     projectSettings.marketingChannelField,
   ]))]
     .filter((field): field is string => Boolean(field)).map(canonicalDealFieldKey);
+  // Marketing attribution evidence rides on the same read, so raw_deals keeps it
+  // (UTM_*, the tracking Worker's UF_CRM_META_* fields, ICP, landing).
+  const marketing = await getDictionary<MarketingFieldResolution>("marketingFields", { fields: {}, ambiguous: [] });
+  for (const field of marketingSelect(marketing.fields ?? {})) if (!customFields.includes(field)) customFields.push(field);
   // CLOSED is current-state evidence for reconciliation only. Won/lost
   // classification stays with the canonical stage and stage-history rules;
   // nothing derives salesStatus from this flag.
@@ -634,6 +643,11 @@ async function analyticsStep(job: StoredSyncJob) {
   }
   await upsertAnalyticsRecords(records);
   await saveSalesSnapshots(records);
+  // Marketing attribution for exactly this batch. A dimension over the records
+  // above: it can never fail or alter the Sales sync, so an error is recorded and
+  // the run continues.
+  try { await materializeAttribution(parseRows<RawDeal>(batchDeals) as Record<string, unknown>[], records); }
+  catch (error) { await saveDictionary("marketingAttributionError", { at: new Date().toISOString(), runId: job.runId, message: error instanceof Error ? error.message.slice(0, 200) : "unknown" }); }
   const cursor = job.cursor + batchDeals.length;
   const counts = {
     ...job.counts,
