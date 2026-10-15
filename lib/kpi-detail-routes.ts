@@ -1,5 +1,5 @@
 import type { HeadlineCardId } from "./dashboard-cards";
-import type { KpiDetailMetric } from "./kpi-detail-contract";
+import type { KpiDealFilter, KpiDetailMetric } from "./kpi-detail-contract";
 import { SALES_PROJECTS, type ProjectKey } from "./sales-projects";
 
 export const HEADLINE_KPI_DETAIL: Record<HeadlineCardId, Exclude<KpiDetailMetric, "icp_fit">> = {
@@ -35,7 +35,7 @@ export type DashboardUrlFilters = {
 };
 
 const DASHBOARD_RANGES = ["today", "yesterday", "7", "30", "month", "lastMonth", "custom"] as const;
-const DETAIL_ONLY_KEYS = ["page", "q", "segment", "breakdown", "breakdownValue", "sort"] as const;
+const DETAIL_ONLY_KEYS = ["page", "pageSize", "q", "segment", "breakdown", "breakdownValue", "sort"] as const;
 
 function cleanSearch(search: string) {
   return search.startsWith("?") ? search.slice(1) : search;
@@ -63,12 +63,15 @@ export function updateKpiDetailSearch(search: string, patch: Record<string, stri
   return params.toString();
 }
 
-export function applyDealFilterSearch(search: string, filter: { key: string; value: string } | null) {
-  return updateKpiDetailSearch(search, {
+export function applyDealFilterSearch(search: string, filter: KpiDealFilter | null) {
+  const patch: Record<string, string | number | null | undefined> = {
     page: 1,
     breakdown: filter?.key ?? null,
     breakdownValue: filter?.value ?? null,
-  });
+  };
+  if (filter?.segment) patch.segment = filter.segment;
+  if (filter?.key === "population") patch.segment = filter.value;
+  return updateKpiDetailSearch(search, patch);
 }
 
 /** A native link already handles Enter; this adds the expected Space behavior. */

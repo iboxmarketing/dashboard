@@ -34,6 +34,7 @@ const templateProps = (data: KpiDetailResponse): KpiTemplateProps => ({
   onFilter: noop,
   onDeal: noop,
   onPage: noop,
+  onPageSize: noop,
   onSearch: noop,
   onSegment: noop,
   onSort: noop,
@@ -74,7 +75,7 @@ test("Dashboard filter URL survives detail navigation, refresh and fallback Back
   const serialized = serializeDashboardFilterSearch(parsed, { from: parsed.from, to: parsed.to });
   assert.deepEqual(parseDashboardFilterSearch(serialized, fallback), parsed);
 
-  const detailState = updateKpiDetailSearch(serialized, { page: 3, q: "48102", segment: "late", breakdown: "manager", breakdownValue: "25" });
+  const detailState = updateKpiDetailSearch(serialized, { page: 3, pageSize: 100, q: "48102", sort: "opportunity_desc", segment: "late", breakdown: "manager", breakdownValue: "25" });
   assert.equal(dashboardHref("IBOX", detailState), `/ibox?${serialized}`);
 });
 
@@ -118,6 +119,7 @@ test("Population, Sales, Time and Funnel templates render only API-supplied bloc
   assert.match(renderToStaticMarkup(<SalesDetailTemplate {...templateProps(sales)} />), /data-kpi-template="sales"/);
   const timeHtml = renderToStaticMarkup(<TimeDetailTemplate {...templateProps(time)} />);
   assert.match(timeHtml, /data-kpi-template="time"/);
+  assert.match(timeHtml, /Sahifadagi Deal soni/);
   assert.equal(time.subtitle, "Real o‘tgan vaqt — tun va dam olish kunlari ham kiradi");
   const funnelHtml = renderToStaticMarkup(<FunnelQualityDetailTemplate {...templateProps(funnel)} />);
   assert.match(funnelHtml, /data-kpi-template="funnel"/);
@@ -139,12 +141,13 @@ test("sorted and SLA detail populations expose server-provided Deal toggles", ()
 });
 
 test("breakdown selection updates Deal population state and resets pagination", () => {
-  const next = applyDealFilterSearch(`${inherited}&page=4&q=48102`, { key: "reason", value: "__missing__" });
+  const next = applyDealFilterSearch(`${inherited}&page=4&q=48102`, { key: "reason", value: "__missing__", segment: "lost" });
   const params = new URLSearchParams(next);
   assert.equal(params.get("page"), "1");
   assert.equal(params.get("q"), "48102");
   assert.equal(params.get("breakdown"), "reason");
   assert.equal(params.get("breakdownValue"), "__missing__");
+  assert.equal(params.get("segment"), "lost");
   const cleared = new URLSearchParams(applyDealFilterSearch(next, null));
   assert.equal(cleared.has("breakdown"), false);
   assert.equal(cleared.has("breakdownValue"), false);

@@ -13,6 +13,7 @@ import {
   buildKpiDetail, KPI_ICP_CLASSES_SQL, KPI_METRICS, KpiDetailError, kpiIcpDealIds, parseKpiParams,
   type KpiDetail, type KpiDetailOk, type KpiDetailQuery, type KpiMetric,
 } from "../lib/kpi-detail";
+import { KPI_EMPTY_BREAKDOWN_VALUE, presentKpiDetail } from "../lib/kpi-detail-presenter";
 import { MARKETING_SCHEMA_STATEMENTS } from "../lib/marketing/schema";
 import { groupDealsByProject } from "../lib/project-records";
 import { MISSING_LOSS_REASON } from "../lib/sales-logic";
@@ -125,7 +126,7 @@ const prepared = (project: ProjectKey, rows = ALL) => prepareSalesRecords(rows, 
 const allow = (...denied: PermissionKey[]) => (permission: PermissionKey) => !denied.includes(permission);
 const sales = (over: Partial<SalesQuery> = {}): SalesQuery => ({ from: DAY, to: DAY, managers: [], sources: [], pipeline: "", stage: "", period: "", sla: "", processing: "", search: "", ...over });
 const query = (metric: KpiMetric, over: Partial<KpiDetailQuery> = {}): KpiDetailQuery => ({
-  ...sales(), metric, preset: "custom", segment: "", dimension: "", value: "", page: 1, pageSize: 100, ...over,
+  ...sales(), metric, preset: "custom", segment: "", dimension: "", value: "", dealSearch: "", sort: "", page: 1, pageSize: 100, ...over,
 });
 const detail = (project: ProjectKey, metric: KpiMetric, over: Partial<KpiDetailQuery> = {}, can = allow(), icpClasses?: Map<string, string>) =>
   buildKpiDetail(prepared(project), query(metric, over), { project, can, settings: SETTINGS[project], icpClasses });
@@ -346,7 +347,19 @@ test("filter preservation: manager, source, pipeline and search narrow the detai
   const params = new URLSearchParams("metric=sql&from=2026-09-15&to=2026-09-15&manager=223&source=WEB&preset=custom");
   const parsed = parseSalesQuery(params);
   assert.ok(parsed.ok && parsed.query.managers[0] === "223" && parsed.query.sources[0] === "WEB");
-  assert.deepEqual(parseKpiParams(params), { ok: true, params: { metric: "sql", preset: "custom", segment: "", dimension: "", value: "", page: 1, pageSize: 50 } });
+  assert.deepEqual(parseKpiParams(params), { ok: true, params: { metric: "sql", preset: "custom", segment: "", dimension: "", value: "", dealSearch: "", sort: "", page: 1, pageSize: 50 } });
+});
+
+test("UI query aliases preserve range, exact segment, breakdown, search, sort and page size", () => {
+  const parsed = parseKpiParams(new URLSearchParams("metric=sorted&range=custom&segment=unsorted&breakdown=stage&breakdownValue=C3%3ANEW&q=Deal+101&sort=opportunity_desc&page=2&pageSize=25"));
+  assert.deepEqual(parsed, { ok: true, params: {
+    metric: "sorted", preset: "custom", segment: "unsorted", dimension: "stage", value: "C3:NEW",
+    dealSearch: "Deal 101", sort: "opportunity_desc", page: 2, pageSize: 25,
+  } });
+  assert.deepEqual(parseKpiParams(new URLSearchParams("metric=sql&range=30&breakdown=source&breakdownValue=__empty__")), { ok: true, params: {
+    metric: "sql", preset: "30", segment: "", dimension: "source", value: "", dealSearch: "", sort: "", page: 1, pageSize: 50,
+  } });
+  assert.equal(parseKpiParams(new URLSearchParams("metric=sql&sort=title_desc")).ok, false);
 });
 
 test("pagination: 50 rows by default, 25/50/100 allowed, breakdowns describe the whole population", () => {
@@ -365,6 +378,16 @@ test("pagination: 50 rows by default, 25/50/100 allowed, breakdowns describe the
   for (const breakdown of last.breakdowns) assert.equal(breakdown.total, 120, `${breakdown.key} is not the page`);
   assert.deepEqual(parseKpiParams(new URLSearchParams("metric=leads&pageSize=30")), { ok: false, error: "Sahifa hajmi 25, 50 yoki 100" });
   assert.equal(parseKpiParams(new URLSearchParams("metric=leads&page=0")).ok, false);
+});
+
+test("Deal-only search and Opportunity sorting do not change the KPI or breakdown totals", () => {
+  const base = ok(detail("IBOX", "average_check"));
+  const searched = ok(detail("IBOX", "average_check", { dealSearch: "110" }));
+  assert.equal(searched.hero.value, base.hero.value);
+  assert.deepEqual(searched.breakdowns.map((entry) => entry.total), base.breakdowns.map((entry) => entry.total));
+  assert.deepEqual(searched.deals.rows.map((row) => row.dealId), ["110"]);
+  const descending = ok(detail("IBOX", "average_check", { sort: "opportunity_desc" }));
+  assert.deepEqual(descending.deals.rows.map((row) => row.dealId), ["103", "110"]);
 });
 
 test("empty population: zero counts are real, averages are null, nothing is invented", () => {
@@ -443,7 +466,7 @@ test("bad parameters are refused, never answered with a guess", () => {
 });
 
 test("the routes are guarded by `dashboard` and filter exactly like the Dashboard section", () => {
-  for (const path of ["app/api/kpi-detail/route.ts", "app/api/kpi-detail/deals/route.ts"]) {
+  for (const path of ["app/api/kpi-detail/route.ts", "app/api/kpi-detail/deals/route.ts", "app/api/sales/kpi-detail/route.ts"]) {
     const source = read(path);
     assert.ok(source.indexOf('requirePermission(request, "dashboard")') > 0 && source.indexOf('requirePermission(request, "dashboard")') < source.indexOf("kpiDetailResponse(request"), path);
   }
@@ -453,8 +476,29 @@ test("the routes are guarded by `dashboard` and filter exactly like the Dashboar
   }
   assert.ok(handler.indexOf("filterPermissionError(") < handler.indexOf("await loadSalesRecords("), "filters are refused before anything is read");
   // No formula in the KPI module: it reads the card's metrics object.
-  const module = read("lib/kpi-detail.ts");
-  assert.match(module, /const m = buildDashboardMetrics\(pop\.cohort, pop\.won\);/);
-  assert.match(module, /const pop = salesPopulations\(records, query\);/);
-  assert.doesNotMatch(module, /lossReasonGroup === "MARKETING"|isEligibleCohortDeal|isSalesLost|salesStatus === "WON"/, "no KPI membership rule is re-implemented");
+  const kpiModule = read("lib/kpi-detail.ts");
+  assert.match(kpiModule, /const m = buildDashboardMetrics\(pop\.cohort, pop\.won\);/);
+  assert.match(kpiModule, /const pop = salesPopulations\(records, query\);/);
+  assert.doesNotMatch(kpiModule, /lossReasonGroup === "MARKETING"|isEligibleCohortDeal|isSalesLost|salesStatus === "WON"/, "no KPI membership rule is re-implemented");
+});
+
+test("the server presenter satisfies the real UI contract without changing populations", () => {
+  const raw = ok(detail("IBOX", "sorted"));
+  const response = presentKpiDetail(raw);
+  assert.equal(response.status, "READY");
+  assert.deepEqual([response.project, response.metric, response.template], ["IBOX", "sorted", "population"]);
+  assert.equal(response.hero?.value, String(raw.hero.value));
+  assert.equal(response.deals?.total, String(raw.deals.total));
+  assert.equal(response.deals?.pageSize, raw.deals.pageSize);
+  const unsortedStage = response.breakdowns?.find((entry) => entry.id === "unsorted:stage")?.rows[0];
+  assert.equal(unsortedStage?.dealFilter?.segment, "unsorted");
+  assert.equal(unsortedStage?.dealFilter?.key, "stage");
+
+  const missingSource = ok(detail("IBOX", "leads")).breakdowns.find((entry) => entry.dimension === "source")?.rows.find((row) => row.key === "");
+  if (missingSource) assert.equal(presentKpiDetail(ok(detail("IBOX", "leads"))).breakdowns?.find((entry) => entry.id === "leads:source")?.rows.find((row) => row.cells.source === missingSource.label)?.dealFilter?.value, KPI_EMPTY_BREAKDOWN_VALUE);
+
+  const notApplicable = presentKpiDetail(detail("SALES_DOCTOR", "icp_fit"));
+  assert.equal(notApplicable.status, "NOT_APPLICABLE");
+  assert.equal(notApplicable.hero, undefined);
+  assert.equal(notApplicable.deals, undefined);
 });

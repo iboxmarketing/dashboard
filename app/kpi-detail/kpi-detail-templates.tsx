@@ -17,9 +17,11 @@ export type KpiTemplateProps = {
   data: KpiDetailResponse;
   activeFilter?: { key: string; value: string } | null;
   search?: string;
+  sort?: string;
   onFilter: (filter: KpiDealFilter | null) => void;
   onDeal: (deal: KpiDeal) => void;
   onPage: (page: number) => void;
+  onPageSize: (pageSize: number) => void;
   onSearch: (search: string) => void;
   onSegment: (segment: string) => void;
   onSort: (sort: string) => void;
@@ -137,13 +139,15 @@ function formatDate(value?: string | null) {
   return new Intl.DateTimeFormat("uz-UZ", { timeZone: "Asia/Tashkent", day: "2-digit", month: "2-digit", year: "numeric" }).format(date);
 }
 
-export function DealList({ deals, search = "", activeFilter, onFilter, onDeal, onPage, onSearch, onSegment, onSort }: {
+export function DealList({ deals, search = "", sort = "", activeFilter, onFilter, onDeal, onPage, onPageSize, onSearch, onSegment, onSort }: {
   deals: KpiDealsBlock;
   search?: string;
+  sort?: string;
   activeFilter?: { key: string; value: string } | null;
   onFilter: (filter: KpiDealFilter | null) => void;
   onDeal: (deal: KpiDeal) => void;
   onPage: (page: number) => void;
+  onPageSize: (pageSize: number) => void;
   onSearch: (search: string) => void;
   onSegment: (segment: string) => void;
   onSort: (sort: string) => void;
@@ -159,7 +163,8 @@ export function DealList({ deals, search = "", activeFilter, onFilter, onDeal, o
           <input id="kpi-deal-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Deal ID yoki nomi" />
           {query ? <button type="button" aria-label="Qidiruvni tozalash" onClick={() => { setQuery(""); onSearch(""); }}><X size={14} /></button> : null}
         </form> : null}
-        {deals.sortableOpportunity ? <label className="kpi-sort">Tartib<select aria-label="Opportunity bo‘yicha tartiblash" onChange={(event) => onSort(event.target.value)} defaultValue=""><option value="">Standart</option><option value="opportunity_desc">Opportunity ↓</option><option value="opportunity_asc">Opportunity ↑</option></select></label> : null}
+        {deals.sortableOpportunity ? <label className="kpi-sort">Tartib<select aria-label="Opportunity bo‘yicha tartiblash" onChange={(event) => onSort(event.target.value)} value={sort}><option value="">Standart</option><option value="opportunity_desc">Opportunity ↓</option><option value="opportunity_asc">Opportunity ↑</option></select></label> : null}
+        <label className="kpi-sort">Sahifada<select aria-label="Sahifadagi Deal soni" value={deals.pageSize} onChange={(event) => onPageSize(Number(event.target.value))}><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label>
       </div>
     </div>
     {deals.segments?.length ? <div className="kpi-deal-segments" role="group" aria-label="Deal populyatsiyasi">
@@ -193,8 +198,8 @@ function Analysis({ data, activeFilter, onFilter }: Pick<KpiTemplateProps, "data
 
 function Deals(props: KpiTemplateProps) {
   if (!props.data.deals) return null;
-  return <DealList key={props.search ?? ""} deals={props.data.deals} search={props.search} activeFilter={props.activeFilter} onFilter={props.onFilter}
-    onDeal={props.onDeal} onPage={props.onPage} onSearch={props.onSearch} onSegment={props.onSegment} onSort={props.onSort} />;
+  return <DealList key={props.search ?? ""} deals={props.data.deals} search={props.search} sort={props.sort} activeFilter={props.activeFilter} onFilter={props.onFilter}
+    onDeal={props.onDeal} onPage={props.onPage} onPageSize={props.onPageSize} onSearch={props.onSearch} onSegment={props.onSegment} onSort={props.onSort} />;
 }
 
 export function PopulationDetailTemplate(props: KpiTemplateProps) {

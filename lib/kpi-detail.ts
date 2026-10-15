@@ -50,6 +50,7 @@ export const KPI_CARD: Record<KpiMetric, HeadlineCardId | null> = {
 export type KpiTemplate = "population" | "sales" | "time" | "funnel";
 export type KpiFormat = "count" | "percent" | "money" | "duration_minutes" | "duration_hours" | "text";
 export type KpiDimension = "owner" | "source" | "stage" | "pipeline" | "reason" | "created_day" | "sale_day" | "bucket" | "icp" | "sla_status";
+export type KpiDealSort = "" | "opportunity_asc" | "opportunity_desc";
 
 export const KPI_PAGE_SIZES = [25, 50, 100] as const;
 export const KPI_DEFAULT_PAGE_SIZE = 50;
@@ -65,6 +66,9 @@ export type KpiDetailQuery = SalesQuery & {
   /** Drilldown: one breakdown row of the segment. Both or neither. */
   dimension: KpiDimension | "";
   value: string;
+  /** Detail-list-only search. The inherited Dashboard `search` remains a canonical population filter. */
+  dealSearch: string;
+  sort: KpiDealSort;
   page: number;
   pageSize: number;
 };
@@ -77,19 +81,32 @@ export function parseKpiParams(params: URLSearchParams):
   const text = (key: string) => (params.get(key) ?? "").trim();
   const metric = text("metric");
   if (!isKpiMetric(metric)) return { ok: false, error: "KPI noma’lum" };
-  const preset = text("preset");
+  const preset = text("preset") || text("range");
   if (!(KPI_PRESETS as readonly string[]).includes(preset)) return { ok: false, error: "Sana oralig‘i noto‘g‘ri" };
-  const dimension = text("dimension");
-  const value = params.get("value") ?? "";
+  const directDimension = text("dimension");
+  const uiDimension = text("breakdown");
+  let dimension = directDimension || uiDimension;
+  const valueKey = directDimension ? "value" : "breakdownValue";
+  let value = params.get(valueKey) ?? "";
+  let segment = text("segment");
+  const populationDrilldown = dimension === "population";
+  if (populationDrilldown) {
+    segment = segment || value;
+    dimension = "";
+    value = "";
+  }
   if (dimension && !DIMENSIONS.has(dimension)) return { ok: false, error: "Breakdown o‘lchami noto‘g‘ri" };
-  if (Boolean(dimension) !== params.has("value")) return { ok: false, error: "Drilldown uchun dimension va value birga kerak" };
-  const segment = text("segment");
-  if (segment.length > 40 || value.length > 200) return { ok: false, error: "Parametr juda uzun" };
+  if (!populationDrilldown && Boolean(dimension) !== params.has(valueKey)) return { ok: false, error: "Drilldown uchun dimension va value birga kerak" };
+  if (value === "__empty__") value = "";
+  const dealSearch = text("q");
+  const sort = text("sort");
+  if (sort && sort !== "opportunity_asc" && sort !== "opportunity_desc") return { ok: false, error: "Tartiblash noto‘g‘ri" };
+  if (segment.length > 40 || value.length > 200 || dealSearch.length > 200) return { ok: false, error: "Parametr juda uzun" };
   const page = text("page") ? Number(text("page")) : 1;
   const pageSize = text("pageSize") ? Number(text("pageSize")) : KPI_DEFAULT_PAGE_SIZE;
   if (!Number.isInteger(page) || page < 1 || page > 100_000) return { ok: false, error: "Sahifa noto‘g‘ri" };
   if (!(KPI_PAGE_SIZES as readonly number[]).includes(pageSize)) return { ok: false, error: "Sahifa hajmi 25, 50 yoki 100" };
-  return { ok: true, params: { metric, preset, segment, dimension: dimension as KpiDimension | "", value, page, pageSize } };
+  return { ok: true, params: { metric, preset, segment, dimension: dimension as KpiDimension | "", value, dealSearch, sort: sort as KpiDealSort, page, pageSize } };
 }
 
 /* -------------------------------------------------------------- contract */
@@ -421,7 +438,12 @@ function dealRows(rows: Row[], metric: KpiMetric, icp: IcpView | null): KpiDealR
 
 const SALE_DATE_METRICS = new Set<KpiMetric>(["period_sales", "average_check", "sales_cycle"]);
 
-function sortDeals(rows: Row[], metric: KpiMetric) {
+function sortDeals(rows: Row[], metric: KpiMetric, sort: KpiDealSort) {
+  if (sort) {
+    const direction = sort === "opportunity_asc" ? 1 : -1;
+    return [...rows].sort((a, b) => direction * (a.opportunity - b.opportunity)
+      || b.dealId.localeCompare(a.dealId, undefined, { numeric: true }));
+  }
   const at = (row: Row) => (SALE_DATE_METRICS.has(metric) ? row.wonAt ?? "" : row.createdAt ?? "");
   return [...rows].sort((a, b) => at(b).localeCompare(at(a)) || b.dealId.localeCompare(a.dealId, undefined, { numeric: true }));
 }
@@ -502,11 +524,16 @@ export function buildKpiDetail(records: DashboardRecord[], query: KpiDetailQuery
     drilldown = { segment: listed.key, dimension: query.dimension, value: query.value };
   }
 
+  const normalizedSearch = query.dealSearch.trim().toLocaleLowerCase("uz-UZ");
+  if (normalizedSearch) {
+    population = population.filter((row) => row.dealId.toLocaleLowerCase("uz-UZ").includes(normalizedSearch)
+      || row.title.toLocaleLowerCase("uz-UZ").includes(normalizedSearch));
+  }
   const total = population.length;
   const totalPages = Math.max(1, Math.ceil(total / query.pageSize));
   const page = Math.min(query.page, totalPages);
   const canDeals = context.can("deals");
-  const pageRows = canDeals ? sortDeals(population, metric).slice((page - 1) * query.pageSize, page * query.pageSize) : [];
+  const pageRows = canDeals ? sortDeals(population, metric, query.sort).slice((page - 1) * query.pageSize, page * query.pageSize) : [];
   const deals: KpiDeals = {
     title: drilldown ? `${listed.label} — ${dimensionSpec(drilldown.dimension, metric, icp).labelOf(drilldown.value, population)}` : listed.label,
     populationLabel: listed.label, segment: listed.key, drilldown,

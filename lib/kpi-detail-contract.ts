@@ -53,6 +53,8 @@ export type KpiDealFilter = {
   key: string;
   value: string;
   label?: string | null;
+  /** Exact server segment owning this breakdown row. */
+  segment?: string | null;
 };
 
 export type KpiFunnelStep = {

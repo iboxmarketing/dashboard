@@ -95,6 +95,7 @@ function KpiDetailWorkspace({ session, project, metric, adapter }: {
     return key && value ? { key, value } : null;
   }, [search]);
   const dealSearch = useMemo(() => new URLSearchParams(search).get("q") ?? "", [search]);
+  const dealSort = useMemo(() => new URLSearchParams(search).get("sort") ?? "", [search]);
 
   const navigate = useCallback((next: string) => {
     window.history.pushState(null, "", `${window.location.pathname}${next ? `?${next}` : ""}${window.location.hash}`);
@@ -106,11 +107,13 @@ function KpiDetailWorkspace({ session, project, metric, adapter }: {
     data: state.data,
     activeFilter,
     search: dealSearch,
+    sort: dealSort,
     onFilter: (filter) => navigate(applyDealFilterSearch(search, filter)),
     onDeal: setSelectedDeal,
     onPage: (page) => patch({ page }),
+    onPageSize: (pageSize) => patch({ pageSize, page: 1 }),
     onSearch: (value) => patch({ q: value, page: 1 }),
-    onSegment: (segment) => patch({ segment, page: 1 }),
+    onSegment: (segment) => patch({ segment, breakdown: null, breakdownValue: null, page: 1 }),
     onSort: (sort) => patch({ sort, page: 1 }),
   } satisfies KpiTemplateProps : null;
 

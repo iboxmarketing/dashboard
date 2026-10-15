@@ -2,6 +2,7 @@ import { getD1 } from "@/db";
 import { hasPermission, type PermissionKey } from "@/lib/auth/permissions";
 import type { AuthRole } from "@/lib/auth/types";
 import { buildKpiDetail, KPI_ICP_CLASSES_SQL, KpiDetailError, kpiIcpConfig, kpiIcpDealIds, parseKpiParams } from "@/lib/kpi-detail";
+import { presentKpiDetail } from "@/lib/kpi-detail-presenter";
 import { ensureMarketingSchema } from "@/lib/marketing/store";
 import { loadSalesRecords, requestProject, salesServerTiming } from "@/lib/sales-http";
 import { filterPermissionError, isSalesReady, parseSalesQuery } from "@/lib/sales-sections";
@@ -24,7 +25,7 @@ async function readIcpClasses(dealIds: string[]): Promise<Map<string, string>> {
  * Sales dataset. Deal rows additionally need `deals`, manager breakdowns
  * `managers` — the same permissions that guard those views.
  */
-export async function kpiDetailResponse(request: Request, user: { role: AuthRole; permissions: readonly string[] }, mode: "detail" | "deals") {
+export async function kpiDetailResponse(request: Request, user: { role: AuthRole; permissions: readonly string[] }, mode: "detail" | "deals" | "ui") {
   const can = (permission: PermissionKey) => hasPermission(user.role, user.permissions, permission);
   const scoped = requestProject(request);
   if (!scoped.ok) return scoped.response;
@@ -44,7 +45,9 @@ export async function kpiDetailResponse(request: Request, user: { role: AuthRole
       : undefined;
     const detail = buildKpiDetail(records, query, { project: scoped.project, can, settings, icpClasses });
     const dataAsOf = projectSync?.lastSyncAt ?? sync.lastSyncAt ?? null;
-    const body = mode === "deals"
+    const body = mode === "ui"
+      ? presentKpiDetail(detail)
+      : mode === "deals"
       ? { ready: true, project: scoped.project, metric: detail.metric, status: detail.status, dataAsOf, deals: detail.deals }
       : { ready: true, dataAsOf, ...detail };
     return Response.json(body, { headers: { ...noStore, "server-timing": salesServerTiming(timing) } });

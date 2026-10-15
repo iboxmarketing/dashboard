@@ -221,7 +221,8 @@ test("confirmed deletion changes canonical cohort metrics, not period-sales mone
 test("canonical cohort predicate and active-leads metric both read currentScope", () => {
   const metrics = readFileSync(new URL("../lib/dashboard-metrics.ts", import.meta.url), "utf8");
   assert.equal((metrics.match(/countsAsOperational\(/g) ?? []).length, 1, "exactly one consumer");
-  assert.match(metrics, /active_cohort: eligible\.filter\(\(row\) => row\.salesStatus === "ACTIVE" && countsAsOperational\(row\.currentScope\)\)/);
+  assert.match(metrics, /const active = eligible\.filter\(\(row\) => row\.salesStatus === "ACTIVE" && countsAsOperational\(row\.currentScope\)\)/);
+  assert.match(metrics, /active_cohort: active\.length/);
   const salesLogic = readFileSync(new URL("../lib/sales-logic.ts", import.meta.url), "utf8");
   assert.match(salesLogic, /row\.currentScope === "OUT_OF_SCOPE"/);
   const docs = readFileSync(new URL("../docs/METRICS.md", import.meta.url), "utf8");
