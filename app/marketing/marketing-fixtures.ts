@@ -1,7 +1,7 @@
 import type { ProjectKey } from "@/lib/sales-projects";
 import type {
-  CreativeRankingRow, IcpBreakdown, MarketingCosts, MarketingDealRow, MarketingEntityRow,
-  MarketingFilterOptions, MarketingManagerIcpRow, MarketingSummary,
+  FixtureCreativeRankingRow, FixtureIcpBreakdown, FixtureMarketingDealRow, FixtureMarketingEntityRow,
+  FixtureMarketingManagerIcpRow, FixtureMarketingSummary, MarketingCosts, MarketingCoverage, MarketingFilterOptions,
 } from "./marketing-types";
 
 const available = (values: Partial<MarketingCosts>): MarketingCosts => ({
@@ -29,7 +29,7 @@ const unavailable = (status: Exclude<MarketingCosts["status"], "AVAILABLE">, mes
   roas: null,
 });
 
-const iboxIcp: IcpBreakdown = {
+const iboxIcp: FixtureIcpBreakdown = {
   icpEvaluatedCount: 112,
   icpFitCount: 83,
   icpOtherCount: 29,
@@ -44,7 +44,7 @@ const iboxIcp: IcpBreakdown = {
   ],
 };
 
-const sdIcp: IcpBreakdown = {
+const sdIcp: FixtureIcpBreakdown = {
   icpEvaluatedCount: 65,
   icpFitCount: 47,
   icpOtherCount: 18,
@@ -59,7 +59,7 @@ const sdIcp: IcpBreakdown = {
   ],
 };
 
-export const MARKETING_SUMMARIES: Record<ProjectKey, MarketingSummary> = {
+export const MARKETING_SUMMARIES: Record<ProjectKey, FixtureMarketingSummary> = {
   IBOX: {
     project: "IBOX",
     leadCount: 126,
@@ -98,10 +98,10 @@ export const MARKETING_SUMMARIES: Record<ProjectKey, MarketingSummary> = {
   },
 };
 
-const row = (value: MarketingEntityRow): MarketingEntityRow => value;
+const row = (value: FixtureMarketingEntityRow): FixtureMarketingEntityRow => value;
 const noCosts = unavailable("PENDING", "Spend ma'lumoti kutilmoqda");
 
-const iboxRows: MarketingEntityRow[] = [
+const iboxRows: FixtureMarketingEntityRow[] = [
   row({ id: "cmp-leadgen", level: "CAMPAIGN", parentId: null, name: "Yangi oqim — Lead Gen", secondary: "Meta · Conversion", campaignId: "cmp-leadgen", campaignName: "Yangi oqim — Lead Gen", adSetId: null, adSetName: null, adId: null, platform: "Meta", placement: null, landingId: null, landingLabel: null, landingType: null, marketingSource: "Paid Social", leadCount: 48, classifiedCount: 43, icpEvaluatedCount: 42, icpFitCount: 32, icpOtherCount: 10, icpUnsetCount: 6, icpFitRate: 76, sqlCount: 18, sqlRate: 38, pipelineCount: 12, saleCount: 6, sqlToSaleRate: 33, revenue: 25_200_000, costs: available({ spend: 4_800_000, cpl: 100_000, costPerIcp: 150_000, costPerSql: 266_667, cmc: 800_000, roas: 5.3 }) }),
   row({ id: "cmp-retarget", level: "CAMPAIGN", parentId: null, name: "Retargeting · Ariza ochgan, lekin yakunlamagan auditoriya", secondary: "Meta · Retargeting", campaignId: "cmp-retarget", campaignName: "Retargeting · Ariza ochgan, lekin yakunlamagan auditoriya", adSetId: null, adSetName: null, adId: null, platform: "Meta", placement: null, landingId: null, landingLabel: null, landingType: null, marketingSource: "Paid Social", leadCount: 42, classifiedCount: 37, icpEvaluatedCount: 36, icpFitCount: 27, icpOtherCount: 9, icpUnsetCount: 6, icpFitRate: 75, sqlCount: 16, sqlRate: 38, pipelineCount: 11, saleCount: 4, sqlToSaleRate: 25, revenue: 22_000_000, costs: available({ spend: 3_700_000, cpl: 88_095, costPerIcp: 137_037, costPerSql: 231_250, cmc: 925_000, roas: 5.9 }) }),
   row({ id: "cmp-webinar", level: "CAMPAIGN", parentId: null, name: "Webinar · Kuzgi qabul", secondary: "Meta · Video", campaignId: "cmp-webinar", campaignName: "Webinar · Kuzgi qabul", adSetId: null, adSetName: null, adId: null, platform: "Meta", placement: null, landingId: null, landingLabel: null, landingType: null, marketingSource: "Paid Social", leadCount: 36, classifiedCount: 32, icpEvaluatedCount: 34, icpFitCount: 24, icpOtherCount: 10, icpUnsetCount: 2, icpFitRate: 71, sqlCount: 12, sqlRate: 33, pipelineCount: 6, saleCount: 0, sqlToSaleRate: 0, revenue: 0, costs: available({ spend: 3_300_000, cpl: 91_667, costPerIcp: 137_500, costPerSql: 275_000, cmc: null, roas: 0 }) }),
@@ -125,7 +125,7 @@ const iboxRows: MarketingEntityRow[] = [
   row({ id: "landing-missing", level: "LANDING_FORM", parentId: null, name: "Attribution topilmadi", secondary: "Landing/Form belgilanmagan", campaignId: null, campaignName: null, adSetId: null, adSetName: null, adId: null, platform: "Noma’lum", placement: null, landingId: null, landingLabel: "Attribution topilmadi", landingType: "UNKNOWN", marketingSource: "Attribution topilmadi", leadCount: 3, classifiedCount: 2, icpEvaluatedCount: 3, icpFitCount: 1, icpOtherCount: 2, icpUnsetCount: 0, icpFitRate: 33, sqlCount: 1, sqlRate: 33, pipelineCount: 1, saleCount: 1, sqlToSaleRate: 100, revenue: 4_200_000, costs: available({ spend: 0, cpl: 0, costPerIcp: 0, costPerSql: 0, cmc: 0, roas: null }) }),
 ];
 
-const sdRows: MarketingEntityRow[] = [
+const sdRows: FixtureMarketingEntityRow[] = [
   row({ id: "sd-main", level: "CAMPAIGN", parentId: null, name: "Sales Doctor · Main Leads", secondary: "Meta · Instant Form", campaignId: "sd-main", campaignName: "Sales Doctor · Main Leads", adSetId: null, adSetName: null, adId: null, platform: "Meta", placement: null, landingId: null, landingLabel: null, landingType: null, marketingSource: "Paid Social", leadCount: 57, classifiedCount: 45, icpEvaluatedCount: 42, icpFitCount: 31, icpOtherCount: 11, icpUnsetCount: 15, icpFitRate: 74, sqlCount: 21, sqlRate: 37, pipelineCount: 13, saleCount: 5, sqlToSaleRate: 24, revenue: 22_500_000, costs: noCosts }),
   row({ id: "sd-web", level: "CAMPAIGN", parentId: null, name: "Sales Doctor · Website Applications", secondary: "Google / Website", campaignId: "sd-web", campaignName: "Sales Doctor · Website Applications", adSetId: null, adSetName: null, adId: null, platform: "Website", placement: null, landingId: null, landingLabel: null, landingType: null, marketingSource: "Search", leadCount: 31, classifiedCount: 25, icpEvaluatedCount: 23, icpFitCount: 16, icpOtherCount: 7, icpUnsetCount: 8, icpFitRate: 70, sqlCount: 10, sqlRate: 32, pipelineCount: 6, saleCount: 2, sqlToSaleRate: 20, revenue: 9_000_000, costs: noCosts }),
   row({ id: "sd-broad", level: "AD_SET", parentId: "sd-main", name: "Entrepreneurs · Broad", secondary: "Uzbekistan", campaignId: "sd-main", campaignName: "Sales Doctor · Main Leads", adSetId: "sd-broad", adSetName: "Entrepreneurs · Broad", adId: null, platform: "Meta", placement: null, landingId: null, landingLabel: null, landingType: null, marketingSource: "Paid Social", leadCount: 57, classifiedCount: 45, icpEvaluatedCount: 42, icpFitCount: 31, icpOtherCount: 11, icpUnsetCount: 15, icpFitRate: 74, sqlCount: 21, sqlRate: 37, pipelineCount: 13, saleCount: 5, sqlToSaleRate: 24, revenue: 22_500_000, costs: noCosts }),
@@ -135,7 +135,7 @@ const sdRows: MarketingEntityRow[] = [
   row({ id: "sd-landing", level: "LANDING_FORM", parentId: null, name: "/sales-doctor/diagnostic", secondary: "Website landing page", campaignId: null, campaignName: null, adSetId: null, adSetName: null, adId: null, platform: "Website", placement: null, landingId: "sd-landing", landingLabel: "/sales-doctor/diagnostic", landingType: "WEBSITE", marketingSource: "Search", leadCount: 31, classifiedCount: 25, icpEvaluatedCount: 23, icpFitCount: 16, icpOtherCount: 7, icpUnsetCount: 8, icpFitRate: 70, sqlCount: 10, sqlRate: 32, pipelineCount: 6, saleCount: 2, sqlToSaleRate: 20, revenue: 9_000_000, costs: noCosts }),
 ];
 
-export const MARKETING_ROWS: Record<ProjectKey, MarketingEntityRow[]> = { IBOX: iboxRows, SALES_DOCTOR: sdRows };
+export const MARKETING_ROWS: Record<ProjectKey, FixtureMarketingEntityRow[]> = { IBOX: iboxRows, SALES_DOCTOR: sdRows };
 
 export const MARKETING_OPTIONS: Record<ProjectKey, MarketingFilterOptions> = {
   IBOX: {
@@ -158,7 +158,7 @@ export const MARKETING_OPTIONS: Record<ProjectKey, MarketingFilterOptions> = {
   },
 };
 
-export const MARKETING_MANAGER_ICP: Record<ProjectKey, MarketingManagerIcpRow[]> = {
+export const MARKETING_MANAGER_ICP: Record<ProjectKey, FixtureMarketingManagerIcpRow[]> = {
   IBOX: [
     { managerId: "4151", managerName: "Sanjar Juraev", evaluatedCount: 38, fitCount: 30, fitRate: 79, unsetCount: 4 },
     { managerId: "235", managerName: "Abdulla Norboyev", evaluatedCount: 31, fitCount: 22, fitRate: 71, unsetCount: 5 },
@@ -171,7 +171,12 @@ export const MARKETING_MANAGER_ICP: Record<ProjectKey, MarketingManagerIcpRow[]>
   ],
 };
 
-export function creativeRows(project: ProjectKey): CreativeRankingRow[] {
+export const MARKETING_COVERAGE: Record<ProjectKey, MarketingCoverage> = {
+  IBOX: { deals: 126, withCampaignId: 118, withAdsetId: 114, withAdId: 116, metaInstantForm: 79, website: 36, otherSource: 3, unknown: 8, conflicts: 2, notYetAttributed: 8 },
+  SALES_DOCTOR: { deals: 88, withCampaignId: 80, withAdsetId: 74, withAdId: 71, metaInstantForm: 57, website: 23, otherSource: 0, unknown: 8, conflicts: 1, notYetAttributed: 8 },
+};
+
+export function creativeRows(project: ProjectKey): FixtureCreativeRankingRow[] {
   return MARKETING_ROWS[project].filter((item) => item.level === "AD").map((item) => ({
     adId: item.adId ?? "—",
     adName: item.name,
@@ -190,7 +195,7 @@ const managers = ["Sanjar Juraev", "Abdulla Norboyev", "Otabek Sulaymonov", "Abu
 const stages = ["ОБРАБОТКА", "ВСТРЕЧА НАЗНАЧЕНА", "СОГЛАСИЕ", "Оплата получена"];
 
 /** Deterministic, non-production rows used only to exercise the UI contract. */
-export function buildMarketingDealFixtures(project: ProjectKey, count: number, seed: Partial<MarketingDealRow> = {}): MarketingDealRow[] {
+export function buildMarketingDealFixtures(project: ProjectKey, count: number, seed: Partial<FixtureMarketingDealRow> = {}): FixtureMarketingDealRow[] {
   return Array.from({ length: Math.max(0, count) }, (_, index) => ({
     dealId: `${project === "IBOX" ? "4" : "5"}${String(301 + index).padStart(4, "0")}`,
     title: `${project === "IBOX" ? "IBOX" : "Sales Doctor"} marketing lead ${index + 1}`,

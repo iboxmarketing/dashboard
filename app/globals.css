@@ -1329,10 +1329,27 @@ button:focus-visible, a:focus-visible, summary:focus-visible,
 .marketing-manager-table { min-width: 620px; margin-top: 10px; }
 .marketing-manager-table td, .marketing-manager-table th { font-size: 10px; }
 .marketing-manager-table .sticky-col { position: sticky; left: 0; background: white; }
+.marketing-summary-card:disabled { opacity: 1; cursor: default; }
+.marketing-resource-state { min-height: 86px; padding: 18px; display: flex; align-items: center; justify-content: center; gap: 9px; border: 1px dashed #dce3ee; border-radius: 12px; background: #fafbfc; color: #66738a; font-size: 11px; }
+.marketing-resource-state.compact { min-height: 0; padding: 10px 12px; justify-content: flex-start; border-radius: 9px; }
+.marketing-resource-state.error { border-color: #f0c9c9; background: #fff8f8; color: #a64d4d; }
+.marketing-resource-state.not_applicable { background: #f5f7fa; color: #7b8596; }
+.marketing-resource-state .button { margin-left: auto; }
+.marketing-coverage { border: 1px solid var(--line); border-radius: 11px; background: white; }
+.marketing-coverage summary { padding: 10px 13px; display: flex; align-items: center; gap: 8px; color: #657188; font-size: 10px; font-weight: 750; cursor: pointer; }
+.marketing-coverage summary span { margin-right: auto; }
+.marketing-coverage summary b { padding: 3px 7px; border-radius: 6px; background: #f1f4f8; color: #68758b; font-size: 9px; }
+.marketing-coverage[open] summary { border-bottom: 1px solid var(--line); }
+.marketing-coverage .marketing-resource-state { margin: 10px; }
+.marketing-coverage-grid { padding: 11px; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 7px; }
+.marketing-coverage-grid > div { padding: 8px; border-radius: 8px; background: #f8fafc; }
+.marketing-coverage-grid span { display: block; color: #8792a4; font-size: 8px; }
+.marketing-coverage-grid strong { display: block; margin-top: 3px; color: var(--navy); font-size: 13px; }
 
 @media (max-width: 1280px) {
   .marketing-summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .marketing-ranking-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .marketing-coverage-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 
 @media (max-width: 860px) {
@@ -1350,4 +1367,6 @@ button:focus-visible, a:focus-visible, summary:focus-visible,
   .marketing-ranking-list { display: grid; grid-template-columns: 1fr; }
   .marketing-attribution { padding-left: 12px; padding-right: 12px; }
   .marketing-detail-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .marketing-coverage summary { align-items: flex-start; flex-wrap: wrap; }
+  .marketing-coverage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
