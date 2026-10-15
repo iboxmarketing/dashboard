@@ -73,25 +73,38 @@ that day. Spend `spend_minor` + `currency`; impressions, clicks, reach;
 creative/video/image ids when Meta returns them. **No project is stored on a
 spend row.**
 
-### Spend → project, per AD (owner rule, 2026-10-14)
+### Workspaces (owner decision, 2026-10-14)
+
+| Workspace | Bitrix category | Dashboard project | CRM analytics |
+| --- | --- | --- | --- |
+| IBOX_UZ | 3 (+13 post-sale) | IBOX | active |
+| SD_UZ | 5 (+17 post-sale) | SALES_DOCTOR | active |
+| IBOX_KZ | 41 | — | reserved: configured later |
+| SD_KZ | 33 | — | reserved: configured later |
+| NON_DASHBOARD | anything else (e.g. 1) | — | — |
+
+`lib/marketing/workspaces.ts`. Every attribution row carries `workspace_key`
+(and `project_key` for an active one), so activating KZ needs no schema change.
+The accepted project registry and its rules are untouched.
+
+### Spend → workspace, per AD
 
 Never a whole ad account, never a whole campaign — one account (even one
-campaign) feeds IBOX, Sales Doctor and funnels the dashboard does not report
-(KZ 41/33, category 1). On every read each ad is classified from its Deals: the
-dashboard's attribution (Deal → project) plus the tracking D1's lead → Deal →
-current Bitrix category, which also sees non-dashboard funnels.
+campaign) feeds several funnels. On every read each ad is classified from its
+Deals: the dashboard's attribution (Deal → workspace) plus the tracking D1's
+lead → Deal → current Bitrix category, which also sees KZ and non-dashboard
+funnels.
 
 | Evidence for the ad | Spend goes to |
 | --- | --- |
-| one dashboard project, nothing else | that project |
-| only non-dashboard funnels | NON_DASHBOARD |
-| two or more projects/funnels | MIXED (never forced into a project) |
+| one workspace, nothing else | that workspace |
+| only one non-dashboard funnel | NON_DASHBOARD |
+| two or more workspaces/funnels | MIXED (never forced) |
 | no attributed Deal yet | UNASSIGNED |
 
-A project's Campaign and Ad set spend are rollups of its assigned ads. An ad
-that gets its first Deal later is assigned from then on, with no re-ingestion.
-`GET /api/marketing/spend-assignment` (settings permission) reports all five
-buckets for a range. Granularity: ad × day, Meta's finest stable daily level.
+A project's Campaign and Ad set spend roll up its workspace's assigned ads. An
+ad that gets its first Deal later is assigned from then on, with no
+re-ingestion. Granularity: ad × day, Meta's finest stable daily level.
 
 `POST /api/marketing/meta-sync` `{action:"start", days}` then `{action:"step"}`:
 7-day windows, newest first, checkpointed per account. Needs the Worker secret
@@ -113,7 +126,8 @@ Meta daily rows have no such breakdown.
 | `GET /api/marketing/deals?metric=lead\|icp_fit\|icp_other\|icp_unset\|sql\|pipeline\|sale` | `deals[]` with outcome flags, ICP, IDs/names, channel, conflict |
 | `GET /api/marketing/icp` | `icp` totals, `byChannel`, `byManager` (funnel owner) — for Overview/Managers |
 | `GET /api/marketing/coverage` | `coverage` {deals, withCampaignId, withAdsetId, withAdId, metaInstantForm, website, otherSource, unknown, conflicts, notYetAttributed} |
-| `GET /api/marketing/spend-assignment` | `buckets` {IBOX, SALES_DOCTOR, NON_DASHBOARD, MIXED, UNASSIGNED}: ads, adDays, spendByCurrency, spendUzs; `unresolvedAds` (settings permission) |
+| `GET /api/marketing/spend-assignment` | `buckets` {IBOX_UZ, SD_UZ, IBOX_KZ, SD_KZ, NON_DASHBOARD, MIXED, UNASSIGNED}: ads, adDays, spendByCurrency, spendUzs; `unresolvedAds` (settings permission) |
+| `GET /api/marketing/workspace-coverage` | coverage per workspace; KZ measured on tracking-delivered Deals until activated (settings permission) |
 | `POST /api/marketing/backfill`, `/meta-sync`, `/settings` | jobs and the Marketing setting (`settings` permission) |
 
 ## Operations

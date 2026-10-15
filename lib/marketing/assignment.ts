@@ -1,18 +1,21 @@
-import { projectForCategory, type ProjectKey } from "../sales-projects";
+import { WORKSPACE_KEYS, isWorkspaceKey, workspaceForCategory, type WorkspaceKey } from "./workspaces";
 
 /**
- * Which dashboard project an ad's spend belongs to (owner rule, 2026-10-14).
+ * Which marketing workspace an ad's spend belongs to (owner rules, 2026-10-14).
  *
  * The unit is the AD (Meta Insights are stored per ad and day). Never a whole ad
  * account, never a whole campaign: one account — even one campaign — can feed
- * IBOX, Sales Doctor and funnels the dashboard does not report (KZ 41/33,
- * category 1).
+ * IBOX UZ (3), Sales Doctor UZ (5), IBOX KZ (41), Sales Doctor KZ (33) and
+ * funnels no workspace reports (e.g. category 1).
  *
  *   evidence                                   assignment
- *   one dashboard project, nothing else        that project
- *   only non-dashboard funnels                 NON_DASHBOARD
- *   two or more projects/funnels               MIXED          (never forced)
+ *   one workspace, nothing else                that workspace (IBOX_UZ, SD_UZ, IBOX_KZ, SD_KZ)
+ *   only one non-workspace funnel              NON_DASHBOARD
+ *   two or more workspaces/funnels             MIXED          (never forced)
  *   no attributed Deal yet                     UNASSIGNED
+ *
+ * KZ workspaces are reserved (CRM analytics configured later) but already keep
+ * their own spend.
  *
  * Evidence is read fresh on every request: the dashboard's own attribution
  * (Deal → project), plus the tracking D1's lead → Deal → current Bitrix category,
@@ -20,29 +23,29 @@ import { projectForCategory, type ProjectKey } from "../sales-projects";
  * gets its first Deal tomorrow is assigned tomorrow, with no re-ingestion.
  * Campaign and ad set spend inside a project are rollups of its assigned ads.
  */
-export type SpendAssignment = ProjectKey | "NON_DASHBOARD" | "MIXED" | "UNASSIGNED";
-export const SPEND_BUCKETS: readonly SpendAssignment[] = ["IBOX", "SALES_DOCTOR", "NON_DASHBOARD", "MIXED", "UNASSIGNED"];
+export type SpendAssignment = WorkspaceKey | "NON_DASHBOARD" | "MIXED" | "UNASSIGNED";
+export const SPEND_BUCKETS: readonly SpendAssignment[] = [...WORKSPACE_KEYS, "NON_DASHBOARD", "MIXED", "UNASSIGNED"];
 
-export type AdEvidence = { projects: Set<ProjectKey>; otherCategories: Set<string> };
+export type AdEvidence = { workspaces: Set<WorkspaceKey>; otherCategories: Set<string> };
 
 export function collectAdEvidence(
-  attribution: readonly { adId: string | null; projectKey: string | null }[],
+  attribution: readonly { adId: string | null; workspaceKey: string | null }[],
   trackingCategories: readonly { adId: string | null; categoryId: string | null }[],
 ): Map<string, AdEvidence> {
   const out = new Map<string, AdEvidence>();
   const entry = (adId: string) => {
     let value = out.get(adId);
-    if (!value) { value = { projects: new Set(), otherCategories: new Set() }; out.set(adId, value); }
+    if (!value) { value = { workspaces: new Set(), otherCategories: new Set() }; out.set(adId, value); }
     return value;
   };
   for (const row of attribution) {
-    if (!row.adId || (row.projectKey !== "IBOX" && row.projectKey !== "SALES_DOCTOR")) continue;
-    entry(row.adId).projects.add(row.projectKey);
+    if (!row.adId || !isWorkspaceKey(row.workspaceKey)) continue;
+    entry(row.adId).workspaces.add(row.workspaceKey);
   }
   for (const row of trackingCategories) {
     if (!row.adId || !row.categoryId) continue;
-    const project = projectForCategory(String(row.categoryId));
-    if (project) entry(row.adId).projects.add(project);
+    const workspace = workspaceForCategory(row.categoryId);
+    if (workspace) entry(row.adId).workspaces.add(workspace);
     else entry(row.adId).otherCategories.add(String(row.categoryId));
   }
   return out;
@@ -50,10 +53,10 @@ export function collectAdEvidence(
 
 export function classifyAd(evidence: AdEvidence | undefined): SpendAssignment {
   if (!evidence) return "UNASSIGNED";
-  const destinations = evidence.projects.size + evidence.otherCategories.size;
+  const destinations = evidence.workspaces.size + evidence.otherCategories.size;
   if (!destinations) return "UNASSIGNED";
   if (destinations > 1) return "MIXED";
-  if (evidence.projects.size === 1) return [...evidence.projects][0];
+  if (evidence.workspaces.size === 1) return [...evidence.workspaces][0];
   return "NON_DASHBOARD";
 }
 
@@ -65,7 +68,7 @@ export function assignAds(evidence: ReadonlyMap<string, AdEvidence>, adIds: Iter
 
 export type BucketTotals = { ads: number; adDays: number; spendByCurrency: Record<string, number>; spendUzs: number | null };
 
-/** ASSIGNED_IBOX / ASSIGNED_SD / NON_DASHBOARD / MIXED / UNASSIGNED spend, in native minor units and whole UZS. */
+/** Spend per bucket (IBOX_UZ, SD_UZ, IBOX_KZ, SD_KZ, NON_DASHBOARD, MIXED, UNASSIGNED), native minor units and whole UZS. */
 export function summarizeAssignment(
   rows: readonly { adId: string; spendMinor: number; currency: string }[],
   assignment: ReadonlyMap<string, SpendAssignment>,

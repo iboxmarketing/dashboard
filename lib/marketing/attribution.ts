@@ -41,7 +41,9 @@ export type TrackingEvidence = {
 
 export type MarketingDealAttribution = {
   dealId: string;
-  projectKey: string;
+  workspaceKey: string;
+  /** The dashboard project, for an activated workspace; null for a reserved one. */
+  projectKey: string | null;
   utmSource: string | null; utmMedium: string | null; utmCampaign: string | null; utmContent: string | null; utmTerm: string | null;
   campaignId: string | null; campaignName: string | null;
   adsetId: string | null; adsetName: string | null;
@@ -89,7 +91,8 @@ function landingPath(raw: unknown): string | null {
 
 export function buildDealAttribution(input: {
   deal: Record<string, unknown>;
-  projectKey: string;
+  workspaceKey: string;
+  projectKey: string | null;
   leadCreatedAt: string;
   fields: MarketingFieldMap;
   icpOptions?: Map<string, string>;
@@ -162,6 +165,7 @@ export function buildDealAttribution(input: {
   const icp = readIcp(read("icp"), fields.icp ? input.icpOptions : undefined);
   return {
     dealId: String(deal.ID ?? ""),
+    workspaceKey: input.workspaceKey,
     projectKey: input.projectKey,
     ...utm,
     campaignId: ids.campaignId,

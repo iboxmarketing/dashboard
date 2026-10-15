@@ -10,14 +10,14 @@ import type { MetaDailyRow } from "./meta-insights";
  * can never add a second attribution row or a second day of spend.
  */
 export const ATTRIBUTION_UPSERT = `INSERT INTO marketing_deal_attribution(
-  deal_id, project_key, utm_source, utm_medium, utm_campaign, utm_content, utm_term,
+  deal_id, workspace_key, project_key, utm_source, utm_medium, utm_campaign, utm_content, utm_term,
   campaign_id, campaign_name, adset_id, adset_name, ad_id, ad_name,
   meta_lead_id, form_id, page_id, ad_account_id, placement, landing_path, form_name, locale,
   channel, attribution_source, attribution_conflict, icp_raw, icp_label, icp_class, lead_created_at,
   bitrix_evidence_json, tracking_evidence_json, created_at, updated_at)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(deal_id) DO UPDATE SET
-  project_key = excluded.project_key, utm_source = excluded.utm_source, utm_medium = excluded.utm_medium,
+  workspace_key = excluded.workspace_key, project_key = excluded.project_key, utm_source = excluded.utm_source, utm_medium = excluded.utm_medium,
   utm_campaign = excluded.utm_campaign, utm_content = excluded.utm_content, utm_term = excluded.utm_term,
   campaign_id = excluded.campaign_id, campaign_name = excluded.campaign_name, adset_id = excluded.adset_id,
   adset_name = excluded.adset_name, ad_id = excluded.ad_id, ad_name = excluded.ad_name,
@@ -31,7 +31,7 @@ ON CONFLICT(deal_id) DO UPDATE SET
 
 export function attributionBindings(row: MarketingDealAttribution, now: string) {
   return [
-    row.dealId, row.projectKey, row.utmSource, row.utmMedium, row.utmCampaign, row.utmContent, row.utmTerm,
+    row.dealId, row.workspaceKey, row.projectKey, row.utmSource, row.utmMedium, row.utmCampaign, row.utmContent, row.utmTerm,
     row.campaignId, row.campaignName, row.adsetId, row.adsetName, row.adId, row.adName,
     row.metaLeadId, row.formId, row.pageId, row.adAccountId, row.placement, row.landingPath, row.formName, row.locale,
     row.channel, row.attributionSource, row.attributionConflict ? JSON.stringify(row.attributionConflict) : null,

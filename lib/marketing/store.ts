@@ -3,7 +3,7 @@ import { env } from "cloudflare:workers";
 import { getD1 } from "@/db";
 import { canonicalDealFieldKey } from "../crm-fields";
 import { buildFieldOptionMap } from "../analytics-dictionaries";
-import { recordProject } from "../sales-projects";
+import { recordProject, type ProjectKey } from "../sales-projects";
 import type { AnalyticsRecord, CrmFieldOption } from "../types";
 import { getDictionary } from "../storage";
 import { buildDealAttribution, type MarketingDealAttribution, type TrackingEvidence } from "./attribution";
@@ -14,6 +14,8 @@ import type { AttributionView, SpendRow } from "./metrics";
 import { DEFAULT_MARKETING_USD_TO_UZS, type MarketingFx } from "./money";
 import { assignAds, collectAdEvidence } from "./assignment";
 import { MARKETING_SCHEMA_STATEMENTS } from "./schema";
+import { MARKETING_WORKSPACES, workspaceForProject } from "./workspaces";
+import { trackingCoverageRow, type CoverageEvidence } from "./coverage";
 import { ATTRIBUTION_UPSERT, DAILY_UPSERT, attributionBindings, dailyBindings } from "./sql";
 
 /**
@@ -173,7 +175,7 @@ export async function materializeAttribution(
     .filter((item): item is { record: AnalyticsRecord; project: NonNullable<ReturnType<typeof recordProject>>; deal: Record<string, unknown> } => Boolean(item.project && item.deal));
   const tracking = await lookupTracking(projected.map((item) => item.record.dealId), context?.tracking === undefined ? getTrackingD1() : context.tracking);
   const rows = projected.map(({ record, project, deal }) => buildDealAttribution({
-    deal, projectKey: project, leadCreatedAt: record.createdAt, fields, icpOptions, tracking: tracking.get(record.dealId) ?? null,
+    deal, workspaceKey: workspaceForProject(project), projectKey: project, leadCreatedAt: record.createdAt, fields, icpOptions, tracking: tracking.get(record.dealId) ?? null,
   }));
   await upsertAttributions(rows, context?.db);
   return rows;
@@ -220,14 +222,14 @@ export async function listSpendRows(fromDate: string, toDate: string, filter: Sp
  */
 export async function loadAdEvidence(adIds: readonly string[], db: D1 = getD1(), tracking: D1 | null = getTrackingD1()) {
   await ensureMarketingSchema(db);
-  const attribution: { adId: string | null; projectKey: string | null }[] = [];
+  const attribution: { adId: string | null; workspaceKey: string | null }[] = [];
   const categories: { adId: string | null; categoryId: string | null }[] = [];
   for (let index = 0; index < adIds.length; index += 80) {
     const ids = adIds.slice(index, index + 80);
     const marks = ids.map(() => "?").join(",");
-    const own = await db.prepare(`SELECT DISTINCT ad_id, project_key FROM marketing_deal_attribution WHERE ad_id IN (${marks})`).bind(...ids)
-      .all<{ ad_id: string; project_key: string }>();
-    attribution.push(...(own.results ?? []).map((row) => ({ adId: row.ad_id, projectKey: row.project_key })));
+    const own = await db.prepare(`SELECT DISTINCT ad_id, workspace_key FROM marketing_deal_attribution WHERE ad_id IN (${marks})`).bind(...ids)
+      .all<{ ad_id: string; workspace_key: string }>();
+    attribution.push(...(own.results ?? []).map((row) => ({ adId: row.ad_id, workspaceKey: row.workspace_key })));
     if (!tracking) continue;
     const [leads, site] = await tracking.batch([
       tracking.prepare(`SELECT DISTINCT m.ad_id AS ad_id, h.category_id AS category_id FROM meta_leads m
@@ -245,17 +247,48 @@ export async function loadAdEvidence(adIds: readonly string[], db: D1 = getD1(),
   return collectAdEvidence(attribution, categories);
 }
 
-/** One project's spend: only the ads assigned to it (Campaign/Ad set totals are rollups of these). */
-export async function listSpend(project: string, fromDate: string, toDate: string, filter: SpendFilter = {}, db: D1 = getD1()): Promise<SpendRow[]> {
+/** One project's spend: only the ads assigned to its workspace (Campaign/Ad set totals roll these up). */
+export async function listSpend(project: ProjectKey, fromDate: string, toDate: string, filter: SpendFilter = {}, db: D1 = getD1()): Promise<SpendRow[]> {
   const rows = await listSpendRows(fromDate, toDate, filter, db);
   const assignment = assignAds(await loadAdEvidence([...new Set(rows.map((row) => row.adId))], db), rows.map((row) => row.adId));
-  return rows.filter((row) => assignment.get(row.adId) === project);
+  const workspace = workspaceForProject(project);
+  return rows.filter((row) => assignment.get(row.adId) === workspace);
 }
 
-/** Every ad-day in the range, bucketed: IBOX, SALES_DOCTOR, NON_DASHBOARD, MIXED, UNASSIGNED. */
+/** Every ad-day in the range, bucketed by workspace, NON_DASHBOARD, MIXED or UNASSIGNED. */
 export async function spendAssignmentReport(fromDate: string, toDate: string, db: D1 = getD1()) {
   const rows = await listSpendRows(fromDate, toDate, {}, db);
   const adIds = [...new Set(rows.map((row) => row.adId))];
   const assignment = assignAds(await loadAdEvidence(adIds, db), adIds);
   return { rows, assignment };
+}
+
+/** Coverage evidence for every workspace in [fromDate, toDate] (YYYY-MM-DD): dashboard rows, plus tracking for reserved ones. SELECT only. */
+export async function workspaceCoverageEvidence(fromDate: string, toDate: string, db: D1 = getD1(), tracking: D1 | null = getTrackingD1()) {
+  await ensureMarketingSchema(db);
+  const own = await db.prepare(`SELECT deal_id, workspace_key, campaign_id, adset_id, ad_id, channel, attribution_conflict FROM marketing_deal_attribution
+    WHERE substr(lead_created_at, 1, 10) >= ? AND substr(lead_created_at, 1, 10) <= ?`).bind(fromDate, toDate)
+    .all<{ deal_id: string; workspace_key: string; campaign_id: string | null; adset_id: string | null; ad_id: string | null; channel: string; attribution_conflict: string | null }>();
+  const rows: CoverageEvidence[] = (own.results ?? []).map((row) => ({
+    dealId: row.deal_id, workspaceKey: row.workspace_key, campaignId: row.campaign_id, adsetId: row.adset_id, adId: row.ad_id,
+    channel: row.channel, conflict: Boolean(row.attribution_conflict),
+  }));
+  const reserved = MARKETING_WORKSPACES.filter((workspace) => !workspace.activated);
+  if (tracking && reserved.length) {
+    const cases = reserved.map((workspace) => `WHEN h.category_id IN (${workspace.categoryIds.map((id) => `'${id}'`).join(",")}) THEN '${workspace.key}'`).join(" ");
+    const categories = reserved.flatMap((workspace) => workspace.categoryIds as readonly string[]);
+    const result = await tracking.prepare(`SELECT h.deal_id AS deal_id, CASE ${cases} END AS workspace_key,
+        m.lead_id AS lead_id, m.campaign_id AS mc, m.adset_id AS ma, m.ad_id AS mad, w.submission_id AS submission_id,
+        COALESCE(json_extract(w.attribution_json, '$.last_paid_touch.campaign_id'), json_extract(w.attribution_json, '$.first_touch.campaign_id')) AS wc,
+        COALESCE(json_extract(w.attribution_json, '$.last_paid_touch.adset_id'), json_extract(w.attribution_json, '$.first_touch.adset_id')) AS wa,
+        COALESCE(json_extract(w.attribution_json, '$.last_paid_touch.ad_id'), json_extract(w.attribution_json, '$.first_touch.ad_id')) AS wad
+      FROM deal_health h
+      LEFT JOIN bitrix_delivery d ON d.deal_id = h.deal_id LEFT JOIN meta_leads m ON m.lead_id = d.lead_id
+      LEFT JOIN website_leads w ON w.deal_id = h.deal_id
+      WHERE h.category_id IN (${categories.map(() => "?").join(",")}) AND substr(h.date_create, 1, 10) >= ? AND substr(h.date_create, 1, 10) <= ?`)
+      .bind(...categories, fromDate, toDate).all<Parameters<typeof trackingCoverageRow>[0]>();
+    const known = new Set(rows.map((row) => row.dealId));
+    for (const row of result.results ?? []) if (!known.has(String(row.deal_id))) rows.push(trackingCoverageRow(row));
+  }
+  return rows;
 }

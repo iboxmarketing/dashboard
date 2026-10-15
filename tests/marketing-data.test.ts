@@ -3,7 +3,9 @@ import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
-import { assignAds, classifyAd, collectAdEvidence, summarizeAssignment } from "../lib/marketing/assignment";
+import { SPEND_BUCKETS, assignAds, classifyAd, collectAdEvidence, summarizeAssignment } from "../lib/marketing/assignment";
+import { workspaceForCategory, workspaceForProject } from "../lib/marketing/workspaces";
+import { trackingCoverageRow, workspaceCoverage } from "../lib/marketing/coverage";
 import { buildDealAttribution, stableId } from "../lib/marketing/attribution";
 import { ICP_FIELD, marketingSelect, resolveMarketingFields } from "../lib/marketing/fields";
 import { countIcp, icpClassFromLabel, readIcp } from "../lib/marketing/icp";
@@ -92,7 +94,7 @@ test("raw_deals keeps marketing evidence: Full and incremental sync select the r
 
 const deal = (fields: Record<string, unknown>) => ({ ID: "501", ...fields });
 const attribute = (fields: Record<string, unknown>, tracking: Parameters<typeof buildDealAttribution>[0]["tracking"] = null, projectKey = "IBOX") =>
-  buildDealAttribution({ deal: deal(fields), projectKey, leadCreatedAt: "2026-10-01T05:00:00.000Z", fields: RESOLVED.fields, icpOptions: ICP_OPTIONS, tracking });
+  buildDealAttribution({ deal: deal(fields), workspaceKey: projectKey === "SALES_DOCTOR" ? "SD_UZ" : "IBOX_UZ", projectKey, leadCreatedAt: "2026-10-01T05:00:00.000Z", fields: RESOLVED.fields, icpOptions: ICP_OPTIONS, tracking });
 
 const META_LEAD = {
   lead_id: "9000000000000001", page_id: "299589696560259", form_id: "964981302338971", form_name: "Optom forma",
@@ -155,7 +157,7 @@ test("attribution is project-aware: the Deal's own project, never another's", ()
   assert.match(store, /\.map\(\(record\) => \(\{ record, project: recordProject\(record\), deal: byId\.get\(record\.dealId\) \}\)\)/);
   assert.match(store, /FROM marketing_deal_attribution WHERE project_key = \? AND lead_created_at >= \? AND lead_created_at <= \?/);
   // A project's spend is exactly its assigned ads' spend.
-  assert.match(store, /return rows\.filter\(\(row\) => assignment\.get\(row\.adId\) === project\);/);
+  assert.match(store, /const workspace = workspaceForProject\(project\);\n\s+return rows\.filter\(\(row\) => assignment\.get\(row\.adId\) === workspace\);/);
   // The tracking D1 is SELECT-only.
   const trackingSql = store.slice(store.indexOf("export async function lookupTracking"), store.indexOf("/* ---------------------------------------------- materialize"));
   assert.doesNotMatch(trackingSql, /\b(INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP)\b/i);
@@ -366,50 +368,84 @@ test("Meta Insights: parse, paging, newest-first windows, token never in an erro
 
 /* ------------------------------------------------- ad-level spend assignment */
 
-test("spend is assigned per ad: one project → that project; non-dashboard, mixed and no-Deal ads never leak", () => {
+test("spend is assigned per ad to a workspace: UZ and reserved KZ apart; category 1, mixed and no-Deal ads never leak", () => {
   const evidence = collectAdEvidence(
     [
-      { adId: "A_IBOX", projectKey: "IBOX" }, { adId: "A_IBOX", projectKey: "IBOX" },
-      { adId: "A_SD", projectKey: "SALES_DOCTOR" },
-      { adId: "A_BOTH", projectKey: "IBOX" }, { adId: "A_BOTH", projectKey: "SALES_DOCTOR" },
-      { adId: "A_IBOX_KZ", projectKey: "IBOX" },
+      { adId: "A_IBOX", workspaceKey: "IBOX_UZ" }, { adId: "A_IBOX", workspaceKey: "IBOX_UZ" },
+      { adId: "A_SD", workspaceKey: "SD_UZ" },
+      { adId: "A_BOTH", workspaceKey: "IBOX_UZ" }, { adId: "A_BOTH", workspaceKey: "SD_UZ" },
+      { adId: "A_UZ_KZ", workspaceKey: "IBOX_UZ" },
     ],
     [
-      { adId: "A_IBOX", categoryId: "13" },        // IBOX post-sale: still IBOX
-      { adId: "A_SD", categoryId: "17" },          // SD post-sale: still SD
-      { adId: "A_KZ", categoryId: "41" }, { adId: "A_KZ", categoryId: "33" }, // two non-dashboard funnels
+      { adId: "A_IBOX", categoryId: "13" },        // IBOX post-sale: still IBOX_UZ
+      { adId: "A_SD", categoryId: "17" },          // SD post-sale: still SD_UZ
+      { adId: "A_IBOX_KZ", categoryId: "41" },     // reserved workspace, kept apart
+      { adId: "A_SD_KZ", categoryId: "33" },
       { adId: "A_CAT1", categoryId: "1" },
-      { adId: "A_IBOX_KZ", categoryId: "41" },     // the same ad also fed IBOX KZ
+      { adId: "A_UZ_KZ", categoryId: "41" },       // the same ad fed IBOX UZ and IBOX KZ
+      { adId: "A_KZ_BOTH", categoryId: "41" }, { adId: "A_KZ_BOTH", categoryId: "33" },
     ],
   );
-  const assignment = assignAds(evidence, ["A_IBOX", "A_SD", "A_BOTH", "A_KZ", "A_CAT1", "A_IBOX_KZ", "A_NEW"]);
-  assert.deepEqual(Object.fromEntries(assignment), {
-    A_IBOX: "IBOX", A_SD: "SALES_DOCTOR", A_BOTH: "MIXED", A_KZ: "MIXED", A_CAT1: "NON_DASHBOARD", A_IBOX_KZ: "MIXED", A_NEW: "UNASSIGNED",
+  const ids = ["A_IBOX", "A_SD", "A_BOTH", "A_IBOX_KZ", "A_SD_KZ", "A_CAT1", "A_UZ_KZ", "A_KZ_BOTH", "A_NEW"];
+  assert.deepEqual(Object.fromEntries(assignAds(evidence, ids)), {
+    A_IBOX: "IBOX_UZ", A_SD: "SD_UZ", A_BOTH: "MIXED", A_IBOX_KZ: "IBOX_KZ", A_SD_KZ: "SD_KZ", A_CAT1: "NON_DASHBOARD",
+    A_UZ_KZ: "MIXED", A_KZ_BOTH: "MIXED", A_NEW: "UNASSIGNED",
   });
-  assert.equal(classifyAd({ projects: new Set(), otherCategories: new Set(["33"]) }), "NON_DASHBOARD");
+  assert.equal(classifyAd({ workspaces: new Set(), otherCategories: new Set(["1"]) }), "NON_DASHBOARD");
+  assert.deepEqual(SPEND_BUCKETS, ["IBOX_UZ", "SD_UZ", "IBOX_KZ", "SD_KZ", "NON_DASHBOARD", "MIXED", "UNASSIGNED"]);
+  // Workspaces map exactly the owner's categories; projects stay the accepted registry.
+  assert.deepEqual(["3", "13", "5", "17", "41", "33", "1"].map(workspaceForCategory), ["IBOX_UZ", "IBOX_UZ", "SD_UZ", "SD_UZ", "IBOX_KZ", "SD_KZ", null]);
+  assert.deepEqual([workspaceForProject("IBOX"), workspaceForProject("SALES_DOCTOR")], ["IBOX_UZ", "SD_UZ"]);
+  assert.doesNotMatch(read("lib/sales-projects.ts"), /IBOX_KZ|SD_KZ|"41"|"33"/, "KZ is not a dashboard project yet");
   // Never by account, never by campaign: neither is an input to the decision.
   assert.doesNotMatch(read("lib/marketing/assignment.ts"), /campaign_id|ad_account|campaignId|adAccountId/);
-  assert.doesNotMatch(read("lib/marketing/jobs.ts"), /projectKey/, "ingest assigns no project");
+  assert.doesNotMatch(read("lib/marketing/jobs.ts"), /projectKey|workspaceKey/, "ingest assigns no workspace");
   const dailyTable = MARKETING_SCHEMA_STATEMENTS.find((statement) => statement.startsWith("CREATE TABLE IF NOT EXISTS marketing_meta_daily"))!;
-  assert.doesNotMatch(dailyTable, /project_key/, "no stored project on spend rows");
+  assert.doesNotMatch(dailyTable, /project_key|workspace_key/, "no stored owner on spend rows");
+  const attributionTable = MARKETING_SCHEMA_STATEMENTS[0];
+  assert.match(attributionTable, /workspace_key TEXT NOT NULL,\n  project_key TEXT,/, "every Deal row carries its workspace; KZ needs no schema change");
 
+  const assignment = assignAds(evidence, ids);
   const rows = [
     { adId: "A_IBOX", spendMinor: 1000, currency: "USD" }, { adId: "A_SD", spendMinor: 500, currency: "USD" },
+    { adId: "A_IBOX_KZ", spendMinor: 400, currency: "USD" }, { adId: "A_SD_KZ", spendMinor: 300, currency: "USD" },
     { adId: "A_BOTH", spendMinor: 300, currency: "USD" }, { adId: "A_CAT1", spendMinor: 200, currency: "USD" },
     { adId: "A_NEW", spendMinor: 100, currency: "USD" }, { adId: "A_NEW", spendMinor: 100, currency: "USD" },
   ];
   const buckets = summarizeAssignment(rows, assignment, (minor, currency) => minorToUzs(minor, currency, FX));
-  assert.deepEqual([buckets.IBOX.spendUzs, buckets.SALES_DOCTOR.spendUzs, buckets.NON_DASHBOARD.spendUzs, buckets.MIXED.spendUzs, buckets.UNASSIGNED.spendUzs],
-    [118_000, 59_000, 23_600, 35_400, 23_600]);
+  assert.deepEqual(SPEND_BUCKETS.map((bucket) => buckets[bucket].spendUzs), [118_000, 59_000, 47_200, 35_400, 23_600, 35_400, 23_600]);
   assert.deepEqual([buckets.UNASSIGNED.ads, buckets.UNASSIGNED.adDays], [1, 2]);
   const total = Object.values(buckets).reduce((sum, bucket) => sum + (bucket.spendUzs ?? 0), 0);
-  assert.equal(total, minorToUzs(2200, "USD", FX), "every ad-day lands in exactly one bucket");
+  assert.equal(total, minorToUzs(2900, "USD", FX), "every ad-day lands in exactly one bucket");
+});
+
+test("coverage per workspace: UZ on dashboard attribution, reserved KZ on tracking-delivered Deals", () => {
+  const kz = trackingCoverageRow({ deal_id: "70001", workspace_key: "IBOX_KZ", lead_id: "9000000000000009", mc: "120200000000000041", ma: null, mad: "120200000000004101", submission_id: null, wc: null, wa: null, wad: null });
+  assert.deepEqual(kz, { dealId: "70001", workspaceKey: "IBOX_KZ", campaignId: "120200000000000041", adsetId: null, adId: "120200000000004101", channel: "META_INSTANT_FORM", conflict: false });
+  const site = trackingCoverageRow({ deal_id: "70002", workspace_key: "SD_KZ", lead_id: null, mc: null, ma: null, mad: null, submission_id: "s9", wc: "120200000000000033", wa: "120200000000003301", wad: null });
+  assert.equal(site.channel, "WEBSITE");
+  const coverage = workspaceCoverage([
+    { dealId: "1", workspaceKey: "IBOX_UZ", campaignId: "C", adsetId: "S", adId: "A", channel: "META_INSTANT_FORM", conflict: false },
+    { dealId: "2", workspaceKey: "IBOX_UZ", campaignId: null, adsetId: null, adId: null, channel: "UNKNOWN", conflict: false },
+    { dealId: "3", workspaceKey: "SD_UZ", campaignId: "C", adsetId: null, adId: "A", channel: "WEBSITE", conflict: true },
+    kz, site, { ...kz }, // a repeated Deal counts once
+  ]);
+  assert.deepEqual(Object.keys(coverage), ["IBOX_UZ", "SD_UZ", "IBOX_KZ", "SD_KZ"]);
+  assert.deepEqual([coverage.IBOX_UZ.deals, coverage.IBOX_UZ.withAdId, coverage.IBOX_UZ.unknown], [2, 1, 1]);
+  assert.deepEqual([coverage.SD_UZ.website, coverage.SD_UZ.conflicts], [1, 1]);
+  assert.deepEqual([coverage.IBOX_KZ.deals, coverage.IBOX_KZ.measuredOn], [1, "TRACKING_DELIVERED_DEALS"]);
+  assert.deepEqual([coverage.SD_KZ.deals, coverage.SD_KZ.withAdsetId], [1, 1]);
+  assert.equal(coverage.SD_UZ.measuredOn, "DASHBOARD_ATTRIBUTION");
+  const store = read("lib/marketing/store.ts");
+  const kzSql = store.slice(store.indexOf("export async function workspaceCoverageEvidence"));
+  assert.doesNotMatch(kzSql.slice(kzSql.indexOf("if (tracking && reserved.length)")), /\b(INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP)\b/i, "tracking stays read-only");
+  assert.match(read("app/api/marketing/workspace-coverage/route.ts"), /export async function GET\(request: Request\) \{\n  const denied = await authorizePermission\(request, "settings"\);/);
 });
 
 test("campaign and ad set spend inside a project roll up its assigned ads only", () => {
-  const assignment = new Map([["A1", "IBOX"], ["A2", "MIXED"]]);
+  const assignment = new Map([["A1", "IBOX_UZ"], ["A2", "MIXED"]]);
   const all = [spend("A1", 1000, { campaignId: "C1", adsetId: "S1" }), spend("A2", 9000, { campaignId: "C1", adsetId: "S1" })];
-  const ibox = all.filter((row) => assignment.get(row.adId) === "IBOX"); // what listSpend returns for IBOX
+  const ibox = all.filter((row) => assignment.get(row.adId) === "IBOX_UZ"); // what listSpend returns for IBOX
   const [campaign] = buildEntities({ level: "campaign", cohort: [], attribution: new Map(), spend: ibox, fx: FX });
   const [adset] = buildEntities({ level: "adset", cohort: [], attribution: new Map(), spend: ibox, fx: FX });
   assert.equal(campaign.spendUzs, 118_000, "the MIXED ad of the same campaign is not forced in");

@@ -6,7 +6,8 @@
 -- database before deploying the build that reads it.
 CREATE TABLE IF NOT EXISTS marketing_deal_attribution (
   deal_id TEXT PRIMARY KEY NOT NULL,
-  project_key TEXT NOT NULL,
+  workspace_key TEXT NOT NULL,
+  project_key TEXT,
   utm_source TEXT, utm_medium TEXT, utm_campaign TEXT, utm_content TEXT, utm_term TEXT,
   campaign_id TEXT, campaign_name TEXT,
   adset_id TEXT, adset_name TEXT,
@@ -23,6 +24,7 @@ CREATE TABLE IF NOT EXISTS marketing_deal_attribution (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_mda_workspace_created ON marketing_deal_attribution(workspace_key, lead_created_at);
 CREATE INDEX IF NOT EXISTS idx_mda_project_created ON marketing_deal_attribution(project_key, lead_created_at);
 CREATE INDEX IF NOT EXISTS idx_mda_campaign ON marketing_deal_attribution(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_mda_adset ON marketing_deal_attribution(adset_id);

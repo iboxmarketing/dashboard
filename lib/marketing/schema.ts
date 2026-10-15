@@ -3,7 +3,9 @@
  * same statements; a test keeps the two identical).
  *
  * marketing_deal_attribution  one row per Deal, keyed by deal_id: the normalized
- *   attribution plus its raw evidence. An upsert, so re-running a backfill or a
+ *   attribution plus its raw evidence, with its marketing workspace (IBOX_UZ,
+ *   SD_UZ, IBOX_KZ, SD_KZ — lib/marketing/workspaces.ts) and, for an activated
+ *   workspace, its dashboard project. An upsert, so re-running a backfill or a
  *   sync never produces a second row for a Deal.
  * marketing_meta_daily        Meta Ads Insights, one row per (date, ad_id): a
  *   re-fetch of the same day replaces that day's numbers and never adds spend.
@@ -16,7 +18,8 @@
 export const MARKETING_SCHEMA_STATEMENTS: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS marketing_deal_attribution (
   deal_id TEXT PRIMARY KEY NOT NULL,
-  project_key TEXT NOT NULL,
+  workspace_key TEXT NOT NULL,
+  project_key TEXT,
   utm_source TEXT, utm_medium TEXT, utm_campaign TEXT, utm_content TEXT, utm_term TEXT,
   campaign_id TEXT, campaign_name TEXT,
   adset_id TEXT, adset_name TEXT,
@@ -33,6 +36,7 @@ export const MARKETING_SCHEMA_STATEMENTS: readonly string[] = [
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 )`,
+  "CREATE INDEX IF NOT EXISTS idx_mda_workspace_created ON marketing_deal_attribution(workspace_key, lead_created_at)",
   "CREATE INDEX IF NOT EXISTS idx_mda_project_created ON marketing_deal_attribution(project_key, lead_created_at)",
   "CREATE INDEX IF NOT EXISTS idx_mda_campaign ON marketing_deal_attribution(campaign_id)",
   "CREATE INDEX IF NOT EXISTS idx_mda_adset ON marketing_deal_attribution(adset_id)",
