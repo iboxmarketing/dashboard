@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { drillMarketingEntity, marketingDealRequest, MarketingView } from "../app/marketing/marketing-view";
+import { ATTRIBUTED_SPEND_HELP, drillMarketingEntity, marketingDealRequest, MarketingView, reconcileMarketingFilters } from "../app/marketing/marketing-view";
 import { CostValue } from "../app/marketing/marketing-shared";
 import {
   FixtureMarketingAdapter, HttpMarketingAdapter, MARKETING_ENDPOINTS, MarketingAdapterError,
@@ -14,7 +14,7 @@ import {
   EMPTY_MARKETING_FILTERS, parseMarketingUrlState, serializeMarketingUrlState,
 } from "../app/marketing/marketing-url-state";
 import { MARKETING_WORKSPACES } from "../app/marketing/marketing-workspaces";
-import type { MarketingDealRequest, MarketingFilters } from "../app/marketing/marketing-types";
+import { EMPTY_MARKETING_OPTIONS as EMPTY_MARKETING_FILTERS_OPTIONS, type MarketingDealRequest, type MarketingFilters } from "../app/marketing/marketing-types";
 
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 const fixture = new FixtureMarketingAdapter();
@@ -61,7 +61,13 @@ test("Marketing components depend on the adapter interface, with fixture and HTT
   assert.equal(new HttpMarketingAdapter(async () => json({}) as never).source, "http");
   const components = read("app/marketing/marketing-view.tsx") + read("app/marketing/marketing-additions.tsx") + read("app/marketing/marketing-shared.tsx");
   assert.doesNotMatch(components, /fixtureMarketingAdapter|MARKETING_SUMMARIES|MARKETING_ROWS/);
-  assert.match(read("app/dashboard-client.tsx"), /const marketingAdapter = new FixtureMarketingAdapter\(\)/, "one composition-root swap activates HTTP later");
+  // Integration (V1): the runtime composition root is the real HTTP adapter; fixtures are test/demo only.
+  const client = read("app/dashboard-client.tsx");
+  assert.match(client, /const marketingAdapter = new HttpMarketingAdapter\(\);/);
+  assert.doesNotMatch(client, /FixtureMarketingAdapter|marketing-fixtures/, "no fixture adapter in runtime");
+  for (const path of ["app/marketing/marketing-view.tsx", "app/marketing/marketing-additions.tsx", "app/marketing/marketing-shared.tsx", "app/marketing/marketing-url-state.ts"]) {
+    assert.doesNotMatch(read(path), /marketing-fixtures|FixtureMarketingAdapter/, path);
+  }
 });
 
 test("HttpMarketingAdapter binds the five agreed GET endpoints and maps response names without calculating metrics", async () => {
@@ -236,7 +242,88 @@ test("coverage stays behind a compact details affordance and UI performs no metr
 
 test("Overview and Managers keep their existing placement with adapter-only Marketing blocks", () => {
   const client = read("app/dashboard-client.tsx");
-  assert.match(client, /<MarketingOverviewAdditions workspace=\{marketingWorkspaceForProject\(project\)\} adapter=\{marketingAdapter\} \/>/);
-  assert.match(client, /<ManagerIcpAdditions workspace=\{marketingWorkspaceForProject\(project\)\} adapter=\{marketingAdapter\} \/>/);
+  // Same placement; the additions now follow the host page's own date range.
+  assert.match(client, /<MarketingOverviewAdditions workspace=\{marketingWorkspaceForProject\(project\)\} adapter=\{marketingAdapter\} range=\{marketingRange\} \/>/);
+  assert.match(client, /<ManagerIcpAdditions workspace=\{marketingWorkspaceForProject\(project\)\} adapter=\{marketingAdapter\} range=\{rangeBounds\(filters\)\} \/>/);
   assert.match(client, /<MarketingView workspace=\{marketingWorkspaceForProject\(project\)\} adapter=\{marketingAdapter\} \/>/);
+});
+
+/* ---------- Marketing V1 integration: real HTTP contract ---------- */
+
+test("integration: the HTTP adapter binds backend costStatus, funnel rates, spend attribution and Meta status", async () => {
+  const bucket = (spendUzs: number, ads: number) => ({ ads, adDays: ads * 2, spendByCurrency: { USD: Math.round(spendUzs / 118) }, spendUzs });
+  const payload = {
+    ...common(),
+    spendStatus: "AVAILABLE",
+    meta: { status: "AVAILABLE", since: "2025-10-15", until: "2026-10-15", updatedAt: "2026-10-15T10:05:00Z", accounts: 4 },
+    spendAttribution: { assigned: bucket(39_201_960, 70), otherWorkspaces: bucket(19_899_402, 84), mixed: bucket(3_176_324, 1), unassigned: bucket(44_551_844, 498), nonDashboard: bucket(4_180_976, 8) },
+    options: { marketingSources: [], platforms: [], campaigns: [{ id: "120258774035960093", name: "CBO 150$" }], adSets: [], ads: [], placements: [], landingForms: [] },
+    summary: { ...summaryPayload.summary, costStatus: "NOT_INGESTED", spendUzs: null, cmcUzs: null, roas: null, cplUzs: null, costPerSqlUzs: null, costPerIcpFitUzs: null,
+      saralanganRate: 0.85, sqlRate: 0.3, saleRate: 0.25, icpEvaluationShare: 0.27 },
+  };
+  const adapter = new HttpMarketingAdapter((async () => json(payload)) as never);
+  const response = await adapter.getSummary(context);
+  assert.equal(response.summary.costs.status, "NOT_INGESTED", "the backend's verdict wins over inference");
+  assert.equal(response.summary.costs.spend, null, "null stays null — never 0");
+  assert.equal(response.summary.costs.currency, "UZS", "UZS fields are never labelled with the native USD currency");
+  assert.deepEqual([response.summary.classifiedRate, response.summary.sqlRate, response.summary.sqlToSaleRate, response.summary.icpEvaluationShare], [0.85, 0.3, 0.25, 0.27]);
+  assert.equal(response.spendAttribution?.unassigned.spendUzs, 44_551_844);
+  assert.equal(response.meta?.until, "2026-10-15");
+  assert.equal(response.usdToUzs, 11_800);
+  assert.deepEqual(response.options.campaigns, [{ id: "120258774035960093", name: "CBO 150$" }]);
+});
+
+test("integration: costs render the owner's formats and never show null as 0", () => {
+  const costs = resolveMarketingCosts({ ...cost, spendUzs: 39_201_960, cmcUzs: 5_888_436, roas: 0.8791, cplUzs: 45_941, costStatus: "AVAILABLE", spendApplies: true, saleCount: 2 });
+  assert.equal(renderToStaticMarkup(<CostValue costs={costs} metric="spend" />), "39.2 mln UZS");
+  assert.equal(renderToStaticMarkup(<CostValue costs={costs} metric="cmc" />), "5.89 mln UZS / mijoz");
+  assert.equal(renderToStaticMarkup(<CostValue costs={costs} metric="roas" />), "0.88x");
+  assert.equal(renderToStaticMarkup(<CostValue costs={costs} metric="cpl" />), "45 941 UZS");
+  assert.equal(renderToStaticMarkup(<CostValue costs={{ ...costs, roas: 5.2240 }} metric="roas" />), "5.22x");
+  assert.equal(renderToStaticMarkup(<CostValue costs={{ ...costs, roas: 0.012984 }} metric="roas" />), "0.013x");
+  assert.equal(renderToStaticMarkup(<CostValue costs={{ ...costs, roas: 0 }} metric="roas" />), "0x", "a real 0 ROAS (spend, no revenue)");
+  const noSales = resolveMarketingCosts({ ...cost, cmcUzs: null, costStatus: "NO_SALES", spendApplies: true, saleCount: 0 });
+  assert.match(renderToStaticMarkup(<CostValue costs={noSales} metric="cmc" />), /Sotuv yo‘q/);
+  for (const status of ["NOT_INGESTED", "PENDING", "NO_SPEND", "CURRENCY_UNAVAILABLE", "NOT_APPLICABLE"] as const) {
+    const html = renderToStaticMarkup(<CostValue costs={resolveMarketingCosts({ ...cost, costStatus: status, spendApplies: true, saleCount: 1 })} metric="spend" />);
+    assert.match(html, /marketing-unavailable/, status);
+    assert.doesNotMatch(html, /\b0 UZS/, status);
+  }
+});
+
+test("integration: attributed-spend labelling, data-quality buckets and Ad / Creative ranking wording", () => {
+  const view = read("app/marketing/marketing-view.tsx");
+  assert.equal(ATTRIBUTED_SPEND_HELP, "CMC va ROAS faqat workspace'ga ishonchli biriktirilgan reklama xarajatidan hisoblanadi. Biriktirilmagan yoki mixed xarajatlar hisobga kiritilmaydi.");
+  assert.match(view, /Biriktirilgan reklama xarajati <span className="marketing-help" title=\{ATTRIBUTED_SPEND_HELP\}/);
+  assert.match(view, /<th title=\{ATTRIBUTED_SPEND_HELP\}>Biriktirilgan spend<\/th>/);
+  for (const label of ["Biriktirilmagan", "Mixed", "Non-dashboard funnel", "Boshqa workspace’lar"]) assert.ok(view.includes(`label="${label}"`), label);
+  assert.match(view, /<summary><span>Data quality \/ Attribution coverage<\/span>/, "an expandable area, not the main KPI row");
+  assert.match(view, /<h2>Ad \/ Creative ranking<\/h2>/);
+  assert.doesNotMatch(view, /Video ranking/);
+  assert.match(view, /Marketing kursi: 1 USD = /, "marketing FX shown as marketing data, not Finance");
+  assert.match(view, /Marketing ma’lumoti yangilangan: \$\{fmtStamp\(summaryResponse\?\.meta\?\.updatedAt\)\}/);
+  assert.match(view, /CRM sync \{fmtStamp\(summaryResponse\?\.dataAsOf\)\}/, "Meta time and CRM sync time are separate");
+  // One conversion per card, each against the step before.
+  assert.match(view, /Leaddan` : "Tanlangan marketing cohort"/);
+  assert.match(view, /Saralangandan` : "Marketing cohort"/);
+  assert.match(view, /SQL’dan` : "Marketing cohort"/);
+  assert.match(view, /Faqat \{formatMarketingRate\(summary\.icpEvaluationShare\)\} Lead baholangan/, "low ICP evaluation coverage is visible next to the rate");
+});
+
+test("integration: a stale child filter from another parent is cleared, never silently active", () => {
+  const options = { ...EMPTY_MARKETING_FILTERS_OPTIONS, adSets: [{ id: "S1", name: "S1" }], ads: [{ id: "A1", name: "A1" }] };
+  const base = { ...EMPTY_MARKETING_FILTERS, campaignId: "C1" } as MarketingFilters;
+  const kept = { ...base, adsetId: "S1", adId: "A1" };
+  assert.equal(reconcileMarketingFilters(kept, options), kept, "valid children are kept as the same object (no re-render loop)");
+  assert.deepEqual(reconcileMarketingFilters({ ...base, adsetId: "S_OTHER", adId: "A1" }, options), { ...base, adsetId: "", adId: "" });
+  assert.deepEqual(reconcileMarketingFilters({ ...base, adsetId: "S1", adId: "A_OTHER" }, options), { ...base, adsetId: "S1", adId: "" });
+});
+
+test("integration: Deal drilldown keeps the exact workspace, date and entity context", () => {
+  const filters = { ...EMPTY_MARKETING_FILTERS, startDate: "2026-09-15", endDate: "2026-10-14", placement: "ig_feed", landing: "/uz" } as MarketingFilters;
+  const row = { id: "120258774036060093", level: "ad", campaignId: "120258774035960093", adSetId: "120258774036320093", adId: "120258774036060093" } as never;
+  const request = marketingDealRequest({ workspace: "IBOX_UZ", filters }, "sql", "SQL", 4, row);
+  assert.deepEqual([request.workspace, request.metric, request.expectedCount], ["IBOX_UZ", "sql", 4]);
+  assert.deepEqual([request.filters.startDate, request.filters.endDate, request.filters.campaignId, request.filters.adsetId, request.filters.adId, request.filters.placement, request.filters.landing],
+    ["2026-09-15", "2026-10-14", "120258774035960093", "120258774036320093", "120258774036060093", "ig_feed", "/uz"]);
 });

@@ -28,10 +28,23 @@ function IcpResourceDrawer({ open, workspace, adapter, filters, onSelect, onClos
   return <Drawer open={open} title="ICP ga moslik" context={marketingWorkspace(workspace).label} onClose={onClose} footer={<button className="button secondary" onClick={onClose}>Yopish</button>}><MarketingResourceNotice state={state} onRetry={resource.retry} /></Drawer>;
 }
 
-export function MarketingOverviewAdditions({ workspace, adapter }: { workspace: MarketingWorkspaceKey; adapter: MarketingDataAdapter }) {
-  const filters = useMemo(() => defaultMarketingFilters(), []);
+/** The host page's own date range (Tashkent dates); the Marketing default when absent. */
+export type MarketingRange = { from: string; to: string } | null | undefined;
+function filtersForRange(range: MarketingRange) {
+  const base = defaultMarketingFilters();
+  return range?.from && range?.to ? { ...base, range: "custom" as const, startDate: range.from, endDate: range.to } : base;
+}
+
+/**
+ * Overview ICP card (IBOX only — workspace capability). CMC/ROAS cards are
+ * feature-gated off by default: the Marketing page is V1's home for cost analytics.
+ */
+export function MarketingOverviewAdditions({ workspace, adapter, range, showCosts = false }: {
+  workspace: MarketingWorkspaceKey; adapter: MarketingDataAdapter; range?: MarketingRange; showCosts?: boolean;
+}) {
+  const filters = useMemo(() => filtersForRange(range), [range]);
   const context = useMemo(() => ({ workspace, filters }), [filters, workspace]);
-  const summaryResource = useMarketingResource({ key: `overview-summary:${workspace}`, load: (signal) => adapter.getSummary(context, signal), isEmpty: (response) => response.summary.leadCount === 0 });
+  const summaryResource = useMarketingResource({ key: `overview-summary:${JSON.stringify(context)}`, load: (signal) => adapter.getSummary(context, signal), isEmpty: (response) => response.summary.leadCount === 0 });
   const [icpOpen, setIcpOpen] = useState(false);
   const [dealRequest, setDealRequest] = useState<MarketingDealRequest | null>(null);
   const response = summaryResource.state.status === "ready" || summaryResource.state.status === "empty" ? summaryResource.state.data : null;
@@ -43,28 +56,28 @@ export function MarketingOverviewAdditions({ workspace, adapter }: { workspace: 
   };
   return <>
     <MarketingResourceNotice state={summaryResource.state} onRetry={summaryResource.retry} compact empty="Marketing cohort bo‘sh." />
-    {summary ? <section className="marketing-overview-additions" aria-label="Marketing qo‘shimcha ko‘rsatkichlari">
+    {summary && (showIcp || showCosts) ? <section className="marketing-overview-additions" aria-label="Marketing qo‘shimcha ko‘rsatkichlari">
       {showIcp ? <button className="kpi-card violet marketing-kpi-button" onClick={() => setIcpOpen(true)}>
         <span className="kpi-top"><span>ICP ga moslik</span><span className="kpi-icon"><Gauge size={18} /></span></span>
-        <strong>{formatMarketingRate(summary.icpFitRate)}</strong><small>{summary.icpFitCount ?? "—"} / {summary.icpEvaluatedCount ?? "—"} belgilangan{summary.icpUnsetCount !== null ? <span className="card-note">{summary.icpUnsetCount} ta belgilanmagan</span> : null}</small>
+        <strong>{formatMarketingRate(summary.icpFitRate)}</strong><small>{summary.icpFitCount ?? "—"} / {summary.icpEvaluatedCount ?? "—"} belgilangan{summary.icpUnsetCount !== null ? <span className="card-note">{summary.icpUnsetCount} ta belgilanmagan</span> : null}{summary.icpEvaluationShare !== null ? <span className={`card-note marketing-icp-coverage ${summary.icpEvaluationShare < 0.5 ? "warning-text" : ""}`}>Faqat {formatMarketingRate(summary.icpEvaluationShare)} Lead baholangan</span> : null}</small>
       </button> : null}
-      <article className="kpi-card cyan"><div className="kpi-top"><span>CMC</span><div className="kpi-icon"><CircleDollarSign size={18} /></div></div><strong><CostValue costs={summary.costs} metric="cmc" /></strong><small>1 mijoz uchun marketing xarajati</small></article>
-      <article className="kpi-card green"><div className="kpi-top"><span>ROAS</span><div className="kpi-icon"><BarChart3 size={18} /></div></div><strong><CostValue costs={summary.costs} metric="roas" /></strong><small>Reklamaga sarflangan 1 so‘m necha so‘m revenue qaytardi</small></article>
+      {showCosts ? <><article className="kpi-card cyan"><div className="kpi-top"><span>CMC</span><div className="kpi-icon"><CircleDollarSign size={18} /></div></div><strong><CostValue costs={summary.costs} metric="cmc" /></strong><small>1 mijoz uchun marketing xarajati</small></article>
+      <article className="kpi-card green"><div className="kpi-top"><span>ROAS</span><div className="kpi-icon"><BarChart3 size={18} /></div></div><strong><CostValue costs={summary.costs} metric="roas" /></strong><small>Reklamaga sarflangan 1 so‘m necha so‘m revenue qaytardi</small></article></> : null}
     </section> : null}
     {showIcp ? <IcpResourceDrawer open={icpOpen} workspace={workspace} adapter={adapter} filters={filters} onSelect={openSegment} onClose={() => setIcpOpen(false)} /> : null}
     <MarketingDealDrawer request={dealRequest} adapter={adapter} showIcp={showIcp} onClose={() => setDealRequest(null)} />
   </>;
 }
 
-export function ManagerIcpAdditions({ workspace, adapter }: { workspace: MarketingWorkspaceKey; adapter: MarketingDataAdapter }) {
-  const filters = useMemo(() => defaultMarketingFilters(), []);
+export function ManagerIcpAdditions({ workspace, adapter, range }: { workspace: MarketingWorkspaceKey; adapter: MarketingDataAdapter; range?: MarketingRange }) {
+  const filters = useMemo(() => filtersForRange(range), [range]);
   const context = useMemo(() => ({ workspace, filters }), [filters, workspace]);
   const [open, setOpen] = useState(false);
-  const summaryResource = useMarketingResource({ key: `manager-summary:${workspace}`, load: (signal) => adapter.getSummary(context, signal) });
+  const summaryResource = useMarketingResource({ key: `manager-summary:${JSON.stringify(context)}`, load: (signal) => adapter.getSummary(context, signal) });
   const summary = summaryResource.state.status === "ready" || summaryResource.state.status === "empty" ? summaryResource.state.data : null;
   const showIcp = summary?.capabilities.icp === true;
   const icpResource = useMarketingResource({
-    key: `manager-icp:${workspace}`,
+    key: `manager-icp:${JSON.stringify(context)}`,
     enabled: showIcp && open,
     load: (signal) => adapter.getIcp(context, signal),
     isEmpty: (response) => response.status === "ENABLED" && response.byManager.length === 0,

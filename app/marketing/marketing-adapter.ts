@@ -23,6 +23,8 @@ import {
   type MarketingQueryContext,
   type MarketingSummaryResponse,
   type MarketingCoverageResponse,
+  type MarketingMetaStatus,
+  type MarketingSpendAttribution,
 } from "./marketing-types";
 import {
   isMarketingWorkspaceKey, marketingProjectForWorkspace, marketingWorkspace, type MarketingWorkspaceKey,
@@ -68,6 +70,9 @@ function fixtureMetrics(row: FixtureMarketingEntityRow | (typeof MARKETING_SUMMA
   return {
     leadCount: row.leadCount,
     classifiedCount: row.classifiedCount,
+    // Fixture-only preview values; the HTTP adapter binds the API's own rates.
+    classifiedRate: row.leadCount ? row.classifiedCount / row.leadCount : null,
+    icpEvaluationShare: row.leadCount ? row.icpEvaluatedCount / row.leadCount : null,
     icpEvaluatedCount: row.icpEvaluatedCount,
     icpFitCount: row.icpFitCount,
     icpOtherCount: row.icpOtherCount,
@@ -151,6 +156,9 @@ export class FixtureMarketingAdapter implements MarketingDataAdapter {
       workspace: request.workspace,
       workspaceName: definition.label,
       dataAsOf: "2026-10-14T09:00:00+05:00",
+      meta: null,
+      usdToUzs: null,
+      spendAttribution: null,
       fixture: true,
       capabilities: { ...definition.capabilities },
       options: MARKETING_OPTIONS[project],
@@ -220,7 +228,7 @@ type HttpCostFields = {
   costPerIcpFitUzs?: number | null;
   costPerSqlUzs: number | null;
   costPerSaleUzs: number | null;
-  /** Optional forward-compatible state; current data branch does not send it. */
+  /** The backend's availability verdict for this row (lib/marketing/metrics.ts costStatus). */
   costStatus?: MarketingCostStatus;
   /** Optional forward-compatible Meta connection state. */
   metaStatus?: "CONNECTED" | "DISCONNECTED" | "PENDING";
@@ -239,6 +247,10 @@ type HttpFunnelFields = {
   icpOtherCount?: number;
   icpUnsetCount?: number;
   icpFitRate?: number | null;
+  icpEvaluationShare?: number | null;
+  saralanganRate?: number | null;
+  sqlRate?: number | null;
+  saleRate?: number | null;
 };
 
 type HttpSummary = HttpFunnelFields & HttpCostFields & {
@@ -246,23 +258,27 @@ type HttpSummary = HttpFunnelFields & HttpCostFields & {
   coverage: { campaignIdCoverage: number | null; adsetIdCoverage: number | null; adIdCoverage: number | null };
 };
 
-type HttpSummaryPayload = HttpCommon & { summary: HttpSummary; options?: MarketingFilterOptions };
+type HttpSummaryPayload = HttpCommon & {
+  summary: HttpSummary; options?: MarketingFilterOptions;
+  spendAttribution?: MarketingSpendAttribution | null; meta?: MarketingMetaStatus; fx?: { usdToUzs: number };
+};
 type HttpEntity = HttpFunnelFields & HttpCostFields & { id: string; name: string | null; campaignId: string | null; adsetId: string | null };
 type HttpEntitiesPayload = HttpCommon & { level: MarketingEntityLevel; rows: HttpEntity[] };
 type HttpDeal = {
   dealId: string; title: string | null; createdAt: string; bitrixUrl: string | null; stage: string | null;
-  assignedManagerId: string | null; saralangan: boolean; sql: boolean; nr: boolean; sale: boolean;
+  assignedManagerId: string | null; assignedManager?: string | null; source?: string | null; wonAt?: string | null;
+  saralangan: boolean; sql: boolean; nr: boolean; sale: boolean;
   opportunity: number; currencyId: string | null; icpClass: string;
   campaignId: string | null; campaignName: string | null; adsetId: string | null; adsetName: string | null;
   adId: string | null; adName: string | null; channel: string; attributionConflict: boolean;
 };
 type HttpDealsPayload = HttpCommon & { metric: string; count: number; deals: HttpDeal[]; truncated: boolean };
 type HttpIcpCounts = { evaluated: number; fit: number; notFit: number; unset: number; byTier: Record<string, number>; fitRate: number | null };
-type HttpIcpPayload = HttpCommon & { icp?: HttpIcpCounts; byManager?: Array<{ key: string } & HttpIcpCounts> };
+type HttpIcpPayload = HttpCommon & { icp?: HttpIcpCounts; byManager?: Array<{ key: string; name?: string } & HttpIcpCounts> };
 type HttpCoveragePayload = HttpCommon & { coverage: MarketingCoverageResponse["coverage"] };
 
 const COST_STATUSES = new Set<MarketingCostStatus>([
-  "AVAILABLE", "NO_SALES", "NO_SPEND", "META_NOT_CONNECTED", "PENDING", "CURRENCY_UNAVAILABLE", "NOT_APPLICABLE",
+  "AVAILABLE", "NO_SALES", "NO_SPEND", "META_NOT_CONNECTED", "NOT_INGESTED", "PENDING", "CURRENCY_UNAVAILABLE", "NOT_APPLICABLE",
 ]);
 
 /** Availability only; every displayed number remains the backend-supplied value. */
@@ -282,15 +298,17 @@ export function resolveMarketingCosts(input: HttpCostFields & { spendApplies: bo
     NO_SALES: "Sotuv yo‘q",
     NO_SPEND: "Spend yo‘q",
     META_NOT_CONNECTED: "Meta Insights ulanmagan",
+    NOT_INGESTED: "Meta ma’lumoti yuklanmagan",
     PENDING: "Spend ma’lumoti kutilmoqda",
     CURRENCY_UNAVAILABLE: "Currency rate unavailable",
     NOT_APPLICABLE: "Bu kesimda spend qo‘llanilmaydi",
   };
-  const currencies = Object.keys(input.spendByCurrency);
   return {
     status,
     message: messages[status],
-    currency: currencies.length === 1 ? currencies[0] : "UZS",
+    // Every cost field the API returns is whole UZS (spendUzs, cplUzs, cmcUzs, …),
+    // whatever currency Meta billed in — the native currency is never the label.
+    currency: "UZS",
     spend: input.spendUzs,
     cpl: input.cplUzs,
     costPerIcp: input.costPerIcpFitUzs ?? null,
@@ -305,16 +323,18 @@ function normalizedMetrics(row: HttpFunnelFields) {
   return {
     leadCount: row.leadCount,
     classifiedCount: row.saralanganCount,
+    classifiedRate: row.saralanganRate ?? null,
+    icpEvaluationShare: icpEnabled ? row.icpEvaluationShare ?? null : null,
     icpEvaluatedCount: icpEnabled ? row.icpEvaluatedCount ?? null : null,
     icpFitCount: icpEnabled ? row.icpFitCount ?? null : null,
     icpOtherCount: icpEnabled ? row.icpOtherCount ?? null : null,
     icpUnsetCount: icpEnabled ? row.icpUnsetCount ?? null : null,
     icpFitRate: icpEnabled ? row.icpFitRate ?? null : null,
     sqlCount: row.sqlCount,
-    sqlRate: null,
+    sqlRate: row.sqlRate ?? null,
     pipelineCount: row.inPipelineCount,
     saleCount: row.saleCount,
-    sqlToSaleRate: null,
+    sqlToSaleRate: row.saleRate ?? null,
     revenue: row.revenueUzs,
   };
 }
@@ -388,6 +408,9 @@ export class HttpMarketingAdapter implements MarketingDataAdapter {
       workspace,
       workspaceName: marketingWorkspace(workspace).label,
       dataAsOf: payload.dataAsOf,
+      meta: payload.meta ?? null,
+      usdToUzs: payload.fx?.usdToUzs ?? null,
+      spendAttribution: payload.spendAttribution ?? null,
       fixture: false,
       capabilities: { icp: payload.icpStatus === "ENABLED" },
       options: payload.options ?? EMPTY_MARKETING_OPTIONS,
@@ -445,18 +468,18 @@ export class HttpMarketingAdapter implements MarketingDataAdapter {
     const deals = payload.deals.map((row): MarketingDealRow => ({
       dealId: row.dealId,
       title: row.title ?? `Deal #${row.dealId}`,
-      manager: row.assignedManagerId ?? "Aniqlanmagan",
+      manager: row.assignedManager ?? row.assignedManagerId ?? "Aniqlanmagan",
       currentStage: row.stage ?? "—",
       quality: row.nr ? "Not Relevant" : row.sql ? "SQL" : row.saralangan ? "Saralangan" : "Saralanmagan",
       icp: row.icpClass,
-      crmSource: request.filters.source || "—",
+      crmSource: row.source ?? (request.filters.source || "—"),
       marketingSource: row.channel,
       platform: "—",
       campaign: row.campaignName ?? row.campaignId ?? "Attribution topilmadi",
       adSet: row.adsetName ?? row.adsetId ?? "Attribution topilmadi",
       ad: row.adName ?? row.adId ?? "Attribution topilmadi",
       createdAt: row.createdAt,
-      saleAt: null,
+      saleAt: row.wonAt ?? null,
       revenue: row.opportunity,
       currency: row.currencyId ?? "UZS",
       attributionConflict: row.attributionConflict,
@@ -486,7 +509,7 @@ export class HttpMarketingAdapter implements MarketingDataAdapter {
         ],
       },
       byManager: (payload.byManager ?? []).map((row) => ({
-        managerId: row.key, managerName: row.key, evaluatedCount: row.evaluated,
+        managerId: row.key, managerName: row.name ?? row.key, evaluatedCount: row.evaluated,
         fitCount: row.fit, fitRate: row.fitRate, unsetCount: row.unset,
       })),
     };

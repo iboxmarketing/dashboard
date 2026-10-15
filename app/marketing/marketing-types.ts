@@ -11,6 +11,7 @@ export type MarketingCostStatus =
   | "NO_SALES"
   | "NO_SPEND"
   | "META_NOT_CONNECTED"
+  | "NOT_INGESTED"
   | "PENDING"
   | "CURRENCY_UNAVAILABLE"
   | "NOT_APPLICABLE";
@@ -68,6 +69,10 @@ export type MarketingCosts = {
 export type MarketingFunnelMetrics = {
   leadCount: number;
   classifiedCount: number;
+  /** Saralangan ÷ Lead, 0..1, supplied by the API. */
+  classifiedRate: number | null;
+  /** ICP evaluated ÷ Lead, 0..1, supplied by the API where ICP applies. */
+  icpEvaluationShare: number | null;
   icpEvaluatedCount: number | null;
   icpFitCount: number | null;
   icpOtherCount: number | null;
@@ -75,11 +80,11 @@ export type MarketingFunnelMetrics = {
   /** Ratio in the 0..1 range. */
   icpFitRate: number | null;
   sqlCount: number;
-  /** Optional because the agreed API supplies counts, not this derived rate. */
+  /** SQL ÷ Saralangan, 0..1, supplied by the API. */
   sqlRate: number | null;
   pipelineCount: number;
   saleCount: number;
-  /** Optional because the agreed API supplies counts, not this derived rate. */
+  /** Sale ÷ SQL, 0..1, supplied by the API. */
   sqlToSaleRate: number | null;
   revenue: number | null;
 };
@@ -165,10 +170,27 @@ export type MarketingManagerIcpRow = {
   unsetCount: number;
 };
 
+/** One spend bucket of the selected range (native minor units and whole UZS). */
+export type MarketingSpendBucket = { ads: number; adDays: number; spendByCurrency: Record<string, number>; spendUzs: number | null };
+export type MarketingSpendAttribution = {
+  /** Spend reliably assigned to this workspace — the only spend in its CMC/ROAS. */
+  assigned: MarketingSpendBucket; otherWorkspaces: MarketingSpendBucket;
+  mixed: MarketingSpendBucket; unassigned: MarketingSpendBucket; nonDashboard: MarketingSpendBucket;
+};
+export type MarketingMetaStatus = {
+  status: "AVAILABLE" | "NOT_INGESTED" | "PARTIAL_RANGE" | "NOT_BROKEN_DOWN";
+  since: string | null; until: string | null; updatedAt: string | null; accounts: number;
+};
+
 export type MarketingSummaryResponse = {
   workspace: MarketingWorkspaceKey;
   workspaceName: string;
+  /** CRM (Bitrix) sync time — not the Meta data time. */
   dataAsOf: string | null;
+  meta: MarketingMetaStatus | null;
+  /** The Marketing reporting rate, never Finance FX. */
+  usdToUzs: number | null;
+  spendAttribution: MarketingSpendAttribution | null;
   fixture: boolean;
   capabilities: MarketingCapabilities;
   summary: MarketingSummary;

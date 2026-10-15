@@ -6,11 +6,28 @@ import { Drawer } from "../ui/drawer";
 import { MarketingResourceNotice, useMarketingResource } from "./marketing-resource";
 import { marketingWorkspace } from "./marketing-workspaces";
 
-const compactNumber = new Intl.NumberFormat("uz-UZ", { notation: "compact", maximumFractionDigits: 1 });
+/** Drops trailing zeros of a fixed-point string: "39.20" → "39.2", "4.00" → "4". */
+const trimFixed = (text: string) => (text.includes(".") ? text.replace(/0+$/, "").replace(/\.$/, "") : text);
+const grouped = (value: number) => Math.round(value).toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 
+/**
+ * Display-only money: "39.2 mln UZS", "5.89 mln UZS", "682 ming UZS",
+ * "45 941 UZS". The value is the API's own number; nothing is recomputed.
+ */
 export function formatMarketingMoney(value: number | null, currency = "UZS") {
   if (value === null || !Number.isFinite(value)) return "—";
-  return `${compactNumber.format(value)} ${currency}`;
+  const abs = Math.abs(value);
+  if (abs >= 1e9) return `${trimFixed((value / 1e9).toFixed(2))} mlrd ${currency}`;
+  if (abs >= 1e6) return `${trimFixed((value / 1e6).toFixed(abs >= 1e7 ? 1 : 2))} mln ${currency}`;
+  if (abs >= 1e5) return `${Math.round(value / 1e3)} ming ${currency}`;
+  return `${grouped(value)} ${currency}`;
+}
+
+/** "0.88x", "5.22x", "0.013x" below 0.1; a real zero (spend, no revenue) is "0x". */
+export function formatMarketingRoas(value: number | null) {
+  if (value === null || !Number.isFinite(value)) return "—";
+  if (value === 0) return "0x";
+  return `${trimFixed(value.toFixed(value < 0.1 ? 3 : 2))}x`;
 }
 
 /** API rates are 0..1 ratios; converting that ratio to display percent is formatting only. */
@@ -22,6 +39,7 @@ export function formatMarketingRate(value: number | null, suffix = "%") {
 const COST_MESSAGES: Record<Exclude<MarketingCosts["status"], "AVAILABLE" | "NO_SALES">, string> = {
   NO_SPEND: "Spend yo‘q",
   META_NOT_CONNECTED: "Meta Insights ulanmagan",
+  NOT_INGESTED: "Meta ma’lumoti yuklanmagan",
   PENDING: "Spend ma’lumoti kutilmoqda",
   CURRENCY_UNAVAILABLE: "Currency rate unavailable",
   NOT_APPLICABLE: "Bu kesimda spend qo‘llanilmaydi",
@@ -36,7 +54,8 @@ export function CostValue({ costs, metric }: { costs: MarketingCosts; metric: "s
     const message = metric === "cmc" && costs.status === "NO_SALES" ? "Sotuv yo‘q" : "Hisoblash uchun ma’lumot yetarli emas";
     return <span className="marketing-unavailable">{message}</span>;
   }
-  return <>{metric === "roas" ? `${new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(value)}x` : formatMarketingMoney(value, costs.currency)}</>;
+  if (metric === "roas") return <>{formatMarketingRoas(value)}</>;
+  return <>{formatMarketingMoney(value, costs.currency)}{metric === "cmc" ? " / mijoz" : ""}</>;
 }
 
 function fmtDate(value: string | null) {

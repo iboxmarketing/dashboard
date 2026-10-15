@@ -81,12 +81,12 @@ import { responseMatchesProject, withProject } from "@/lib/project-url";
 import { ProjectProvider, ProjectSelector, ProjectSwitcher, lastProject, rememberProject, useProject } from "./project-context";
 import { MarketingView } from "./marketing/marketing-view";
 import { ManagerIcpAdditions, MarketingOverviewAdditions } from "./marketing/marketing-additions";
-import { FixtureMarketingAdapter } from "./marketing/marketing-adapter";
+import { HttpMarketingAdapter } from "./marketing/marketing-adapter";
 import { marketingWorkspaceForProject } from "./marketing/marketing-workspaces";
 import { marketingViewRequested, searchForDashboardView } from "./marketing/marketing-url-state";
 
-/** Composition root: swap this one instance for HttpMarketingAdapter after the data branch is merged. */
-const marketingAdapter = new FixtureMarketingAdapter();
+/** Composition root: the real Marketing API (/api/marketing/*). Typed fixtures are for tests and demos only. */
+const marketingAdapter = new HttpMarketingAdapter();
 
 /** Sales analytics views. Only these carry the global cohort filter bar. */
 const SALES_VIEWS = ["dashboard", "managers", "managerDetail", "leadFlow", "quality", "stages", "deals"] as const;
@@ -126,8 +126,8 @@ const idleSync: SyncState = {
 
 const navItems: { id: View; label: string; icon: typeof LayoutDashboard; permission: PermissionKey }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, permission: "dashboard" },
-  // Marketing is an additive, project-scoped view. During the fixture phase it
-  // inherits read access from Dashboard and adds no Auth/API capability.
+  // Marketing is an additive, project-scoped view. It inherits read access from
+  // Dashboard (the /api/marketing/* routes check the same permission) and adds no Auth capability.
   { id: "marketing", label: "Marketing", icon: Megaphone, permission: "dashboard" },
   { id: "managers", label: "Menejerlar", icon: Users, permission: "managers" },
   { id: "leadFlow", label: "Lead oqimi", icon: BarChart3, permission: "leadFlow" },
@@ -499,7 +499,7 @@ function FiltersBar({ filters, setFilters, options, currentStages, mode = "cohor
   </div>;
 }
 
-function DashboardView({ section, onManager }: { section: DashboardSection; onManager: (manager: ManagerRow) => void }) {
+function DashboardView({ section, onManager, marketingRange }: { section: DashboardSection; onManager: (manager: ManagerRow) => void; marketingRange?: { from: string; to: string } }) {
   const project = useProject() ?? "IBOX";
   const { metrics, previousMetrics, managers, metricIds } = section;
   const selected = resolveHeadlineCardIds(metricIds);
@@ -582,7 +582,7 @@ function DashboardView({ section, onManager }: { section: DashboardSection; onMa
         return <KpiCard key={id} label={headlineCardLabel(id)} value={card.value} detail={card.detail} tone={card.tone} icon={card.icon} hint={card.hint} />;
       })}
     </section>
-    <MarketingOverviewAdditions workspace={marketingWorkspaceForProject(project)} adapter={marketingAdapter} />
+    <MarketingOverviewAdditions workspace={marketingWorkspaceForProject(project)} adapter={marketingAdapter} range={marketingRange} />
     {/* Only with `managers`: the server sends no manager rows otherwise. */}
     {managers && <section className="panel"><SectionHeader title="Menejerlar performance" subtitle="Qatorni bossangiz dashboard shu menejer bo‘yicha filtrlanadi" /><ManagerTable rows={managers} limit={8} onSelect={onManager} /></section>}
   </>;
@@ -2652,7 +2652,7 @@ function DashboardApp({ session, project }: { session: AuthSession; project: Pro
         {isSalesView(view) && view !== "stages" && <CoverageNotice earliestDay={activeSales?.data?.coverageStart ?? null} filters={filters} />}
         {isSalesView(view) && view !== "stages" && activeSales && <SectionStatus state={activeSales} />}
         <ViewErrorBoundary onBack={() => setView(defaultView)}>
-        {view === "dashboard" && dashboardSection.data && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{dashboardSection.data.leadCount} Leadlar</strong></div></div>{dashboardSection.data.leadCount === 0 && <EmptyCohortNotice />}<DashboardView section={dashboardSection.data} onManager={(manager) => { if (canManagers) { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); } }} /><TrendChart trend={dashboardSection.data.trend} /></>}
+        {view === "dashboard" && dashboardSection.data && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{dashboardSection.data.leadCount} Leadlar</strong></div></div>{dashboardSection.data.leadCount === 0 && <EmptyCohortNotice />}<DashboardView section={dashboardSection.data} marketingRange={rangeBounds(filters)} onManager={(manager) => { if (canManagers) { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); } }} /><TrendChart trend={dashboardSection.data.trend} /></>}
         {view === "marketing" && <MarketingView workspace={marketingWorkspaceForProject(project)} adapter={marketingAdapter} />}
         {view === "managers" && managersSection.data && <><div className="page-title"><div><p className="eyebrow">TEAM PERFORMANCE</p><h1>Menejerlar</h1><p>Joriy Sales jamoasi reytingi. Tarixiy sotuvchilar pastda alohida ko‘rsatiladi.</p></div></div>
           <section className="dashboard-grid compact-kpis">
@@ -2664,7 +2664,7 @@ function DashboardApp({ session, project }: { session: AuthSession; project: Pro
           <section className="panel"><SectionHeader title="Joriy Sales jamoasi" subtitle="Lead va cohort konversiya — yaratilgan sana; davr sotuv — Oplata sanasi bo‘yicha" />
             <ManagerTable rows={managersSection.data.managers.filter((row) => row.activeRoster && row.id !== "review" && row.id !== "unknown")}
               onSelect={(manager) => { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); }} /></section>
-          <ManagerIcpAdditions workspace={marketingWorkspaceForProject(project)} adapter={marketingAdapter} />
+          <ManagerIcpAdditions workspace={marketingWorkspaceForProject(project)} adapter={marketingAdapter} range={rangeBounds(filters)} />
           <FormerSellers rows={managersSection.data.managers.filter((row) => !row.activeRoster && row.id !== "review" && row.id !== "unknown")}
             onSelect={(manager) => { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); }} />
           <ReviewBucketPanel review={managersSection.data.review} /></>}

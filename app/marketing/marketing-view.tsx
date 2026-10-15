@@ -2,19 +2,20 @@
 
 import {
   CalendarDays, Check, ChevronDown, ChevronRight, CircleDollarSign, Database,
-  ExternalLink, Filter, Gauge, Layers3, RefreshCw, Target, X,
+  ExternalLink, Filter, Gauge, Info, Layers3, RefreshCw, Target, X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { inheritedMarketingFilters, nextMarketingLevel } from "./marketing-adapter";
 import {
   EMPTY_MARKETING_OPTIONS,
   type CreativeRankingMetric, type IcpBreakdownRow, type MarketingDataAdapter, type MarketingDealRequest,
-  type MarketingEntityLevel, type MarketingEntityRow, type MarketingFilters, type MarketingMetric,
+  type MarketingEntityLevel, type MarketingEntityRow, type MarketingFilterOptions, type MarketingFilters, type MarketingMetric,
+  type MarketingSummaryResponse,
 } from "./marketing-types";
 import type { MarketingWorkspaceKey } from "./marketing-workspaces";
 import { marketingWorkspace } from "./marketing-workspaces";
 import { Drawer } from "../ui/drawer";
-import { CostValue, formatMarketingMoney, formatMarketingRate, IcpBreakdownDrawer, MarketingDealDrawer } from "./marketing-shared";
+import { CostValue, formatMarketingMoney, formatMarketingRate, formatMarketingRoas, IcpBreakdownDrawer, MarketingDealDrawer } from "./marketing-shared";
 import { defaultMarketingFilters, useMarketingUrlState, withMarketingRange, type MarketingUrlState } from "./marketing-url-state";
 import { MarketingResourceNotice, useMarketingResource } from "./marketing-resource";
 
@@ -26,6 +27,28 @@ const LEVELS: { id: MarketingEntityLevel; label: string }[] = [
   { id: "landing", label: "Landing / Form" },
 ];
 const LEVEL_LABELS = Object.fromEntries(LEVELS.map((item) => [item.id, item.label])) as Record<MarketingEntityLevel, string>;
+
+/** Owner copy (2026-10): why CMC/ROAS can look high — never hide the limitation. */
+export const ATTRIBUTED_SPEND_HELP = "CMC va ROAS faqat workspace'ga ishonchli biriktirilgan reklama xarajatidan hisoblanadi. Biriktirilmagan yoki mixed xarajatlar hisobga kiritilmaydi.";
+
+/**
+ * A child filter (Ad Set, Ad) left over from another parent must not stay
+ * silently active: once the API's options for the current parent are known,
+ * any child the options do not contain is cleared. Pure, for tests.
+ */
+export function reconcileMarketingFilters(filters: MarketingFilters, options: MarketingFilterOptions): MarketingFilters {
+  const next = { ...filters };
+  if (next.adsetId && options.adSets.length > 0 && !options.adSets.some((item) => item.id === next.adsetId)) { next.adsetId = ""; next.adId = ""; }
+  if (next.adId && options.ads.length > 0 && !options.ads.some((item) => item.id === next.adId)) next.adId = "";
+  return next.adsetId === filters.adsetId && next.adId === filters.adId ? filters : next;
+}
+
+function fmtStamp(value: string | null | undefined) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("uz-UZ", { timeZone: "Asia/Tashkent", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(date);
+}
 
 /** Pure transition used by click handlers and regression tests. */
 export function drillMarketingEntity(current: MarketingUrlState, row: MarketingEntityRow): MarketingUrlState {
@@ -87,7 +110,7 @@ function MarketingFiltersBar({ filters, onChange, options }: {
     <div className="marketing-filter-scroll">
       <label className="marketing-filter active"><span>Date</span><div><select value={filters.range} onChange={(event) => onChange(withMarketingRange(filters, event.target.value as MarketingFilters["range"]))}><option value="7">Oxirgi 7 kun</option><option value="30">Oxirgi 30 kun</option><option value="month">Shu oy</option><option value="lastMonth">O‘tgan oy</option><option value="custom">Custom</option></select><CalendarDays size={13} /></div></label>
       <SelectFilter label="Marketing Source" value={filters.source} options={options.marketingSources} onChange={(value) => set("source", value)} />
-      <SelectFilter label="Platform" value={filters.platform} options={options.platforms} onChange={(value) => set("platform", value)} />
+      {options.platforms.length > 0 || filters.platform ? <SelectFilter label="Platform" value={filters.platform} options={options.platforms} onChange={(value) => set("platform", value)} /> : null}
       <SelectFilter label="Campaign" value={filters.campaignId} options={options.campaigns} onChange={(value) => set("campaignId", value)} />
       <SelectFilter label="Ad Set" value={filters.adsetId} options={options.adSets} onChange={(value) => set("adsetId", value)} />
       <SelectFilter label="Ad / Creative" value={filters.adId} options={options.ads} onChange={(value) => set("adId", value)} />
@@ -127,13 +150,13 @@ function MarketingAttributionTable({ rows, level, showIcp, onEntity, onMetric }:
   onMetric: (row: MarketingEntityRow, metric: MarketingMetric, label: string, count: number) => void;
 }) {
   return <div className="table-wrap marketing-table-wrap"><table className="data-table marketing-table">
-    <thead><tr><th className="sticky-col">Name</th><th>Lead</th>{showIcp ? <><th>ICP mos</th><th>ICP %</th></> : null}<th>SQL</th><th>Jarayonda</th><th>Sotuv</th><th>Revenue</th><th>Spend</th><th>CMC</th><th>ROAS</th></tr></thead>
+    <thead><tr><th className="sticky-col">Name</th><th>Lead</th>{showIcp ? <><th>ICP mos</th><th>ICP %</th></> : null}<th>SQL</th><th>Jarayonda</th><th>Sotuv</th><th>Revenue</th><th title={ATTRIBUTED_SPEND_HELP}>Biriktirilgan spend</th><th title={ATTRIBUTED_SPEND_HELP}>CMC</th><th title={ATTRIBUTED_SPEND_HELP}>ROAS</th></tr></thead>
     <tbody>{rows.map((row) => <tr key={row.id}>
       <td className="sticky-col"><button className="marketing-entity-link" onClick={() => onEntity(row)}><span>{row.name}</span><small>{row.secondary}{row.landingType === "INSTANT_FORM" ? " · Instant Form" : row.landingType === "WEBSITE" ? " · Website" : ""}</small></button></td>
       <td><button className="marketing-count" onClick={() => onMetric(row, "lead", "Lead", row.leadCount)}>{row.leadCount}</button></td>
       {showIcp ? <><td><button className="marketing-count" onClick={() => onMetric(row, "icp_fit", "ICP mos", row.icpFitCount ?? 0)}>{row.icpFitCount ?? "—"}</button></td>
         <td><span className="pill success">{formatMarketingRate(row.icpFitRate)}</span><small>{row.icpFitCount ?? "—"} / {row.icpEvaluatedCount ?? "—"}</small></td></> : null}
-      <td><button className="marketing-count" onClick={() => onMetric(row, "sql", "SQL", row.sqlCount)}>{row.sqlCount}</button>{row.sqlRate !== null ? <small>{formatMarketingRate(row.sqlRate)} Leaddan</small> : null}</td>
+      <td><button className="marketing-count" onClick={() => onMetric(row, "sql", "SQL", row.sqlCount)}>{row.sqlCount}</button>{row.sqlRate !== null ? <small>{formatMarketingRate(row.sqlRate)} Saralangandan</small> : null}</td>
       <td><button className="marketing-count" onClick={() => onMetric(row, "pipeline", "Jarayonda", row.pipelineCount)}>{row.pipelineCount}</button></td>
       <td><button className="marketing-count success" onClick={() => onMetric(row, "sale", "Sotuv", row.saleCount)}>{row.saleCount}</button>{row.sqlToSaleRate !== null ? <small>{formatMarketingRate(row.sqlToSaleRate)} SQL’dan</small> : null}</td>
       <td><strong>{formatMarketingMoney(row.revenue, row.costs.currency)}</strong></td>
@@ -171,8 +194,8 @@ function CreativeRanking({ context, adapter, spendAvailable, showIcp, onOpen }: 
       ? rankValue(left, effectiveMetric) - rankValue(right, effectiveMetric)
       : rankValue(right, effectiveMetric) - rankValue(left, effectiveMetric));
   }, [effectiveMetric, resource.state]);
-  const value = (row: MarketingEntityRow) => effectiveMetric === "SALES" ? `${row.saleCount} ta` : effectiveMetric === "ICP_FIT_RATE" ? formatMarketingRate(row.icpFitRate) : effectiveMetric === "SQL" ? `${row.sqlCount} ta` : effectiveMetric === "ROAS" ? row.costs.roas === null ? "—" : `${row.costs.roas}x` : formatMarketingMoney(row.costs.cmc, row.costs.currency);
-  return <section className="panel marketing-ranking"><div className="section-header"><div><h2>Creative Ranking</h2><p>Ad ID · backend creative_id / video_id bersa shu blok asset-level grouping’ni qabul qiladi</p></div><label className="marketing-ranking-select">Saralash<select value={effectiveMetric} onChange={(event) => setMetric(event.target.value as CreativeRankingMetric)}><option value="SALES">Sales</option>{showIcp ? <option value="ICP_FIT_RATE">ICP fit %</option> : null}<option value="SQL">SQL</option>{spendAvailable ? <><option value="ROAS">ROAS</option><option value="CMC">CMC</option></> : null}</select></label></div>
+  const value = (row: MarketingEntityRow) => effectiveMetric === "SALES" ? `${row.saleCount} ta` : effectiveMetric === "ICP_FIT_RATE" ? formatMarketingRate(row.icpFitRate) : effectiveMetric === "SQL" ? `${row.sqlCount} ta` : effectiveMetric === "ROAS" ? formatMarketingRoas(row.costs.roas) : formatMarketingMoney(row.costs.cmc, row.costs.currency);
+  return <section className="panel marketing-ranking"><div className="section-header"><div><h2>Ad / Creative ranking</h2><p>V1 identity: Ad ID. Bir xil video bir nechta Ad’da alohida qator bo‘ladi — asset bo‘yicha guruhlash creative_id / video_id kelganda qo‘shiladi</p></div><label className="marketing-ranking-select">Saralash<select value={effectiveMetric} onChange={(event) => setMetric(event.target.value as CreativeRankingMetric)}><option value="SALES">Sales</option>{showIcp ? <option value="ICP_FIT_RATE">ICP fit %</option> : null}<option value="SQL">SQL</option>{spendAvailable ? <><option value="ROAS">ROAS</option><option value="CMC">CMC</option></> : null}</select></label></div>
     <MarketingResourceNotice state={resource.state} onRetry={resource.retry} compact empty="Creative qatori yo‘q." />
     {rows.length > 0 ? <div className="marketing-ranking-list">{rows.slice(0, 5).map((row, index) => <button key={`${row.id}-${row.name}`} onClick={() => onOpen(row)}><span className="marketing-rank">{index + 1}</span><span><strong>{row.name}</strong><small>{row.adId ? `Ad ID ${row.adId}` : "Ad ID noma’lum"} · {row.campaignName ?? "Attribution topilmadi"}</small></span><b>{value(row)}</b></button>)}</div> : null}
   </section>;
@@ -189,14 +212,30 @@ function CreativeDetailDrawer({ row, showIcp, onClose }: { row: MarketingEntityR
   </Drawer>;
 }
 
-function MarketingCoverageDetails({ resource, adIdCoverage }: {
+function SpendBucketRow({ label, bucket, note }: { label: string; bucket: { ads: number; spendUzs: number | null } | undefined; note?: string }) {
+  return <div><span>{label}</span><strong>{bucket ? formatMarketingMoney(bucket.spendUzs) : "—"}</strong><small>{bucket ? `${bucket.ads} ta Ad` : ""}{note ? ` · ${note}` : ""}</small></div>;
+}
+
+function MarketingCoverageDetails({ resource, adIdCoverage, summary }: {
   resource: ReturnType<typeof useMarketingResource<Awaited<ReturnType<MarketingDataAdapter["getCoverage"]>>>>;
   adIdCoverage: number | null;
+  summary: MarketingSummaryResponse | null;
 }) {
   const data = resource.state.status === "ready" || resource.state.status === "empty" ? resource.state.data.coverage : null;
-  return <details className="marketing-coverage"><summary><span>Data quality</span>{adIdCoverage !== null ? <b>Ad ID coverage {formatMarketingRate(adIdCoverage)}</b> : null}{data ? <><b>Unknown {data.unknown}</b><b>Conflicts {data.conflicts}</b></> : null}</summary>
+  const spend = summary?.spendAttribution ?? null;
+  const meta = summary?.meta ?? null;
+  return <details className="marketing-coverage"><summary><span>Data quality / Attribution coverage</span>{spend ? <b>Biriktirilmagan {formatMarketingMoney(spend.unassigned.spendUzs)}</b> : null}{adIdCoverage !== null ? <b>Ad ID coverage {formatMarketingRate(adIdCoverage)}</b> : null}{data ? <><b>Unknown {data.unknown}</b><b>Conflicts {data.conflicts}</b></> : null}</summary>
+    {spend ? <div className="marketing-spend-attribution"><p className="marketing-contract-note"><Info size={13} /> {ATTRIBUTED_SPEND_HELP}</p>
+      <div className="marketing-coverage-grid">
+        <SpendBucketRow label="Biriktirilgan reklama xarajati" bucket={spend.assigned} note="CMC/ROAS shundan" />
+        <SpendBucketRow label="Biriktirilmagan" bucket={spend.unassigned} note="Deal hali bog‘lanmagan" />
+        <SpendBucketRow label="Mixed" bucket={spend.mixed} note="bir nechta workspace" />
+        <SpendBucketRow label="Non-dashboard funnel" bucket={spend.nonDashboard} />
+        <SpendBucketRow label="Boshqa workspace’lar" bucket={spend.otherWorkspaces} />
+      </div></div> : meta ? <p className="marketing-contract-note">Tanlangan davr uchun Meta spend taqsimoti mavjud emas ({meta.status}).</p> : null}
     <MarketingResourceNotice state={resource.state} onRetry={resource.retry} compact empty="Coverage ma’lumoti yo‘q." />
     {data ? <div className="marketing-coverage-grid"><div><span>Deal</span><strong>{data.deals}</strong></div><div><span>Campaign ID</span><strong>{data.withCampaignId}</strong></div><div><span>Ad Set ID</span><strong>{data.withAdsetId}</strong></div><div><span>Ad ID</span><strong>{data.withAdId}</strong></div><div><span>Unknown attribution</span><strong>{data.unknown}</strong></div><div><span>Not yet attributed</span><strong>{data.notYetAttributed}</strong></div><div><span>Conflicts</span><strong>{data.conflicts}</strong></div></div> : null}
+    {meta || summary?.usdToUzs ? <p className="marketing-contract-note">{meta ? `Meta Insights: ${meta.since ?? "—"} — ${meta.until ?? "—"} · ${meta.accounts} ta hisob · ${meta.status}` : ""}{summary?.usdToUzs ? ` · Marketing kursi: 1 USD = ${summary.usdToUzs.toLocaleString("en-US").replace(/,/g, " ")} UZS (Finance kursi emas)` : ""}</p> : null}
   </details>;
 }
 
@@ -257,23 +296,28 @@ export function MarketingView({ workspace, adapter }: { workspace: MarketingWork
     else setDetail(row);
   };
   const updateFilters = (filters: MarketingFilters) => update((current) => ({ ...current, filters }));
+  useEffect(() => {
+    if (!summaryResponse || adapter.source !== "http") return;
+    const reconciled = reconcileMarketingFilters(state.filters, summaryResponse.options);
+    if (reconciled !== state.filters) update((current) => ({ ...current, filters: reconciled }));
+  }, [adapter.source, state.filters, summaryResponse, update]);
 
   return <div className="marketing-page">
     <MarketingFiltersBar filters={state.filters} onChange={updateFilters} options={options} />
-    <div className="page-title marketing-title"><div><p className="eyebrow">MARKETING ANALYTICS</p><h1>Marketing performance</h1><p>{summaryResponse?.workspaceName ?? marketingWorkspace(workspace).label} · Lead sifati, attribution va reklama samaradorligi bitta kontekstda.</p></div><div className="marketing-data-state"><RefreshCw size={15} /><span>{adapter.source === "http" ? "Marketing API" : "Typed fixture preview"}</span><small>{summaryResponse?.dataAsOf ? `Data ${summaryResponse.dataAsOf}` : "Backend adapter shell"}</small></div></div>
+    <div className="page-title marketing-title"><div><p className="eyebrow">MARKETING ANALYTICS</p><h1>Marketing performance</h1><p>{summaryResponse?.workspaceName ?? marketingWorkspace(workspace).label} · Lead sifati, attribution va reklama samaradorligi bitta kontekstda.</p></div><div className="marketing-data-state"><RefreshCw size={15} /><span>{adapter.source === "http" ? `Marketing ma’lumoti yangilangan: ${fmtStamp(summaryResponse?.meta?.updatedAt)}` : "Typed fixture preview"}</span><small>{summaryResponse?.meta ? `Meta ${summaryResponse.meta.since ?? "—"} — ${summaryResponse.meta.until ?? "—"}` : "Meta Insights —"} · CRM sync {fmtStamp(summaryResponse?.dataAsOf)}</small></div></div>
 
     <MarketingResourceNotice state={summaryResource.state} onRetry={summaryResource.retry} empty="Tanlangan marketing cohort bo‘sh." />
     {summary && summary.leadCount > 0 ? <section className="kpi-grid marketing-summary-grid">
       <SummaryCard label="Lead" value={String(summary.leadCount)} detail="Tanlangan marketing cohort" icon={Database} tone="blue" onClick={() => openDeals("lead", "Lead", summary.leadCount)} />
-      <SummaryCard label="Saralangan" value={String(summary.classifiedCount)} detail={showIcp && summary.icpUnsetCount !== null ? `${summary.icpUnsetCount} ta ICP belgilanmagan` : "Tanlangan marketing cohort"} icon={Check} tone="green" />
-      {showIcp ? <button className="kpi-card marketing-summary-card violet" onClick={() => setIcpOpen(true)}><span className="kpi-top"><span>ICP ga moslik</span><span className="kpi-icon"><Gauge size={18} /></span></span><strong>{formatMarketingRate(summary.icpFitRate)}</strong><small>{summary.icpFitCount ?? "—"} / {summary.icpEvaluatedCount ?? "—"} belgilangan{summary.icpUnsetCount !== null ? <span className="card-note">{summary.icpUnsetCount} ta belgilanmagan</span> : null}</small><span className="marketing-card-action">Breakdown <ChevronRight size={12} /></span></button> : null}
-      <SummaryCard label="SQL" value={String(summary.sqlCount)} detail={summary.sqlRate !== null ? `${formatMarketingRate(summary.sqlRate)} Leaddan` : "Marketing cohort"} icon={Target} tone="green" onClick={() => openDeals("sql", "SQL", summary.sqlCount)} />
+      <SummaryCard label="Saralangan" value={String(summary.classifiedCount)} detail={summary.classifiedRate !== null ? `${formatMarketingRate(summary.classifiedRate)} Leaddan` : "Tanlangan marketing cohort"} icon={Check} tone="green" />
+      {showIcp ? <button className="kpi-card marketing-summary-card violet" onClick={() => setIcpOpen(true)}><span className="kpi-top"><span>ICP ga moslik</span><span className="kpi-icon"><Gauge size={18} /></span></span><strong>{formatMarketingRate(summary.icpFitRate)}</strong><small>{summary.icpFitCount ?? "—"} / {summary.icpEvaluatedCount ?? "—"} belgilangan{summary.icpUnsetCount !== null ? <span className="card-note">{summary.icpUnsetCount} ta belgilanmagan</span> : null}{summary.icpEvaluationShare !== null ? <span className={`card-note marketing-icp-coverage ${summary.icpEvaluationShare < 0.5 ? "warning-text" : ""}`}>Faqat {formatMarketingRate(summary.icpEvaluationShare)} Lead baholangan</span> : null}</small><span className="marketing-card-action">Breakdown <ChevronRight size={12} /></span></button> : null}
+      <SummaryCard label="SQL" value={String(summary.sqlCount)} detail={summary.sqlRate !== null ? `${formatMarketingRate(summary.sqlRate)} Saralangandan` : "Marketing cohort"} icon={Target} tone="green" onClick={() => openDeals("sql", "SQL", summary.sqlCount)} />
       <SummaryCard label="Jarayonda" value={String(summary.pipelineCount)} detail="Aktiv marketing cohort" icon={Layers3} tone="amber" onClick={() => openDeals("pipeline", "Jarayonda", summary.pipelineCount)} />
       <SummaryCard label="Sotuv" value={String(summary.saleCount)} detail={summary.sqlToSaleRate !== null ? `${formatMarketingRate(summary.sqlToSaleRate)} SQL’dan` : "Marketing cohort"} icon={CircleDollarSign} tone="cyan" onClick={() => openDeals("sale", "Sotuv", summary.saleCount)} />
     </section> : null}
 
     {summary ? <section className="panel marketing-efficiency"><div className="section-header"><div><h2>Marketing Efficiency</h2><p>Spend integratsiyasi holati aniq ko‘rsatiladi; unavailable qiymat 0 deb berilmaydi</p></div>{summary.costs.status !== "AVAILABLE" ? <span className="marketing-status warning">{summary.costs.message}</span> : null}</div>
-      <div className="marketing-efficiency-grid"><div><span>Spend</span><strong><CostValue costs={summary.costs} metric="spend" /></strong><small>Reklama xarajati</small></div><div><span>CMC</span><strong><CostValue costs={summary.costs} metric="cmc" /></strong><small>1 mijoz uchun marketing xarajati</small></div><div><span>ROAS</span><strong><CostValue costs={summary.costs} metric="roas" /></strong><small>1 so‘m reklama xarajati qaytargan revenue</small></div></div>
+      <div className="marketing-efficiency-grid"><div><span>Biriktirilgan reklama xarajati <span className="marketing-help" title={ATTRIBUTED_SPEND_HELP} aria-label={ATTRIBUTED_SPEND_HELP}><Info size={13} /></span></span><strong><CostValue costs={summary.costs} metric="spend" /></strong><small>Faqat shu workspace’ga biriktirilgan Ad’lar — Meta hisobining umumiy xarajati emas</small></div><div><span>CMC <span className="marketing-help" title={ATTRIBUTED_SPEND_HELP} aria-label={ATTRIBUTED_SPEND_HELP}><Info size={13} /></span></span><strong><CostValue costs={summary.costs} metric="cmc" /></strong><small>1 mijoz uchun marketing xarajati</small></div><div><span>ROAS</span><strong><CostValue costs={summary.costs} metric="roas" /></strong><small>1 so‘m reklama xarajati qaytargan revenue</small></div></div>
     </section> : null}
 
     <section className="panel marketing-attribution"><div className="section-header"><div><h2>Attribution</h2><p>CRM manba, Marketing source va Platform alohida tushunchalar sifatida saqlanadi</p></div><div className="marketing-source-legend"><span>CRM manba</span><span>Marketing source</span><span>Platform</span></div></div>
@@ -283,7 +327,7 @@ export function MarketingView({ workspace, adapter }: { workspace: MarketingWork
       {entitiesResponse && entitiesResponse.rows.length > 0 ? <MarketingAttributionTable rows={entitiesResponse.rows} level={state.level} showIcp={showIcp} onEntity={openEntity} onMetric={(row, metric, label, count) => openDeals(metric, label, count, row)} /> : null}
     </section>
 
-    <MarketingCoverageDetails resource={coverageResource} adIdCoverage={summary?.coverage.adIdCoverage ?? null} />
+    <MarketingCoverageDetails resource={coverageResource} adIdCoverage={summary?.coverage.adIdCoverage ?? null} summary={summaryResponse} />
     <CreativeRanking context={context} adapter={adapter} spendAvailable={spendAvailable} showIcp={showIcp} onOpen={setDetail} />
 
     {showIcp ? <MarketingIcpDrawer open={icpOpen} context={context} adapter={adapter} onSelect={openIcpSegment} onClose={() => setIcpOpen(false)} /> : null}
