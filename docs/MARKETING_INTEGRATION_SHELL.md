@@ -5,9 +5,10 @@ data-branch binding only. It changes no calculation, persistence or sync rule.
 
 ## Adapter boundary
 
-Marketing components receive `MarketingDataAdapter`. The local composition root
-currently constructs `FixtureMarketingAdapter`; after the data branch is merged,
-the mechanical activation is to construct `HttpMarketingAdapter` instead.
+Marketing components receive `MarketingDataAdapter`. Since the V1 integration
+(`feature/marketing-v1-integration`) the composition root constructs
+`HttpMarketingAdapter`; `FixtureMarketingAdapter` remains for tests and demos only
+(a test fails if runtime code imports it).
 
 | Adapter method | HTTP endpoint |
 | --- | --- |
@@ -36,20 +37,19 @@ sent because the agreed backend query does not accept it.
   `ICP_NOT_APPLICABLE` error from an ICP Deal request, are expected capability
   states. Reserved KZ workspaces return `WORKSPACE_NOT_ACTIVATED` until enabled.
 
-## Backend fields still optional
+## Bound in V1 (backend supplies, UI only formats)
 
-The shell works safely without these fields, but the final data merge should
-bind them if richer UI is required:
+- `costStatus` per summary/entity row: `NOT_INGESTED`, `PENDING`, `NOT_APPLICABLE`,
+  `CURRENCY_UNAVAILABLE`, `NO_SPEND`, `NO_SALES`, `AVAILABLE`. Null is never shown as 0.
+- `saralanganRate` (of Lead), `sqlRate` (of Saralangan), `saleRate` (of SQL);
+  `icpEvaluationShare` (ICP evaluated of Lead, IBOX_UZ only) for the coverage warning.
+- `options` on summary (sources, campaigns, ad sets constrained by campaign, ads
+  constrained by ad set, placements, landing). `platforms` is empty: not a
+  backend dimension yet, so the Platform filter is hidden.
+- `spendAttribution` (assigned to this workspace, other workspaces, MIXED,
+  UNASSIGNED, NON_DASHBOARD) for the "Data quality / Attribution coverage" area,
+  `meta` (Meta status, stored range, updated time) and `fx.usdToUzs`.
+- Deal rows: manager name, CRM source, sale date. ICP by manager: names.
 
-- `options` on summary (source/platform/entity filter option labels). Without
-  it, URL filters and drilldown work, but HTTP mode has no dropdown catalogue.
-- `costStatus` or `metaStatus` to distinguish Meta disconnected and ingestion
-  pending from a legitimate no-spend response. The shell already recognizes
-  `META_NOT_CONNECTED`, `PENDING`, `NO_SPEND`, `NO_SALES`,
-  `CURRENCY_UNAVAILABLE` and `NOT_APPLICABLE`; current backend numbers safely
-  infer only no-spend/no-sales/currency/not-applicable.
-- Deal manager display name, canonical source, platform and sale date. Current
-  HTTP rows fall back to the supplied manager ID and attribution channel and do
-  not invent missing values.
-
-No database change or resync is required for this shell.
+Spend shown in a workspace is "Biriktirilgan reklama xarajati": only ads whose Deals
+map to that workspace. Unassigned and mixed spend are never in its CMC/ROAS.
