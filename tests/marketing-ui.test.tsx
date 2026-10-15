@@ -327,3 +327,17 @@ test("integration: Deal drilldown keeps the exact workspace, date and entity con
   assert.deepEqual([request.filters.startDate, request.filters.endDate, request.filters.campaignId, request.filters.adsetId, request.filters.adId, request.filters.placement, request.filters.landing],
     ["2026-09-15", "2026-10-14", "120258774035960093", "120258774036320093", "120258774036060093", "ig_feed", "/uz"]);
 });
+
+test("pre-prod: the Marketing page names its population; Overview and Managers ask for the whole workspace", async () => {
+  const view = read("app/marketing/marketing-view.tsx");
+  assert.match(view, /label="Meta orqali biriktirilgan Leadlar"/);
+  for (const label of ["CRM Leadlar", "Meta attribution mavjud", "Attribution coverage"]) assert.ok(view.includes(`<span>${label}</span>`), label);
+  const additions = read("app/marketing/marketing-additions.tsx");
+  assert.equal((additions.match(/scope: "workspace" as const/g) ?? []).length, 3, "Overview card, Overview ICP drawer and Managers ICP");
+  assert.match(read("app/marketing/marketing-shared.tsx"), /scope: request\.scope \?\? "meta"/, "a drawer is cached per scope");
+  const calls: URL[] = [];
+  const adapter = new HttpMarketingAdapter((async (input: RequestInfo | URL) => { calls.push(new URL(String(input), "https://d.test")); return json({ ...summaryPayload, scope: "workspace" }); }) as never);
+  await adapter.getSummary({ ...context, scope: "workspace" });
+  await adapter.getSummary(context);
+  assert.deepEqual(calls.map((url) => url.searchParams.get("scope")), ["workspace", null], "Meta scope is the API default");
+});

@@ -37,6 +37,11 @@ export type MarketingFilters = {
 export type MarketingQueryContext = {
   workspace: MarketingWorkspaceKey;
   filters: MarketingFilters;
+  /**
+   * meta (default): the Marketing page — Meta-attributed Deals of this workspace, the
+   * population its spend comes from. workspace: every CRM Lead (Overview, Managers), no cost ratios.
+   */
+  scope?: "meta" | "workspace";
 };
 
 export type MarketingOption = { id: string; name: string };
@@ -182,7 +187,15 @@ export type MarketingMetaStatus = {
   since: string | null; until: string | null; updatedAt: string | null; accounts: number;
 };
 
+/** How the workspace's CRM cohort splits into the Meta population and the rest (API-supplied). */
+export type MarketingPopulation = {
+  workspaceLeads: number; metaAttributedLeads: number; coverage: number | null;
+  excluded: Record<"NO_META_IDS" | "CAMPAIGN_ONLY" | "CONFLICT" | "MIXED_AD" | "OTHER_WORKSPACE_AD" | "NON_DASHBOARD_AD" | "UNASSIGNED_AD", number>;
+};
+
 export type MarketingSummaryResponse = {
+  scope: "meta" | "workspace";
+  population: MarketingPopulation | null;
   workspace: MarketingWorkspaceKey;
   workspaceName: string;
   /** CRM (Bitrix) sync time — not the Meta data time. */

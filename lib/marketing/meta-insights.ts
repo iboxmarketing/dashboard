@@ -138,7 +138,8 @@ export function nextWindow(cursorUntil: string, from: string, days = 7): { since
   return { since, until: cursorUntil, nextCursor: before < from ? null : before };
 }
 
-export type SpendStatus = "AVAILABLE" | "NOT_INGESTED" | "PARTIAL_RANGE" | "NOT_BROKEN_DOWN";
+/** WORKSPACE_SCOPE: the whole CRM cohort was asked for (Overview), which spend does not describe. */
+export type SpendStatus = "AVAILABLE" | "NOT_INGESTED" | "PARTIAL_RANGE" | "NOT_BROKEN_DOWN" | "WORKSPACE_SCOPE";
 
 /**
  * Whether stored Meta spend can answer a date range. AVAILABLE only when every

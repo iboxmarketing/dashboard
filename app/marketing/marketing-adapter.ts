@@ -24,6 +24,7 @@ import {
   type MarketingSummaryResponse,
   type MarketingCoverageResponse,
   type MarketingMetaStatus,
+  type MarketingPopulation,
   type MarketingSpendAttribution,
 } from "./marketing-types";
 import {
@@ -157,6 +158,8 @@ export class FixtureMarketingAdapter implements MarketingDataAdapter {
       workspaceName: definition.label,
       dataAsOf: "2026-10-14T09:00:00+05:00",
       meta: null,
+      scope: request.scope ?? "meta",
+      population: null,
       usdToUzs: null,
       spendAttribution: null,
       fixture: true,
@@ -261,6 +264,7 @@ type HttpSummary = HttpFunnelFields & HttpCostFields & {
 type HttpSummaryPayload = HttpCommon & {
   summary: HttpSummary; options?: MarketingFilterOptions;
   spendAttribution?: MarketingSpendAttribution | null; meta?: MarketingMetaStatus; fx?: { usdToUzs: number };
+  scope?: "meta" | "workspace"; population?: MarketingPopulation;
 };
 type HttpEntity = HttpFunnelFields & HttpCostFields & { id: string; name: string | null; campaignId: string | null; adsetId: string | null };
 type HttpEntitiesPayload = HttpCommon & { level: MarketingEntityLevel; rows: HttpEntity[] };
@@ -342,6 +346,7 @@ function normalizedMetrics(row: HttpFunnelFields) {
 function queryParams(context: MarketingQueryContext) {
   const params = new URLSearchParams();
   params.set("workspace", context.workspace);
+  if (context.scope === "workspace") params.set("scope", "workspace");
   const { filters } = context;
   if (filters.startDate) params.set("startDate", filters.startDate);
   if (filters.endDate) params.set("endDate", filters.endDate);
@@ -409,6 +414,8 @@ export class HttpMarketingAdapter implements MarketingDataAdapter {
       workspaceName: marketingWorkspace(workspace).label,
       dataAsOf: payload.dataAsOf,
       meta: payload.meta ?? null,
+      scope: payload.scope ?? request.scope ?? "meta",
+      population: payload.population ?? null,
       usdToUzs: payload.fx?.usdToUzs ?? null,
       spendAttribution: payload.spendAttribution ?? null,
       fixture: false,

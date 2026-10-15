@@ -18,7 +18,8 @@ function IcpResourceDrawer({ open, workspace, adapter, filters, onSelect, onClos
   onSelect: (row: IcpBreakdownRow) => void;
   onClose: () => void;
 }) {
-  const context = useMemo(() => ({ workspace, filters }), [filters, workspace]);
+  // Opened from the Overview: the whole CRM cohort, like the card it explains.
+  const context = useMemo(() => ({ workspace, filters, scope: "workspace" as const }), [filters, workspace]);
   const resource = useMarketingResource({ key: `addition-icp:${JSON.stringify(context)}`, enabled: open, load: (signal) => adapter.getIcp(context, signal) });
   if (resource.state.status === "ready" && resource.state.data.status === "ENABLED") {
     return <IcpBreakdownDrawer open={open} breakdown={resource.state.data.breakdown} context="Dashboard · Marketing" onSelect={onSelect} onClose={onClose} />;
@@ -43,7 +44,8 @@ export function MarketingOverviewAdditions({ workspace, adapter, range, showCost
   workspace: MarketingWorkspaceKey; adapter: MarketingDataAdapter; range?: MarketingRange; showCosts?: boolean;
 }) {
   const filters = useMemo(() => filtersForRange(range), [range]);
-  const context = useMemo(() => ({ workspace, filters }), [filters, workspace]);
+  // The Overview is the whole CRM cohort: workspace scope (its ICP is every IBOX Lead).
+  const context = useMemo(() => ({ workspace, filters, scope: "workspace" as const }), [filters, workspace]);
   const summaryResource = useMarketingResource({ key: `overview-summary:${JSON.stringify(context)}`, load: (signal) => adapter.getSummary(context, signal), isEmpty: (response) => response.summary.leadCount === 0 });
   const [icpOpen, setIcpOpen] = useState(false);
   const [dealRequest, setDealRequest] = useState<MarketingDealRequest | null>(null);
@@ -52,7 +54,7 @@ export function MarketingOverviewAdditions({ workspace, adapter, range, showCost
   const showIcp = response?.capabilities.icp === true;
   const openSegment = (row: IcpBreakdownRow) => {
     setIcpOpen(false);
-    setDealRequest({ workspace, metric: row.metric, metricLabel: row.label, expectedCount: row.count, filters, entity: null });
+    setDealRequest({ workspace, scope: "workspace", metric: row.metric, metricLabel: row.label, expectedCount: row.count, filters, entity: null });
   };
   return <>
     <MarketingResourceNotice state={summaryResource.state} onRetry={summaryResource.retry} compact empty="Marketing cohort bo‘sh." />
@@ -71,7 +73,8 @@ export function MarketingOverviewAdditions({ workspace, adapter, range, showCost
 
 export function ManagerIcpAdditions({ workspace, adapter, range }: { workspace: MarketingWorkspaceKey; adapter: MarketingDataAdapter; range?: MarketingRange }) {
   const filters = useMemo(() => filtersForRange(range), [range]);
-  const context = useMemo(() => ({ workspace, filters }), [filters, workspace]);
+  // Managers own every CRM Lead, not only Meta-attributed ones: workspace scope.
+  const context = useMemo(() => ({ workspace, filters, scope: "workspace" as const }), [filters, workspace]);
   const [open, setOpen] = useState(false);
   const summaryResource = useMarketingResource({ key: `manager-summary:${JSON.stringify(context)}`, load: (signal) => adapter.getSummary(context, signal) });
   const summary = summaryResource.state.status === "ready" || summaryResource.state.status === "empty" ? summaryResource.state.data : null;

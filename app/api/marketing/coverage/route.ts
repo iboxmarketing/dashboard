@@ -9,5 +9,6 @@ import { buildCoverage } from "@/lib/marketing/metrics";
 export async function GET(request: Request) {
   const denied = await authorizePermission(request, "dashboard");
   if (denied) return denied;
-  return marketingResponse(request, (context) => ({ coverage: buildCoverage(context.cohort, context.attribution) }));
+  // Measured on the whole workspace cohort — unattributed Deals are counted here, never in the Meta funnel.
+  return marketingResponse(request, (context) => ({ coverage: buildCoverage(context.baseCohort, context.attribution) }));
 }

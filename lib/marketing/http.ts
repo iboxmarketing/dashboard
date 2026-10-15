@@ -2,19 +2,27 @@ import { isEligibleCohortDeal } from "../sales-logic";
 import { loadSalesRecords, requestProject } from "../sales-http";
 import { salesPopulations, type SalesQuery } from "../sales-sections";
 import type { ProjectKey } from "../sales-projects";
-import type { AttributionView, OutcomeRecord, SpendRow } from "./metrics";
+import { marketingPopulation, metaPopulationReason, type AttributionView, type MarketingPopulation, type OutcomeRecord, type SpendRow } from "./metrics";
 import type { MarketingFx } from "./money";
 import type { IcpConfig } from "./icp";
 import { spendRangeStatus, type SpendStatus } from "./meta-insights";
 import { getDictionary } from "../storage";
-import { getMarketingSettings, listAttributionViews, marketingFx, spendAssignmentReport } from "./store";
-import { summarizeAssignment, type BucketTotals } from "./assignment";
+import { getMarketingSettings, listAttributionViews, loadAdEvidence, marketingFx, spendAssignmentReport } from "./store";
+import { assignAds, summarizeAssignment, type BucketTotals } from "./assignment";
 import { minorToUzs } from "./money";
 import { MARKETING_WORKSPACES, WORKSPACE_KEYS, workspaceForProject, workspaceIcp, type WorkspaceKey } from "./workspaces";
 
 const noStore = { "cache-control": "no-store" };
 
+/**
+ * meta       (default) the Marketing page: Meta-attributed Deals whose ad is assigned
+ *            to this workspace — the same population the workspace's spend comes from.
+ * workspace  every CRM Lead of the workspace (Overview, Managers): no spend ratios.
+ */
+export type MarketingScope = "meta" | "workspace";
+
 export type MarketingQuery = {
+  scope: MarketingScope;
   startDate: string; endDate: string;
   sources: string[];
   campaignId: string | null; adsetId: string | null; adId: string | null;
@@ -39,7 +47,7 @@ export function parseMarketingQuery(params: URLSearchParams, today = new Date())
   const sources = params.getAll("source").map((value) => value.trim()).filter(Boolean).slice(0, 30);
   return {
     ok: true,
-    query: { startDate: start, endDate: end, sources, campaignId: campaign.value, adsetId: adset.value, adId: ad.value, placement: text("placement"), landing: text("landing") },
+    query: { scope: params.get("scope") === "workspace" ? "workspace" : "meta", startDate: start, endDate: end, sources, campaignId: campaign.value, adsetId: adset.value, adId: ad.value, placement: text("placement"), landing: text("landing") },
   };
 }
 
@@ -48,8 +56,12 @@ export type MarketingContext = {
   cohort: OutcomeRecord[]; attribution: Map<string, AttributionView>; spend: SpendRow[];
   /** True only when spendStatus is AVAILABLE; otherwise spend and its ratios are null. */
   spendApplies: boolean; spendStatus: SpendStatus; dataAsOf: string | null;
-  /** The cohort before any entity filter, for the filter catalogue. */
+  /** The workspace cohort before scope and entity filters (coverage, filter catalogue). */
   baseCohort: OutcomeRecord[];
+  /** How the workspace cohort splits into the Meta population and the rest. */
+  population: MarketingPopulation;
+  /** The scope's population before entity filters (the filter catalogue's source). */
+  scopeCohort: OutcomeRecord[];
   /** Where this range's Meta spend went (assigned here, other workspaces, MIXED, UNASSIGNED, NON_DASHBOARD). */
   spendAttribution: SpendAttribution | null;
   meta: { status: SpendStatus; since: string | null; until: string | null; updatedAt: string | null; accounts: number };
@@ -86,7 +98,16 @@ export async function loadMarketingContext(project: ProjectKey, query: Marketing
   // A day of slack on each side: attribution is matched by Deal ID, the window only bounds the read.
   const pad = (date: string, days: number) => new Date(new Date(`${date}T00:00:00Z`).getTime() + days * 86_400_000).toISOString();
   const attribution = await listAttributionViews(project, pad(query.startDate, -1), pad(query.endDate, 2));
-  const cohort = base.filter((record) => {
+  const workspace = workspaceForProject(project);
+  // The same per-ad evidence the spend assignment uses, so the Deal population and
+  // the spend come from exactly the same ads.
+  const cohortAds = [...new Set(base.map((record) => attribution.get(record.dealId)?.adId).filter((id): id is string => Boolean(id)))];
+  const adAssignment = assignAds(await loadAdEvidence(cohortAds), cohortAds);
+  const population = marketingPopulation(base, attribution, adAssignment, workspace);
+  const scoped = query.scope === "meta"
+    ? base.filter((record) => metaPopulationReason(attribution.get(record.dealId), adAssignment, workspace) === "META_SCOPED")
+    : base;
+  const cohort = scoped.filter((record) => {
     const view = attribution.get(record.dealId);
     if (query.campaignId && view?.campaignId !== query.campaignId) return false;
     if (query.adsetId && view?.adsetId !== query.adsetId) return false;
@@ -98,9 +119,8 @@ export async function loadMarketingContext(project: ProjectKey, query: Marketing
   // Spend answers only a range Meta has fully delivered, and only for dimensions it breaks down.
   const meta = await getDictionary<{ updatedAt?: string; accounts?: { completedSince?: string | null; completedUntil?: string | null; paused?: boolean; currency?: string | null }[] } | null>("metaInsightsSync", null);
   const rangeStatus = spendRangeStatus(meta?.accounts, query.startDate, query.endDate);
-  const spendStatus: SpendStatus = query.placement || query.landing ? "NOT_BROKEN_DOWN" : rangeStatus;
+  const spendStatus: SpendStatus = query.scope === "workspace" ? "WORKSPACE_SCOPE" : query.placement || query.landing ? "NOT_BROKEN_DOWN" : rangeStatus;
   const spendApplies = spendStatus === "AVAILABLE";
-  const workspace = workspaceForProject(project);
   const fx = marketingFx(settings);
   // One assignment pass: the workspace's spend AND the data-quality buckets come from it.
   let spend: SpendRow[] = [];
@@ -119,7 +139,7 @@ export async function loadMarketingContext(project: ProjectKey, query: Marketing
   return {
     project, workspace, icp: workspaceIcp(workspace), query, fx, cohort, attribution, spend, spendApplies, spendStatus,
     dataAsOf: projectSync?.lastSyncAt ?? sync.lastSyncAt ?? null,
-    baseCohort: base, spendAttribution,
+    baseCohort: base, population, scopeCohort: scoped, spendAttribution,
     meta: {
       status: rangeStatus,
       since: ingested.length ? ingested.map((account) => account.completedSince as string).sort()[0] : null,
@@ -162,7 +182,7 @@ export async function marketingResponse(request: Request, build: (context: Marke
     const body = build(context, params);
     if (body instanceof Response) return body;
     return Response.json({
-      project: scoped.project, workspace: context.workspace, icpStatus: context.icp.enabled ? "ENABLED" : "NOT_APPLICABLE",
+      project: scoped.project, workspace: context.workspace, scope: context.query.scope, population: context.population, icpStatus: context.icp.enabled ? "ENABLED" : "NOT_APPLICABLE",
       spendStatus: context.spendStatus, meta: context.meta, range: { startDate: parsed.query.startDate, endDate: parsed.query.endDate },
       filters: parsed.query, fx: { usdToUzs: context.fx.usdToUzs }, dataAsOf: context.dataAsOf, ...(body as object),
     }, { headers: noStore });

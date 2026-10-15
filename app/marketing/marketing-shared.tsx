@@ -65,7 +65,7 @@ function fmtDate(value: string | null) {
 
 function dealRequestKey(request: MarketingDealRequest | null) {
   if (!request) return "closed";
-  return JSON.stringify({ workspace: request.workspace, metric: request.metric, filters: request.filters, entity: request.entity?.id ?? null });
+  return JSON.stringify({ workspace: request.workspace, scope: request.scope ?? "meta", metric: request.metric, filters: request.filters, entity: request.entity?.id ?? null });
 }
 
 export function MarketingDealDrawer({ request, adapter, showIcp, onClose }: {

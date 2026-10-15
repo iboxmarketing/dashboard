@@ -59,7 +59,7 @@ export type CostStatus = "AVAILABLE" | "NO_SALES" | "NO_SPEND" | "NOT_INGESTED" 
 export function costStatus(spendStatus: string | undefined, spend: { spendUzs: number | null; spendByCurrency: Record<string, number> }, sales: number): CostStatus {
   if (spendStatus === "NOT_INGESTED") return "NOT_INGESTED";
   if (spendStatus === "PARTIAL_RANGE") return "PENDING";
-  if (spendStatus === "NOT_BROKEN_DOWN") return "NOT_APPLICABLE";
+  if (spendStatus === "NOT_BROKEN_DOWN" || spendStatus === "WORKSPACE_SCOPE") return "NOT_APPLICABLE";
   if (spend.spendUzs === null) return Object.keys(spend.spendByCurrency).length ? "CURRENCY_UNAVAILABLE" : "NOT_INGESTED";
   if (spend.spendUzs === 0) return "NO_SPEND";
   return sales ? "AVAILABLE" : "NO_SALES";
@@ -211,16 +211,19 @@ export type MarketingSummary = Omit<Totals, "icp"> & SpendTotals & CostMetrics &
 export function buildSummary(input: {
   cohort: readonly OutcomeRecord[]; attribution: ReadonlyMap<string, AttributionView>;
   spend: readonly SpendRow[]; fx: MarketingFx; spendApplies?: boolean; icp: IcpConfig;
-  /** The context's Meta availability (AVAILABLE, NOT_INGESTED, PARTIAL_RANGE, NOT_BROKEN_DOWN). */
+  /** The context's Meta availability (AVAILABLE, NOT_INGESTED, PARTIAL_RANGE, NOT_BROKEN_DOWN, WORKSPACE_SCOPE). */
   spendStatus?: string;
+  /** The population ID coverage is measured on (the workspace cohort); the cohort itself when absent. */
+  coverageBase?: readonly OutcomeRecord[];
 }): MarketingSummary {
   const spendApplies = input.spendApplies !== false;
   const { icp: allIcp, ...all } = totals(input.cohort, input.attribution, input.fx, input.icp);
   const attributed = totals(input.cohort.filter((row) => isMetaAttributed(input.attribution.get(row.dealId))), input.attribution, input.fx, input.icp);
   const spend = spendApplies ? spendTotals(input.spend, input.fx) : { spendByCurrency: {}, spendUzs: null, impressions: 0, clicks: 0 };
   const attributedRevenueUzs = attributed.revenueUzsComplete ? attributed.revenueUzs : null;
+  const coverageBase = input.coverageBase ?? input.cohort;
   const share = (predicate: (view: AttributionView | undefined) => boolean) =>
-    all.leadCount ? input.cohort.filter((row) => predicate(input.attribution.get(row.dealId))).length / all.leadCount : null;
+    coverageBase.length ? coverageBase.filter((row) => predicate(input.attribution.get(row.dealId))).length / coverageBase.length : null;
   return {
     ...all,
     ...spend,
@@ -447,4 +450,48 @@ export function buildFilterOptions(input: {
     marketingSources: list(sources), platforms: [], campaigns: list(campaigns), adSets: list(adSets),
     ads: list(ads), placements: list(placements), landingForms: list(landings),
   };
+}
+
+/**
+ * The Marketing page's population (owner rule, 2026-10): Meta-attributed Deals
+ * whose AD is assigned to this workspace — the exact population the workspace's
+ * spend comes from. Every funnel number, ICP, drilldown and cost ratio on the page
+ * uses it, so Lead/Sale are never total CRM numbers next to attributed-only spend.
+ * Each workspace Deal gets exactly one reason; only META_SCOPED is in the funnel,
+ * the rest stay visible in data quality.
+ */
+export type PopulationReason =
+  | "META_SCOPED" | "NO_META_IDS" | "CAMPAIGN_ONLY" | "CONFLICT"
+  | "MIXED_AD" | "OTHER_WORKSPACE_AD" | "NON_DASHBOARD_AD" | "UNASSIGNED_AD";
+
+export function metaPopulationReason(view: AttributionView | undefined, adAssignment: ReadonlyMap<string, string>, workspace: string): PopulationReason {
+  if (!view || (!view.campaignId && !view.adsetId && !view.adId)) return "NO_META_IDS";
+  if (view.conflict) return "CONFLICT";
+  if (!view.adId) return "CAMPAIGN_ONLY";
+  const assigned = adAssignment.get(view.adId);
+  if (assigned === workspace) return "META_SCOPED";
+  if (assigned === "MIXED") return "MIXED_AD";
+  if (assigned === "NON_DASHBOARD") return "NON_DASHBOARD_AD";
+  if (!assigned || assigned === "UNASSIGNED") return "UNASSIGNED_AD";
+  return "OTHER_WORKSPACE_AD";
+}
+
+export type MarketingPopulation = {
+  /** Every eligible CRM Lead of the workspace in the range (the Overview's population). */
+  workspaceLeads: number;
+  /** The Marketing funnel's population. */
+  metaAttributedLeads: number;
+  /** metaAttributedLeads ÷ workspaceLeads, 0..1. */
+  coverage: number | null;
+  excluded: Record<Exclude<PopulationReason, "META_SCOPED">, number>;
+};
+
+export function marketingPopulation(workspaceCohort: readonly OutcomeRecord[], attribution: ReadonlyMap<string, AttributionView>, adAssignment: ReadonlyMap<string, string>, workspace: string): MarketingPopulation {
+  const excluded: MarketingPopulation["excluded"] = { NO_META_IDS: 0, CAMPAIGN_ONLY: 0, CONFLICT: 0, MIXED_AD: 0, OTHER_WORKSPACE_AD: 0, NON_DASHBOARD_AD: 0, UNASSIGNED_AD: 0 };
+  let scoped = 0;
+  for (const record of workspaceCohort) {
+    const reason = metaPopulationReason(attribution.get(record.dealId), adAssignment, workspace);
+    if (reason === "META_SCOPED") scoped += 1; else excluded[reason] += 1;
+  }
+  return { workspaceLeads: workspaceCohort.length, metaAttributedLeads: scoped, coverage: workspaceCohort.length ? scoped / workspaceCohort.length : null, excluded };
 }

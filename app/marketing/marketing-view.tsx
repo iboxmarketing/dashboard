@@ -224,7 +224,18 @@ function MarketingCoverageDetails({ resource, adIdCoverage, summary }: {
   const data = resource.state.status === "ready" || resource.state.status === "empty" ? resource.state.data.coverage : null;
   const spend = summary?.spendAttribution ?? null;
   const meta = summary?.meta ?? null;
+  const population = summary?.population ?? null;
+  const excludedLabels: [keyof NonNullable<typeof population>["excluded"], string][] = [
+    ["NO_META_IDS", "Meta ID yo‘q"], ["CAMPAIGN_ONLY", "Faqat campaign ID"], ["CONFLICT", "Attribution conflict"],
+    ["MIXED_AD", "Mixed Ad"], ["OTHER_WORKSPACE_AD", "Boshqa workspace Ad’i"], ["NON_DASHBOARD_AD", "Non-dashboard Ad"], ["UNASSIGNED_AD", "Biriktirilmagan Ad"],
+  ];
   return <details className="marketing-coverage"><summary><span>Data quality / Attribution coverage</span>{spend ? <b>Biriktirilmagan {formatMarketingMoney(spend.unassigned.spendUzs)}</b> : null}{adIdCoverage !== null ? <b>Ad ID coverage {formatMarketingRate(adIdCoverage)}</b> : null}{data ? <><b>Unknown {data.unknown}</b><b>Conflicts {data.conflicts}</b></> : null}</summary>
+    {population ? <div className="marketing-population"><div className="marketing-coverage-grid">
+        <div><span>CRM Leadlar</span><strong>{population.workspaceLeads}</strong><small>workspace cohort · Dashboard</small></div>
+        <div><span>Meta attribution mavjud</span><strong>{population.metaAttributedLeads}</strong><small>Marketing funnel populyatsiyasi</small></div>
+        <div><span>Attribution coverage</span><strong>{formatMarketingRate(population.coverage)}</strong><small>Meta ÷ CRM Leadlar</small></div>
+        {excludedLabels.filter(([key]) => population.excluded[key] > 0).map(([key, label]) => <div key={key}><span>{label}</span><strong>{population.excluded[key]}</strong><small>funnel’ga kirmaydi</small></div>)}
+      </div></div> : null}
     {spend ? <div className="marketing-spend-attribution"><p className="marketing-contract-note"><Info size={13} /> {ATTRIBUTED_SPEND_HELP}</p>
       <div className="marketing-coverage-grid">
         <SpendBucketRow label="Biriktirilgan reklama xarajati" bucket={spend.assigned} note="CMC/ROAS shundan" />
@@ -304,11 +315,11 @@ export function MarketingView({ workspace, adapter }: { workspace: MarketingWork
 
   return <div className="marketing-page">
     <MarketingFiltersBar filters={state.filters} onChange={updateFilters} options={options} />
-    <div className="page-title marketing-title"><div><p className="eyebrow">MARKETING ANALYTICS</p><h1>Marketing performance</h1><p>{summaryResponse?.workspaceName ?? marketingWorkspace(workspace).label} · Lead sifati, attribution va reklama samaradorligi bitta kontekstda.</p></div><div className="marketing-data-state"><RefreshCw size={15} /><span>{adapter.source === "http" ? `Marketing ma’lumoti yangilangan: ${fmtStamp(summaryResponse?.meta?.updatedAt)}` : "Typed fixture preview"}</span><small>{summaryResponse?.meta ? `Meta ${summaryResponse.meta.since ?? "—"} — ${summaryResponse.meta.until ?? "—"}` : "Meta Insights —"} · CRM sync {fmtStamp(summaryResponse?.dataAsOf)}</small></div></div>
+    <div className="page-title marketing-title"><div><p className="eyebrow">MARKETING ANALYTICS</p><h1>Marketing performance</h1><p>{summaryResponse?.workspaceName ?? marketingWorkspace(workspace).label} · Faqat Meta orqali biriktirilgan Leadlar — reklama xarajati bilan bir xil populyatsiya. Barcha CRM Leadlar Dashboard’da.</p></div><div className="marketing-data-state"><RefreshCw size={15} /><span>{adapter.source === "http" ? `Marketing ma’lumoti yangilangan: ${fmtStamp(summaryResponse?.meta?.updatedAt)}` : "Typed fixture preview"}</span><small>{summaryResponse?.meta ? `Meta ${summaryResponse.meta.since ?? "—"} — ${summaryResponse.meta.until ?? "—"}` : "Meta Insights —"} · CRM sync {fmtStamp(summaryResponse?.dataAsOf)}</small></div></div>
 
     <MarketingResourceNotice state={summaryResource.state} onRetry={summaryResource.retry} empty="Tanlangan marketing cohort bo‘sh." />
     {summary && summary.leadCount > 0 ? <section className="kpi-grid marketing-summary-grid">
-      <SummaryCard label="Lead" value={String(summary.leadCount)} detail="Tanlangan marketing cohort" icon={Database} tone="blue" onClick={() => openDeals("lead", "Lead", summary.leadCount)} />
+      <SummaryCard label="Meta orqali biriktirilgan Leadlar" value={String(summary.leadCount)} detail={summaryResponse?.population ? `${summaryResponse.population.workspaceLeads} ta CRM Leaddan · ${formatMarketingRate(summaryResponse.population.coverage)} attribution` : "Meta attribution mavjud Leadlar"} icon={Database} tone="blue" onClick={() => openDeals("lead", "Meta orqali biriktirilgan Leadlar", summary.leadCount)} />
       <SummaryCard label="Saralangan" value={String(summary.classifiedCount)} detail={summary.classifiedRate !== null ? `${formatMarketingRate(summary.classifiedRate)} Leaddan` : "Tanlangan marketing cohort"} icon={Check} tone="green" />
       {showIcp ? <button className="kpi-card marketing-summary-card violet" onClick={() => setIcpOpen(true)}><span className="kpi-top"><span>ICP ga moslik</span><span className="kpi-icon"><Gauge size={18} /></span></span><strong>{formatMarketingRate(summary.icpFitRate)}</strong><small>{summary.icpFitCount ?? "—"} / {summary.icpEvaluatedCount ?? "—"} belgilangan{summary.icpUnsetCount !== null ? <span className="card-note">{summary.icpUnsetCount} ta belgilanmagan</span> : null}{summary.icpEvaluationShare !== null ? <span className={`card-note marketing-icp-coverage ${summary.icpEvaluationShare < 0.5 ? "warning-text" : ""}`}>Faqat {formatMarketingRate(summary.icpEvaluationShare)} Lead baholangan</span> : null}</small><span className="marketing-card-action">Breakdown <ChevronRight size={12} /></span></button> : null}
       <SummaryCard label="SQL" value={String(summary.sqlCount)} detail={summary.sqlRate !== null ? `${formatMarketingRate(summary.sqlRate)} Saralangandan` : "Marketing cohort"} icon={Target} tone="green" onClick={() => openDeals("sql", "SQL", summary.sqlCount)} />

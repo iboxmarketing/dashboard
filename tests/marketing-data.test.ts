@@ -11,7 +11,7 @@ import { ICP_FIELD, marketingSelect, resolveMarketingFields } from "../lib/marke
 import { countIcp, icpClassFromLabel, readIcp, type IcpConfig } from "../lib/marketing/icp";
 import { fetchDailyInsights, isRetryableMetaError, metaRange, nextWindow, parseInsightRow, spendRangeStatus } from "../lib/marketing/meta-insights";
 import {
-  buildCoverage, buildEntities, buildFilterOptions, buildSummary, costMetrics, costStatus, dealOutcome, dealsForMetric, funnelRates, spendTotals, UNATTRIBUTED,
+  buildCoverage, buildEntities, buildFilterOptions, buildSummary, costMetrics, costStatus, dealOutcome, dealsForMetric, funnelRates, marketingPopulation, metaPopulationReason, spendTotals, UNATTRIBUTED,
   type AttributionView, type OutcomeRecord, type SpendRow,
 } from "../lib/marketing/metrics";
 import { decimalToMinor, DEFAULT_MARKETING_USD_TO_UZS, minorToUzs, opportunityToUzs } from "../lib/marketing/money";
@@ -564,6 +564,57 @@ test("integration contract: funnel rates, cost status and filter options come fr
   const http = read("lib/marketing/http.ts");
   assert.match(http, /if \(spendApplies\) spend = report\.rows\.filter\(\(row\) => report\.assignment\.get\(row\.adId\) === workspace\);/, "only this workspace's assigned ads feed its CMC/ROAS");
   assert.match(http, /mixed: buckets\.MIXED, unassigned: buckets\.UNASSIGNED, nonDashboard: buckets\.NON_DASHBOARD,/);
+});
+
+test("pre-prod: the Marketing funnel is the Meta-attributed population its spend comes from", () => {
+  const assignment = new Map([["A_IBOX", "IBOX_UZ"], ["A_MIX", "MIXED"], ["A_SD", "SD_UZ"], ["A_NONDASH", "NON_DASHBOARD"], ["A_NEW", "UNASSIGNED"]]);
+  const v = (dealId: string, extra: Partial<AttributionView>) => view(dealId, extra);
+  assert.equal(metaPopulationReason(undefined, assignment, "IBOX_UZ"), "NO_META_IDS");
+  assert.equal(metaPopulationReason(v("1", {}), assignment, "IBOX_UZ"), "NO_META_IDS");
+  assert.equal(metaPopulationReason(v("1", { campaignId: "C", adId: "A_IBOX", conflict: true }), assignment, "IBOX_UZ"), "CONFLICT");
+  assert.equal(metaPopulationReason(v("1", { campaignId: "C" }), assignment, "IBOX_UZ"), "CAMPAIGN_ONLY");
+  assert.equal(metaPopulationReason(v("1", { adId: "A_IBOX" }), assignment, "IBOX_UZ"), "META_SCOPED");
+  assert.equal(metaPopulationReason(v("1", { adId: "A_MIX" }), assignment, "IBOX_UZ"), "MIXED_AD");
+  assert.equal(metaPopulationReason(v("1", { adId: "A_SD" }), assignment, "IBOX_UZ"), "OTHER_WORKSPACE_AD");
+  assert.equal(metaPopulationReason(v("1", { adId: "A_NONDASH" }), assignment, "IBOX_UZ"), "NON_DASHBOARD_AD");
+  assert.equal(metaPopulationReason(v("1", { adId: "A_NEW" }), assignment, "IBOX_UZ"), "UNASSIGNED_AD");
+  assert.equal(metaPopulationReason(v("1", { adId: "A_UNKNOWN" }), assignment, "IBOX_UZ"), "UNASSIGNED_AD");
+
+  // A workspace cohort of 5: 2 scoped, 1 mixed-ad, 1 campaign-only, 1 organic.
+  const cohort = [
+    rec("1", { qualified: true, salesStatus: "WON", opportunity: 47_200_000 }), rec("2", { qualified: true }),
+    rec("3", { qualified: true, salesStatus: "WON", opportunity: 9_000_000 }), rec("4"), rec("5", { qualified: true, salesStatus: "WON", opportunity: 1 }),
+  ];
+  const attribution = new Map([
+    ["1", v("1", { campaignId: "C1", adId: "A_IBOX", icpClass: "P1" })], ["2", v("2", { campaignId: "C1", adId: "A_IBOX", icpClass: "OTHER" })],
+    ["3", v("3", { campaignId: "C1", adId: "A_MIX", icpClass: "P2" })], ["4", v("4", { campaignId: "C2" })],
+  ]);
+  const population = marketingPopulation(cohort, attribution, assignment, "IBOX_UZ");
+  assert.deepEqual(population, { workspaceLeads: 5, metaAttributedLeads: 2, coverage: 0.4,
+    excluded: { NO_META_IDS: 1, CAMPAIGN_ONLY: 1, CONFLICT: 0, MIXED_AD: 1, OTHER_WORKSPACE_AD: 0, NON_DASHBOARD_AD: 0, UNASSIGNED_AD: 0 } });
+  // What the page's summary is built on: only META_SCOPED Deals, with the workspace cohort as the coverage base.
+  const scoped = cohort.filter((record) => metaPopulationReason(attribution.get(record.dealId), assignment, "IBOX_UZ") === "META_SCOPED");
+  const summary = buildSummary({ cohort: scoped, attribution, spend: [spend("A_IBOX", 100000)], fx: FX, icp: IBOX_ICP, spendStatus: "AVAILABLE", coverageBase: cohort });
+  assert.equal(summary.leadCount, 2);
+  assert.equal(summary.attributedLeadCount, summary.leadCount, "Lead and the CPL denominator are the same population");
+  assert.equal(summary.saleCount, summary.attributedSaleCount, "Sales and the CMC denominator are the same population");
+  assert.equal(summary.cplUzs, Math.round(11_800_000 / 2));
+  assert.equal(summary.cmcUzs, 11_800_000, "the mixed-ad sale (Deal 3) is not in CMC");
+  assert.equal(summary.revenueUzs, 47_200_000, "nor in revenue: Deal 3 and organic Deal 5 stay out");
+  assert.equal(summary.roas, 4);
+  assert.deepEqual([summary.icpEvaluatedCount, summary.icpFitCount], [2, 1], "ICP on the attributed population only");
+  assert.equal(summary.coverage.adIdCoverage, 0.6, "ID coverage is measured on the workspace cohort");
+
+  const http = read("lib/marketing/http.ts");
+  assert.match(http, /const scoped = query\.scope === "meta"\n\s+\? base\.filter\(\(record\) => metaPopulationReason\(attribution\.get\(record\.dealId\), adAssignment, workspace\) === "META_SCOPED"\)\n\s+: base;/);
+  assert.match(http, /const spendStatus: SpendStatus = query\.scope === "workspace" \? "WORKSPACE_SCOPE"/, "the workspace scope never carries cost ratios");
+  assert.equal(costStatus("WORKSPACE_SCOPE", { spendUzs: null, spendByCurrency: {} }, 3), "NOT_APPLICABLE");
+  // Drilldowns, ICP and entities read the same context.cohort as the summary; coverage reads the workspace cohort.
+  assert.match(read("app/api/marketing/deals/route.ts"), /dealsForMetric\(metric, context\.cohort, context\.attribution, context\.icp\)/);
+  assert.match(read("app/api/marketing/icp/route.ts"), /context\.cohort\.map/);
+  assert.match(read("app/api/marketing/entities/route.ts"), /cohort: context\.cohort/);
+  assert.match(read("app/api/marketing/coverage/route.ts"), /buildCoverage\(context\.baseCohort, context\.attribution\)/);
+  assert.match(read("app/api/marketing/summary/route.ts"), /coverageBase: context\.baseCohort/);
 });
 
 /* ------------------------------------------------ isolation and guards */

@@ -14,8 +14,10 @@ export async function GET(request: Request) {
     summary: buildSummary({
       cohort: context.cohort, attribution: context.attribution, spend: context.spend, fx: context.fx,
       spendApplies: context.spendApplies, spendStatus: context.spendStatus, icp: context.icp,
+      // ID coverage is a property of the whole workspace cohort, not of the Meta funnel.
+      coverageBase: context.baseCohort,
     }),
     spendAttribution: context.spendAttribution,
-    options: buildFilterOptions({ cohort: context.baseCohort, attribution: context.attribution, spend: context.spend, filters: context.query }),
+    options: buildFilterOptions({ cohort: context.scopeCohort, attribution: context.attribution, spend: context.spend, filters: context.query }),
   }));
 }
