@@ -126,8 +126,12 @@ Common inputs: `startDate`, `endDate` (YYYY-MM-DD, default last 30 days),
 `source` (repeatable, Bitrix source label), `campaignId`, `adsetId`, `adId`,
 `placement`, `landing`. Every response carries `project`, `range`, `filters`,
 `fx`, `dataAsOf`. Values are raw numbers; formatting is the UI's job.
-Placement/landing filters make spend unavailable (`spendApplies:false`) —
-Meta daily rows have no such breakdown.
+Every response carries `spendStatus`: `AVAILABLE` only when the stored Meta
+range fully covers the requested dates for every account (an ad absent from it
+then genuinely spent 0); otherwise `NOT_INGESTED`, `PARTIAL_RANGE` or
+`NOT_BROKEN_DOWN` (placement/landing filters — Meta daily rows have no such
+breakdown), and spend, CMC, ROAS, CPL and every cost ratio are `null` — never a
+misleading 0.
 
 | Endpoint | Returns |
 | --- | --- |

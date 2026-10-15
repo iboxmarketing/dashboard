@@ -5,6 +5,8 @@ import type { ProjectKey } from "../sales-projects";
 import type { AttributionView, OutcomeRecord, SpendRow } from "./metrics";
 import type { MarketingFx } from "./money";
 import type { IcpConfig } from "./icp";
+import { spendRangeStatus, type SpendStatus } from "./meta-insights";
+import { getDictionary } from "../storage";
 import { getMarketingSettings, listAttributionViews, listSpend, marketingFx } from "./store";
 import { MARKETING_WORKSPACES, workspaceForProject, workspaceIcp, type WorkspaceKey } from "./workspaces";
 
@@ -42,8 +44,8 @@ export function parseMarketingQuery(params: URLSearchParams, today = new Date())
 export type MarketingContext = {
   project: ProjectKey; workspace: WorkspaceKey; icp: IcpConfig; query: MarketingQuery; fx: MarketingFx;
   cohort: OutcomeRecord[]; attribution: Map<string, AttributionView>; spend: SpendRow[];
-  /** False when a placement/landing filter is active: Meta daily spend has no such breakdown. */
-  spendApplies: boolean; dataAsOf: string | null;
+  /** True only when spendStatus is AVAILABLE; otherwise spend and its ratios are null. */
+  spendApplies: boolean; spendStatus: SpendStatus; dataAsOf: string | null;
 };
 
 /**
@@ -71,11 +73,14 @@ export async function loadMarketingContext(project: ProjectKey, query: Marketing
     if (query.landing && view?.landingPath !== query.landing) return false;
     return true;
   });
-  const spendApplies = !query.placement && !query.landing;
+  // Spend answers only a range Meta has fully delivered, and only for dimensions it breaks down.
+  const meta = await getDictionary<{ accounts?: { completedSince?: string | null; completedUntil?: string | null; paused?: boolean; currency?: string | null }[] } | null>("metaInsightsSync", null);
+  const spendStatus: SpendStatus = query.placement || query.landing ? "NOT_BROKEN_DOWN" : spendRangeStatus(meta?.accounts, query.startDate, query.endDate);
+  const spendApplies = spendStatus === "AVAILABLE";
   const spend = spendApplies ? await listSpend(project, query.startDate, query.endDate, query) : [];
   const workspace = workspaceForProject(project);
   return {
-    project, workspace, icp: workspaceIcp(workspace), query, fx: marketingFx(settings), cohort, attribution, spend, spendApplies,
+    project, workspace, icp: workspaceIcp(workspace), query, fx: marketingFx(settings), cohort, attribution, spend, spendApplies, spendStatus,
     dataAsOf: projectSync?.lastSyncAt ?? sync.lastSyncAt ?? null,
   };
 }
@@ -113,7 +118,8 @@ export async function marketingResponse(request: Request, build: (context: Marke
     const body = build(context, params);
     if (body instanceof Response) return body;
     return Response.json({
-      project: scoped.project, workspace: context.workspace, icpStatus: context.icp.enabled ? "ENABLED" : "NOT_APPLICABLE", range: { startDate: parsed.query.startDate, endDate: parsed.query.endDate },
+      project: scoped.project, workspace: context.workspace, icpStatus: context.icp.enabled ? "ENABLED" : "NOT_APPLICABLE",
+      spendStatus: context.spendStatus, range: { startDate: parsed.query.startDate, endDate: parsed.query.endDate },
       filters: parsed.query, fx: { usdToUzs: context.fx.usdToUzs }, dataAsOf: context.dataAsOf, ...(body as object),
     }, { headers: noStore });
   } catch {

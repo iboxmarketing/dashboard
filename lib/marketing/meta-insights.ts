@@ -137,3 +137,22 @@ export function nextWindow(cursorUntil: string, from: string, days = 7): { since
   const before = new Date(new Date(`${since}T00:00:00Z`).getTime() - 86_400_000).toISOString().slice(0, 10);
   return { since, until: cursorUntil, nextCursor: before < from ? null : before };
 }
+
+export type SpendStatus = "AVAILABLE" | "NOT_INGESTED" | "PARTIAL_RANGE" | "NOT_BROKEN_DOWN";
+
+/**
+ * Whether stored Meta spend can answer a date range. AVAILABLE only when every
+ * ingested account has completed the whole range (an ad absent from it then
+ * genuinely spent 0); otherwise spend and every spend ratio are unavailable —
+ * never a misleading 0 UZS / 0 CPL / 0 CMC.
+ */
+export function spendRangeStatus(
+  accounts: readonly { completedSince?: string | null; completedUntil?: string | null; paused?: boolean; currency?: string | null }[] | null | undefined,
+  startDate: string, endDate: string,
+): SpendStatus {
+  const ingested = (accounts ?? []).filter((account) => account.currency);
+  if (!ingested.length || !ingested.some((account) => account.completedSince)) return "NOT_INGESTED";
+  const covers = (account: (typeof ingested)[number]) => Boolean(account.completedSince && account.completedUntil
+    && account.completedSince <= startDate && account.completedUntil >= endDate);
+  return ingested.every(covers) ? "AVAILABLE" : "PARTIAL_RANGE";
+}

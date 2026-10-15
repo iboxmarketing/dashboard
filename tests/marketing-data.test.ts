@@ -9,7 +9,7 @@ import { trackingCoverageRow, workspaceCoverage } from "../lib/marketing/coverag
 import { buildDealAttribution, stableId } from "../lib/marketing/attribution";
 import { ICP_FIELD, marketingSelect, resolveMarketingFields } from "../lib/marketing/fields";
 import { countIcp, icpClassFromLabel, readIcp, type IcpConfig } from "../lib/marketing/icp";
-import { fetchDailyInsights, isRetryableMetaError, nextWindow, parseInsightRow } from "../lib/marketing/meta-insights";
+import { fetchDailyInsights, isRetryableMetaError, nextWindow, parseInsightRow, spendRangeStatus } from "../lib/marketing/meta-insights";
 import {
   buildCoverage, buildEntities, buildSummary, costMetrics, dealOutcome, dealsForMetric, spendTotals, UNATTRIBUTED,
   type AttributionView, type OutcomeRecord, type SpendRow,
@@ -502,6 +502,24 @@ test("marketing APIs take ?workspace=; a reserved KZ workspace is refused explic
   assert.match(http, /if \(!workspace\.activated \|\| !workspace\.project\) \{\n\s+return \{ ok: false, response: Response\.json\(\{ error: "Bu workspace hali faollashtirilmagan", code: "WORKSPACE_NOT_ACTIVATED"/);
   assert.match(http, /const scoped = marketingScope\(request\);/);
   assert.match(http, /if \(raw === null \|\| raw === ""\) return requestProject\(request\);/, "?project= keeps working");
+});
+
+test("no Meta data is 'spend unavailable', never 0 UZS / 0 CPL / 0 CMC", () => {
+  assert.equal(spendRangeStatus(null, "2026-10-01", "2026-10-07"), "NOT_INGESTED");
+  assert.equal(spendRangeStatus([], "2026-10-01", "2026-10-07"), "NOT_INGESTED");
+  const done = { currency: "USD", completedSince: "2025-10-15", completedUntil: "2026-10-14" };
+  assert.equal(spendRangeStatus([done, done], "2026-10-01", "2026-10-07"), "AVAILABLE");
+  assert.equal(spendRangeStatus([done, { currency: "USD", completedSince: "2026-10-05", completedUntil: "2026-10-14" }], "2026-10-01", "2026-10-07"), "PARTIAL_RANGE");
+  assert.equal(spendRangeStatus([done], "2026-10-01", "2026-10-20"), "PARTIAL_RANGE", "a range past the stored end is not covered");
+  const cohort = [rec("1", { qualified: true, salesStatus: "WON", opportunity: 1_000_000 })];
+  const attribution = new Map([["1", view("1", { campaignId: "C1", adId: "A1" })]]);
+  const summary = buildSummary({ cohort, attribution, spend: [], fx: FX, icp: IBOX_ICP, spendApplies: false });
+  assert.deepEqual([summary.spendUzs, summary.cmcUzs, summary.roas, summary.cplUzs, summary.costPerSqlUzs, summary.costPerIcpFitUzs], [null, null, null, null, null, null]);
+  const [row] = buildEntities({ level: "ad", cohort, attribution, spend: [], fx: FX, icp: IBOX_ICP, spendApplies: false });
+  assert.deepEqual([row.spendUzs, row.cmcUzs, row.cplUzs], [null, null, null]);
+  const http = read("lib/marketing/http.ts");
+  assert.match(http, /const spendApplies = spendStatus === "AVAILABLE";/);
+  assert.match(http, /spendStatus: context\.spendStatus, range:/);
 });
 
 /* ------------------------------------------------ isolation and guards */
