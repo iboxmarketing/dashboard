@@ -104,11 +104,12 @@ export function resolveDashboardMetricIds(saved: unknown): DashboardMetricId[] {
 }
 
 const percent = (value: number, total: number) => (total ? Math.round((value / total) * 100) : 0);
-const average = (values: (number | null)[]) => {
+/** The averaging the cards use (non-finite values skipped). Exported so detail views reuse it, not copy it. */
+export const average = (values: (number | null)[]) => {
   const clean = values.filter((value): value is number => value !== null && Number.isFinite(value));
   return clean.length ? clean.reduce((sum, value) => sum + value, 0) / clean.length : null;
 };
-const median = (values: (number | null)[]) => {
+export const median = (values: (number | null)[]) => {
   const clean = values.filter((value): value is number => value !== null && Number.isFinite(value)).sort((a, b) => a - b);
   if (!clean.length) return null;
   const middle = Math.floor(clean.length / 2);
@@ -138,6 +139,10 @@ export function buildDashboardMetrics(cohortRecords: MetricRecord[], periodSales
   // Completed SLA population: the Deal was distributed AND moved on.
   const slaCompleted = eligible.filter((row) => typeof row.slaBusinessMinutes === "number");
   const unclassified = eligible.filter(isUnclassifiedLead);
+  // Aktiv leadlar is a *current operational* figure, so it excludes deals
+  // that have left the sync scope or vanished from Bitrix. Canonical Lead
+  // membership has already applied the same current-location evidence.
+  const active = eligible.filter((row) => row.salesStatus === "ACTIVE" && countsAsOperational(row.currentScope));
   const sla = summarizeSla(eligible);
   // Duplicates are reported over both populations. The historical metric counts
   // the raw cohort, which includes routed deals that Leadlar excludes, so the
@@ -165,7 +170,7 @@ export function buildDashboardMetrics(cohortRecords: MetricRecord[], periodSales
 
   return {
     eligible, sql, notRelevant, salesLost, cohortSales, periodSales, sla,
-    classified, unclassified, preSqlClosed,
+    classified, unclassified, preSqlClosed, productFit, active, slaCompleted,
     classificationConflicts,
     counts: {
       leads: eligible.length,
@@ -186,10 +191,7 @@ export function buildDashboardMetrics(cohortRecords: MetricRecord[], periodSales
       product_fit: productFit.length,
       classified_leads: classified.length,
       unclassified_leads: unclassified.length,
-      // Aktiv leadlar is a *current operational* figure, so it excludes deals
-      // that have left the sync scope or vanished from Bitrix. Canonical Lead
-      // membership has already applied the same current-location evidence.
-      active_cohort: eligible.filter((row) => row.salesStatus === "ACTIVE" && countsAsOperational(row.currentScope)).length,
+      active_cohort: active.length,
     },
     rates: {
       // Funnel: denominator is every incoming eligible lead.
