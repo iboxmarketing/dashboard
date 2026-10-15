@@ -10,7 +10,7 @@ import { buildCurrentStageRecords, type RawCurrentStageDeal } from "../lib/curre
 import { filterCurrentStageRecords } from "../lib/record-filters";
 import { SafeBitrixError } from "../lib/safe-bitrix-error";
 import {
-  acceptSnapshot, BITRIX_PAGE_SIZE, classifyLiveError, fetchOpenDealsKeyset, loadStageControl, parseSnapshotPayload,
+  acceptSnapshot, BITRIX_PAGE_SIZE, classifyLiveError, fetchOpenDealsKeyset, liveBudgetFromEnv, loadStageControl, parseSnapshotPayload,
   SNAPSHOT_READ_SQL, SNAPSHOT_UPSERT_SQL, snapshotBindings, snapshotFromLive, STAGE_CONTROL_DEAL_FIELDS,
   STAGE_CONTROL_SCHEMA_STATEMENTS, type BitrixPageCall, type LiveFetchMetrics, type StageControlSnapshot,
 } from "../lib/stage-control-live";
@@ -291,6 +291,19 @@ test("the whole live fetch has a time budget: it gives up instead of waiting pag
   const failure = await fetchOpenDealsKeyset(slow, { categoryIds: ["3"], budgetMs: 40_000 }, { now: () => clock, sleep: async () => {} }).catch((error: unknown) => error);
   assert.equal(classifyLiveError(failure).code, "BITRIX_TIMEOUT");
   assert.equal(clock, 45_000, "three 15 s pages, then the budget stops it");
+});
+
+test("the live budget variable is optional and clamped; a tiny one fails fast as a timeout", async () => {
+  assert.equal(liveBudgetFromEnv(undefined), 40_000);
+  assert.equal(liveBudgetFromEnv(""), 40_000);
+  assert.equal(liveBudgetFromEnv("abc"), 40_000);
+  assert.equal(liveBudgetFromEnv(" 15000 "), 15_000);
+  assert.equal(liveBudgetFromEnv("0"), 1);
+  assert.equal(liveBudgetFromEnv("9999999"), 120_000);
+  const bitrix = pagedBitrix(10);
+  const failure = await fetchOpenDealsKeyset(bitrix.call, { categoryIds: ["3"], budgetMs: liveBudgetFromEnv("1") }).catch((error: unknown) => error);
+  assert.equal(classifyLiveError(failure).code, "BITRIX_TIMEOUT");
+  assert.equal(bitrix.calls.length, 0, "no Bitrix call is started without budget for it");
 });
 
 test("a page whose last ID does not advance stops the fetch instead of looping", async () => {

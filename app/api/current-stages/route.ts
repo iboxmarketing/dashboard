@@ -6,7 +6,8 @@ import { requestProject } from "@/lib/sales-http";
 import { recordProject } from "@/lib/sales-projects";
 import { listPipelineStages } from "@/lib/sync";
 import { authorizePermission } from "@/lib/auth/http";
-import { fetchOpenDealsKeyset, loadStageControl, STAGE_CONTROL_WORKSPACES } from "@/lib/stage-control-live";
+import { env } from "cloudflare:workers";
+import { fetchOpenDealsKeyset, liveBudgetFromEnv, loadStageControl, STAGE_CONTROL_WORKSPACES } from "@/lib/stage-control-live";
 import { readStageControlSnapshot, writeStageControlSnapshot } from "@/lib/stage-control-snapshot";
 import type { DashboardSettings } from "@/lib/types";
 
@@ -58,7 +59,9 @@ export async function GET(request: Request) {
       loadStageControl({
         project: scoped.project,
         categoryIds,
-        fetchDeals: () => fetchOpenDealsKeyset((method, params, timeoutMs) => bitrixCall(method, params, { timeoutMs }), { categoryIds }),
+        fetchDeals: () => fetchOpenDealsKeyset((method, params, timeoutMs) => bitrixCall(method, params, { timeoutMs }), {
+          categoryIds, budgetMs: liveBudgetFromEnv((env as unknown as Record<string, unknown>).STAGE_CONTROL_LIVE_BUDGET_MS),
+        }),
         fetchStages: () => listPipelineStages(categoryIds),
         readSnapshot: () => readStageControlSnapshot(scoped.project),
         writeSnapshot: writeStageControlSnapshot,

@@ -29,6 +29,18 @@ export const LIVE_FETCH_BUDGET_MS = 40_000;
 /** Transient-failure retries for the whole fetch, not per page. */
 export const LIVE_FETCH_MAX_RETRIES = 2;
 
+/**
+ * The live budget from the optional `STAGE_CONTROL_LIVE_BUDGET_MS` Worker
+ * variable, clamped to 1 ms … 120 s; unset or unreadable keeps the default.
+ * Operators can shorten it to make the page fall back sooner — and a tiny
+ * value on staging exercises the real timeout path end to end.
+ */
+export function liveBudgetFromEnv(raw: unknown): number {
+  const value = Number(typeof raw === "string" ? raw.trim() : raw);
+  if (raw === undefined || raw === null || raw === "" || !Number.isFinite(value)) return LIVE_FETCH_BUDGET_MS;
+  return Math.min(120_000, Math.max(1, Math.round(value)));
+}
+
 /** The workspace each project's Stage Control belongs to. Adding a project forces a choice here. */
 export const STAGE_CONTROL_WORKSPACES: Record<ProjectKey, string> = { IBOX: "IBOX_UZ", SALES_DOCTOR: "SD_UZ" };
 
