@@ -7,7 +7,7 @@ export async function POST(request: Request) {
   const denied = await authorizePermission(request, "settings");
   if (denied) return denied;
   return marketingAdminResponse(request, async (payload) => {
-    if (payload.action === "start") return startMetaSync(Number(payload.days ?? 365), fetch, payload.restart === true);
+    if (payload.action === "start") return startMetaSync(Number(payload.days ?? 365), fetch, payload.restart === true, { from: payload.from, to: payload.to });
     if (payload.action === "resume") return resumeMetaSync();
     return stepMetaSync();
   });

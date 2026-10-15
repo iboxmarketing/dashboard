@@ -156,3 +156,12 @@ export function spendRangeStatus(
     && account.completedSince <= startDate && account.completedUntil >= endDate);
   return ingested.every(covers) ? "AVAILABLE" : "PARTIAL_RANGE";
 }
+
+/** An explicit Insights range: YYYY-MM-DD, from ≤ to, not in the future, at most 366 days. */
+export function metaRange(range: { from?: unknown; to?: unknown } | undefined, now = new Date()) {
+  const from = String(range?.from ?? ""); const to = String(range?.to ?? "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to || to > now.toISOString().slice(0, 10)) return null;
+  const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
+  return days <= 366 ? { from, to } : null;
+}
+

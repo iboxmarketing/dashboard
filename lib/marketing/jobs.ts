@@ -3,7 +3,7 @@ import { env } from "cloudflare:workers";
 import { getD1 } from "@/db";
 import { getDictionary, saveDictionary } from "../storage";
 import type { AnalyticsRecord } from "../types";
-import { fetchCreatives, fetchDailyInsights, fetchMetaAccount, isRetryableMetaError, MetaApiError, nextWindow, normalizeAccountId, type MetaDailyRow } from "./meta-insights";
+import { fetchCreatives, fetchDailyInsights, fetchMetaAccount, isRetryableMetaError, MetaApiError, metaRange, nextWindow, normalizeAccountId, type MetaDailyRow } from "./meta-insights";
 import { attributionBackfillPageSql } from "./sql";
 import { getMarketingSettings, getTrackingD1, materializeAttribution, upsertMetaDaily } from "./store";
 
@@ -99,6 +99,7 @@ function metaToken(): string | null {
 
 function dateKey(date: Date) { return date.toISOString().slice(0, 10); }
 
+
 /** Ad accounts: the Marketing setting, else every account the tracking D1 has seen a lead from. */
 async function adAccounts(): Promise<{ id: string }[]> {
   const settings = await getMarketingSettings();
@@ -114,12 +115,17 @@ async function adAccounts(): Promise<{ id: string }[]> {
  * a second "start" never throws away stored progress. `restart` forces a fresh
  * run (still idempotent: rows are upserted per date and ad).
  */
-export async function startMetaSync(days = 365, fetchImpl: typeof fetch = fetch, restart = false): Promise<MetaSyncState> {
+export async function startMetaSync(days = 365, fetchImpl: typeof fetch = fetch, restart = false, range?: { from?: unknown; to?: unknown }): Promise<MetaSyncState> {
   const existing = await getDictionary<MetaSyncState | null>(META_SYNC_KEY, null);
   if (!restart && existing && existing.status === "running") return existing;
   const now = new Date();
   const safeDays = Math.max(1, Math.min(365, Math.floor(days)));
-  const base = { from: dateKey(new Date(now.getTime() - (safeDays - 1) * 86_400_000)), to: dateKey(now), accounts: [], rows: 0, startedAt: now.toISOString(), updatedAt: now.toISOString() };
+  // An explicit range (YYYY-MM-DD, at most 366 days, not in the future) wins over `days`.
+  const explicit = metaRange(range, now);
+  const base = {
+    from: explicit?.from ?? dateKey(new Date(now.getTime() - (safeDays - 1) * 86_400_000)), to: explicit?.to ?? dateKey(now),
+    accounts: [], rows: 0, startedAt: now.toISOString(), updatedAt: now.toISOString(),
+  };
   const token = metaToken();
   if (!token) {
     const blocked: MetaSyncState = { ...base, status: "blocked", reason: `${META_TOKEN_SECRET}_MISSING` };
