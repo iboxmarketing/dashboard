@@ -472,6 +472,7 @@ test("coverage per workspace: UZ on dashboard attribution, reserved KZ on tracki
   const store = read("lib/marketing/store.ts");
   const kzSql = store.slice(store.indexOf("export async function workspaceCoverageEvidence"));
   assert.doesNotMatch(kzSql.slice(kzSql.indexOf("if (tracking && reserved.length)")), /\b(INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP)\b/i, "tracking stays read-only");
+  assert.match(store, /AND EXISTS \(SELECT 1 FROM analytics_records a WHERE a\.deal_id = m\.deal_id\)/, "coverage counts the current Deal store");
   assert.match(read("app/api/marketing/workspace-coverage/route.ts"), /export async function GET\(request: Request\) \{\n  const denied = await authorizePermission\(request, "settings"\);/);
 });
 

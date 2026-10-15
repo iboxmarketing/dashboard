@@ -273,8 +273,12 @@ export async function spendAssignmentReport(fromDate: string, toDate: string, db
 /** Coverage evidence for every workspace in [fromDate, toDate] (YYYY-MM-DD): dashboard rows, plus tracking for reserved ones. SELECT only. */
 export async function workspaceCoverageEvidence(fromDate: string, toDate: string, db: D1 = getD1(), tracking: D1 | null = getTrackingD1()) {
   await ensureMarketingSchema(db);
-  const own = await db.prepare(`SELECT deal_id, workspace_key, campaign_id, adset_id, ad_id, channel, attribution_conflict FROM marketing_deal_attribution
-    WHERE substr(lead_created_at, 1, 10) >= ? AND substr(lead_created_at, 1, 10) <= ?`).bind(fromDate, toDate)
+  // Coverage describes the dashboard's CURRENT Deal store. A row whose Deal a
+  // later Full Sync no longer holds stays as ad→workspace evidence, but is not
+  // counted here.
+  const own = await db.prepare(`SELECT m.deal_id, m.workspace_key, m.campaign_id, m.adset_id, m.ad_id, m.channel, m.attribution_conflict FROM marketing_deal_attribution m
+    WHERE substr(m.lead_created_at, 1, 10) >= ? AND substr(m.lead_created_at, 1, 10) <= ?
+      AND EXISTS (SELECT 1 FROM analytics_records a WHERE a.deal_id = m.deal_id)`).bind(fromDate, toDate)
     .all<{ deal_id: string; workspace_key: string; campaign_id: string | null; adset_id: string | null; ad_id: string | null; channel: string; attribution_conflict: string | null }>();
   const rows: CoverageEvidence[] = (own.results ?? []).map((row) => ({
     dealId: row.deal_id, workspaceKey: row.workspace_key, campaignId: row.campaign_id, adsetId: row.adset_id, adId: row.ad_id,
