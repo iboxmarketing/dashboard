@@ -27,7 +27,43 @@ export type OutcomeRecord = {
   opportunity?: number; currencyId?: string | null;
   stage?: string | null; stageId?: string | null; categoryId?: string | null;
   bitrixUrl?: string | null; assignedManagerId?: string | null; assignedManager?: string | null;
+  source?: string | null; wonAt?: string | null;
 };
+
+/**
+ * Funnel conversions as the Marketing page shows them, each against the step
+ * before it: Saralangan of Lead, SQL of Saralangan, Sale of SQL. Null on a zero
+ * denominator. Supplied here so no screen recomputes them.
+ */
+export function funnelRates(counts: { leadCount: number; saralanganCount: number; sqlCount: number; saleCount: number }) {
+  const rate = (part: number, whole: number) => (whole ? part / whole : null);
+  return {
+    saralanganRate: rate(counts.saralanganCount, counts.leadCount),
+    sqlRate: rate(counts.sqlCount, counts.saralanganCount),
+    saleRate: rate(counts.saleCount, counts.sqlCount),
+  };
+}
+
+export type CostStatus = "AVAILABLE" | "NO_SALES" | "NO_SPEND" | "NOT_INGESTED" | "PENDING" | "CURRENCY_UNAVAILABLE" | "NOT_APPLICABLE";
+
+/**
+ * Why a row's cost numbers are what they are, decided where the data is:
+ *   NOT_INGESTED          Meta spend not loaded for this range
+ *   PENDING               Meta spend loaded for only part of this range
+ *   NOT_APPLICABLE        a dimension Meta does not break spend down by (placement, landing)
+ *   CURRENCY_UNAVAILABLE  spend in a currency with no marketing rate
+ *   NO_SPEND              Meta delivered the range and this row spent nothing
+ *   NO_SALES              spend, but no attributed sale (CMC null; ROAS may be a real 0)
+ *   AVAILABLE             spend and sales
+ */
+export function costStatus(spendStatus: string | undefined, spend: { spendUzs: number | null; spendByCurrency: Record<string, number> }, sales: number): CostStatus {
+  if (spendStatus === "NOT_INGESTED") return "NOT_INGESTED";
+  if (spendStatus === "PARTIAL_RANGE") return "PENDING";
+  if (spendStatus === "NOT_BROKEN_DOWN") return "NOT_APPLICABLE";
+  if (spend.spendUzs === null) return Object.keys(spend.spendByCurrency).length ? "CURRENCY_UNAVAILABLE" : "NOT_INGESTED";
+  if (spend.spendUzs === 0) return "NO_SPEND";
+  return sales ? "AVAILABLE" : "NO_SALES";
+}
 
 export type AttributionView = {
   dealId: string;
@@ -163,6 +199,10 @@ export type MarketingSummary = Omit<Totals, "icp"> & SpendTotals & CostMetrics &
   icpStatus: "ENABLED" | "NOT_APPLICABLE";
   icpEvaluatedCount?: number; icpFitCount?: number; icpOtherCount?: number; icpUnsetCount?: number; icpFitRate?: number | null;
   icpByTier?: Record<string, number>;
+  /** ICP evaluated ÷ Lead: how much of the cohort sellers actually classified. */
+  icpEvaluationShare?: number | null;
+  saralanganRate: number | null; sqlRate: number | null; saleRate: number | null;
+  costStatus: CostStatus;
   coverage: { campaignIdCoverage: number | null; adsetIdCoverage: number | null; adIdCoverage: number | null };
   /** False when a placement/landing filter is active: Meta daily spend has no such breakdown. */
   spendApplies: boolean;
@@ -171,6 +211,8 @@ export type MarketingSummary = Omit<Totals, "icp"> & SpendTotals & CostMetrics &
 export function buildSummary(input: {
   cohort: readonly OutcomeRecord[]; attribution: ReadonlyMap<string, AttributionView>;
   spend: readonly SpendRow[]; fx: MarketingFx; spendApplies?: boolean; icp: IcpConfig;
+  /** The context's Meta availability (AVAILABLE, NOT_INGESTED, PARTIAL_RANGE, NOT_BROKEN_DOWN). */
+  spendStatus?: string;
 }): MarketingSummary {
   const spendApplies = input.spendApplies !== false;
   const { icp: allIcp, ...all } = totals(input.cohort, input.attribution, input.fx, input.icp);
@@ -190,6 +232,9 @@ export function buildSummary(input: {
     attributedSaleCount: attributed.saleCount,
     attributedRevenueUzs,
     ...icpFields(allIcp),
+    ...(allIcp ? { icpEvaluationShare: all.leadCount ? allIcp.evaluated / all.leadCount : null } : {}),
+    ...funnelRates(all),
+    costStatus: costStatus(input.spendStatus ?? (spendApplies ? "AVAILABLE" : "NOT_INGESTED"), spend, attributed.saleCount),
     coverage: {
       campaignIdCoverage: share((view) => Boolean(view?.campaignId)),
       adsetIdCoverage: share((view) => Boolean(view?.adsetId)),
@@ -209,6 +254,8 @@ export type EntityRow = {
   icpStatus: "ENABLED" | "NOT_APPLICABLE";
   icpEvaluatedCount?: number; icpFitCount?: number; icpOtherCount?: number; icpUnsetCount?: number; icpFitRate?: number | null;
   icpByTier?: Record<string, number>;
+  saralanganRate: number | null; sqlRate: number | null; saleRate: number | null;
+  costStatus: CostStatus;
   sqlCount: number; inPipelineCount: number; saleCount: number;
   revenueUzs: number | null; spendUzs: number | null; spendByCurrency: Record<string, number>;
   impressions: number; clicks: number;
@@ -219,7 +266,7 @@ const SPEND_LEVELS = new Set<EntityLevel>(["campaign", "adset", "ad", "creative"
 
 export function buildEntities(input: {
   level: EntityLevel; cohort: readonly OutcomeRecord[]; attribution: ReadonlyMap<string, AttributionView>;
-  spend: readonly SpendRow[]; fx: MarketingFx; spendApplies?: boolean; icp: IcpConfig;
+  spend: readonly SpendRow[]; fx: MarketingFx; spendApplies?: boolean; icp: IcpConfig; spendStatus?: string;
   /** ad_id → creative_id, from Meta daily rows. */
   creativeByAd?: ReadonlyMap<string, string>;
 }): EntityRow[] {
@@ -273,6 +320,8 @@ export function buildEntities(input: {
       adsetId: level === "ad" || level === "creative" ? parent?.adsetId ?? null : null,
       leadCount: counts.leadCount, saralanganCount: counts.saralanganCount,
       ...icpFields(counts.icp),
+      ...funnelRates(counts),
+      costStatus: costStatus(spendApplies ? input.spendStatus ?? "AVAILABLE" : input.spendStatus === "AVAILABLE" || !input.spendStatus ? "NOT_BROKEN_DOWN" : input.spendStatus, spend, counts.saleCount),
       sqlCount: counts.sqlCount, inPipelineCount: counts.inPipelineCount, saleCount: counts.saleCount,
       revenueUzs, spendUzs: spend.spendUzs, spendByCurrency: spend.spendByCurrency,
       impressions: spend.impressions, clicks: spend.clicks,
@@ -306,6 +355,7 @@ export function dealsForMetric(metric: DealMetric, cohort: readonly OutcomeRecor
     return {
       dealId: record.dealId, title: record.title ?? null, createdAt: record.createdAt, bitrixUrl: record.bitrixUrl ?? null,
       stage: record.stage ?? null, stageId: record.stageId ?? null, assignedManagerId: record.assignedManagerId ?? null,
+      assignedManager: record.assignedManager ?? null, source: record.source ?? null, wonAt: outcome.sale ? record.wonAt ?? null : null,
       ...outcome, opportunity: Number(record.opportunity ?? 0) || 0, currencyId: record.currencyId ?? null,
       icpClass: icpOf(view, icpConfig),
       campaignId: view?.campaignId ?? null, campaignName: view?.campaignName ?? null,
@@ -350,4 +400,51 @@ export function icpByKey(cohort: readonly OutcomeRecord[], attribution: Readonly
     groups.set(key, list);
   }
   return [...groups].map(([key, classes]) => ({ key, ...(countIcp(classes, icp) as IcpCounts) })).sort((a, b) => b.evaluated - a.evaluated || a.key.localeCompare(b.key));
+}
+
+export type FilterOption = { id: string; name: string };
+export type FilterOptions = {
+  marketingSources: FilterOption[]; platforms: FilterOption[]; campaigns: FilterOption[]; adSets: FilterOption[];
+  ads: FilterOption[]; placements: FilterOption[]; landingForms: FilterOption[];
+};
+
+/**
+ * Filter catalogue from the real cohort and its assigned spend. Each child list
+ * is constrained by the parent filter (Ad Sets by Campaign, Ads by Ad Set), so a
+ * dropdown never offers a child of another parent. IDs are the values; names
+ * are labels. Platform is not a backend dimension yet, so its list is empty.
+ */
+export function buildFilterOptions(input: {
+  cohort: readonly OutcomeRecord[]; attribution: ReadonlyMap<string, AttributionView>; spend: readonly SpendRow[];
+  filters: { campaignId?: string | null; adsetId?: string | null };
+}): FilterOptions {
+  const add = (map: Map<string, string>, id: string | null | undefined, name: string | null | undefined) => {
+    if (!id) return;
+    if (!map.has(id) || (name && map.get(id) === id)) map.set(id, name || id);
+  };
+  const campaigns = new Map<string, string>(); const adSets = new Map<string, string>(); const ads = new Map<string, string>();
+  const placements = new Map<string, string>(); const landings = new Map<string, string>(); const sources = new Map<string, string>();
+  const inCampaign = (campaignId: string | null) => !input.filters.campaignId || campaignId === input.filters.campaignId;
+  const inAdset = (adsetId: string | null) => !input.filters.adsetId || adsetId === input.filters.adsetId;
+  // Meta names first (latest wins over a lead's older label), then lead-side names.
+  for (const row of [...input.spend].sort((a, b) => b.date.localeCompare(a.date))) {
+    add(campaigns, row.campaignId, row.campaignName);
+    if (inCampaign(row.campaignId)) add(adSets, row.adsetId, row.adsetName);
+    if (inCampaign(row.campaignId) && inAdset(row.adsetId)) add(ads, row.adId, row.adName);
+  }
+  for (const record of input.cohort) {
+    if (record.source) add(sources, record.source, record.source);
+    const view = input.attribution.get(record.dealId);
+    if (!view) continue;
+    add(campaigns, view.campaignId, view.campaignName);
+    if (inCampaign(view.campaignId)) add(adSets, view.adsetId, view.adsetName);
+    if (inCampaign(view.campaignId) && inAdset(view.adsetId)) add(ads, view.adId, view.adName);
+    add(placements, view.placement, view.placement);
+    add(landings, view.landingPath, view.landingPath);
+  }
+  const list = (map: Map<string, string>) => [...map].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+  return {
+    marketingSources: list(sources), platforms: [], campaigns: list(campaigns), adSets: list(adSets),
+    ads: list(ads), placements: list(placements), landingForms: list(landings),
+  };
 }

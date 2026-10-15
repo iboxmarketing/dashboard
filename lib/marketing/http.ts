@@ -7,8 +7,10 @@ import type { MarketingFx } from "./money";
 import type { IcpConfig } from "./icp";
 import { spendRangeStatus, type SpendStatus } from "./meta-insights";
 import { getDictionary } from "../storage";
-import { getMarketingSettings, listAttributionViews, listSpend, marketingFx } from "./store";
-import { MARKETING_WORKSPACES, workspaceForProject, workspaceIcp, type WorkspaceKey } from "./workspaces";
+import { getMarketingSettings, listAttributionViews, marketingFx, spendAssignmentReport } from "./store";
+import { summarizeAssignment, type BucketTotals } from "./assignment";
+import { minorToUzs } from "./money";
+import { MARKETING_WORKSPACES, WORKSPACE_KEYS, workspaceForProject, workspaceIcp, type WorkspaceKey } from "./workspaces";
 
 const noStore = { "cache-control": "no-store" };
 
@@ -46,7 +48,27 @@ export type MarketingContext = {
   cohort: OutcomeRecord[]; attribution: Map<string, AttributionView>; spend: SpendRow[];
   /** True only when spendStatus is AVAILABLE; otherwise spend and its ratios are null. */
   spendApplies: boolean; spendStatus: SpendStatus; dataAsOf: string | null;
+  /** The cohort before any entity filter, for the filter catalogue. */
+  baseCohort: OutcomeRecord[];
+  /** Where this range's Meta spend went (assigned here, other workspaces, MIXED, UNASSIGNED, NON_DASHBOARD). */
+  spendAttribution: SpendAttribution | null;
+  meta: { status: SpendStatus; since: string | null; until: string | null; updatedAt: string | null; accounts: number };
 };
+
+export type SpendAttribution = {
+  /** Spend assigned to THIS workspace — the only spend in its CMC/ROAS. */
+  assigned: BucketTotals; otherWorkspaces: BucketTotals; mixed: BucketTotals; unassigned: BucketTotals; nonDashboard: BucketTotals;
+};
+
+const emptyBucket = (): BucketTotals => ({ ads: 0, adDays: 0, spendByCurrency: {}, spendUzs: 0 });
+function mergeBuckets(items: BucketTotals[]): BucketTotals {
+  return items.reduce((sum, item) => {
+    const spendByCurrency = { ...sum.spendByCurrency };
+    for (const [currency, minor] of Object.entries(item.spendByCurrency)) spendByCurrency[currency] = (spendByCurrency[currency] ?? 0) + minor;
+    return { ads: sum.ads + item.ads, adDays: sum.adDays + item.adDays, spendByCurrency,
+      spendUzs: sum.spendUzs === null || item.spendUzs === null ? null : sum.spendUzs + item.spendUzs };
+  }, emptyBucket());
+}
 
 /**
  * The marketing population for one request: the dashboard's own cohort
@@ -74,14 +96,36 @@ export async function loadMarketingContext(project: ProjectKey, query: Marketing
     return true;
   });
   // Spend answers only a range Meta has fully delivered, and only for dimensions it breaks down.
-  const meta = await getDictionary<{ accounts?: { completedSince?: string | null; completedUntil?: string | null; paused?: boolean; currency?: string | null }[] } | null>("metaInsightsSync", null);
-  const spendStatus: SpendStatus = query.placement || query.landing ? "NOT_BROKEN_DOWN" : spendRangeStatus(meta?.accounts, query.startDate, query.endDate);
+  const meta = await getDictionary<{ updatedAt?: string; accounts?: { completedSince?: string | null; completedUntil?: string | null; paused?: boolean; currency?: string | null }[] } | null>("metaInsightsSync", null);
+  const rangeStatus = spendRangeStatus(meta?.accounts, query.startDate, query.endDate);
+  const spendStatus: SpendStatus = query.placement || query.landing ? "NOT_BROKEN_DOWN" : rangeStatus;
   const spendApplies = spendStatus === "AVAILABLE";
-  const spend = spendApplies ? await listSpend(project, query.startDate, query.endDate, query) : [];
   const workspace = workspaceForProject(project);
+  const fx = marketingFx(settings);
+  // One assignment pass: the workspace's spend AND the data-quality buckets come from it.
+  let spend: SpendRow[] = [];
+  let spendAttribution: SpendAttribution | null = null;
+  if (rangeStatus === "AVAILABLE") {
+    const report = await spendAssignmentReport(query.startDate, query.endDate, query);
+    const buckets = summarizeAssignment(report.rows, report.assignment, (minor, currency) => minorToUzs(minor, currency, fx));
+    spendAttribution = {
+      assigned: buckets[workspace],
+      otherWorkspaces: mergeBuckets(WORKSPACE_KEYS.filter((key) => key !== workspace).map((key) => buckets[key])),
+      mixed: buckets.MIXED, unassigned: buckets.UNASSIGNED, nonDashboard: buckets.NON_DASHBOARD,
+    };
+    if (spendApplies) spend = report.rows.filter((row) => report.assignment.get(row.adId) === workspace);
+  }
+  const ingested = (meta?.accounts ?? []).filter((account) => account.completedSince);
   return {
-    project, workspace, icp: workspaceIcp(workspace), query, fx: marketingFx(settings), cohort, attribution, spend, spendApplies, spendStatus,
+    project, workspace, icp: workspaceIcp(workspace), query, fx, cohort, attribution, spend, spendApplies, spendStatus,
     dataAsOf: projectSync?.lastSyncAt ?? sync.lastSyncAt ?? null,
+    baseCohort: base, spendAttribution,
+    meta: {
+      status: rangeStatus,
+      since: ingested.length ? ingested.map((account) => account.completedSince as string).sort()[0] : null,
+      until: ingested.length ? ingested.map((account) => account.completedUntil ?? "").sort()[0] || null : null,
+      updatedAt: meta?.updatedAt ?? null, accounts: ingested.length,
+    },
   };
 }
 
@@ -119,7 +163,7 @@ export async function marketingResponse(request: Request, build: (context: Marke
     if (body instanceof Response) return body;
     return Response.json({
       project: scoped.project, workspace: context.workspace, icpStatus: context.icp.enabled ? "ENABLED" : "NOT_APPLICABLE",
-      spendStatus: context.spendStatus, range: { startDate: parsed.query.startDate, endDate: parsed.query.endDate },
+      spendStatus: context.spendStatus, meta: context.meta, range: { startDate: parsed.query.startDate, endDate: parsed.query.endDate },
       filters: parsed.query, fx: { usdToUzs: context.fx.usdToUzs }, dataAsOf: context.dataAsOf, ...(body as object),
     }, { headers: noStore });
   } catch {

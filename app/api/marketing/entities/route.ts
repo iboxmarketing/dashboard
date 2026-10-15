@@ -9,6 +9,6 @@ export async function GET(request: Request) {
   return marketingResponse(request, (context, params) => {
     const level = (params.get("level") ?? "campaign") as EntityLevel;
     if (!ENTITY_LEVELS.includes(level)) return Response.json({ error: "level noto‘g‘ri" }, { status: 400, headers: { "cache-control": "no-store" } });
-    return { level, rows: buildEntities({ level, cohort: context.cohort, attribution: context.attribution, spend: context.spend, fx: context.fx, spendApplies: context.spendApplies, icp: context.icp }) };
+    return { level, rows: buildEntities({ level, cohort: context.cohort, attribution: context.attribution, spend: context.spend, fx: context.fx, spendApplies: context.spendApplies, spendStatus: context.spendStatus, icp: context.icp }) };
   });
 }

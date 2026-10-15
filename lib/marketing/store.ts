@@ -262,9 +262,9 @@ export async function listSpend(project: ProjectKey, fromDate: string, toDate: s
   return rows.filter((row) => assignment.get(row.adId) === workspace);
 }
 
-/** Every ad-day in the range, bucketed by workspace, NON_DASHBOARD, MIXED or UNASSIGNED. */
-export async function spendAssignmentReport(fromDate: string, toDate: string, db: D1 = getD1()) {
-  const rows = await listSpendRows(fromDate, toDate, {}, db);
+/** Every ad-day in the range (narrowed by any entity filter), bucketed by workspace, NON_DASHBOARD, MIXED or UNASSIGNED. */
+export async function spendAssignmentReport(fromDate: string, toDate: string, filter: SpendFilter = {}, db: D1 = getD1()) {
+  const rows = await listSpendRows(fromDate, toDate, filter, db);
   const adIds = [...new Set(rows.map((row) => row.adId))];
   const assignment = assignAds(await loadAdEvidence(adIds, db), adIds);
   return { rows, assignment };

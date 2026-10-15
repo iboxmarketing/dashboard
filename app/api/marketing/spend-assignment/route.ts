@@ -16,7 +16,7 @@ export async function GET(request: Request) {
   if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 });
   try {
     const fx = marketingFx(await getMarketingSettings());
-    const { rows, assignment } = await spendAssignmentReport(parsed.query.startDate, parsed.query.endDate);
+    const { rows, assignment } = await spendAssignmentReport(parsed.query.startDate, parsed.query.endDate, parsed.query);
     const buckets = summarizeAssignment(rows, assignment, (minor, currency) => minorToUzs(minor, currency, fx));
     const unresolved = [...assignment].filter(([, bucket]) => bucket === "MIXED" || bucket === "UNASSIGNED").map(([adId, bucket]) => ({ adId, bucket }));
     return Response.json({

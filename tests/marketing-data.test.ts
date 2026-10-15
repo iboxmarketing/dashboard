@@ -11,7 +11,7 @@ import { ICP_FIELD, marketingSelect, resolveMarketingFields } from "../lib/marke
 import { countIcp, icpClassFromLabel, readIcp, type IcpConfig } from "../lib/marketing/icp";
 import { fetchDailyInsights, isRetryableMetaError, metaRange, nextWindow, parseInsightRow, spendRangeStatus } from "../lib/marketing/meta-insights";
 import {
-  buildCoverage, buildEntities, buildSummary, costMetrics, dealOutcome, dealsForMetric, spendTotals, UNATTRIBUTED,
+  buildCoverage, buildEntities, buildFilterOptions, buildSummary, costMetrics, costStatus, dealOutcome, dealsForMetric, funnelRates, spendTotals, UNATTRIBUTED,
   type AttributionView, type OutcomeRecord, type SpendRow,
 } from "../lib/marketing/metrics";
 import { decimalToMinor, DEFAULT_MARKETING_USD_TO_UZS, minorToUzs, opportunityToUzs } from "../lib/marketing/money";
@@ -191,6 +191,10 @@ const rec = (dealId: string, outcome: Partial<OutcomeRecord> = {}): OutcomeRecor
 const view = (dealId: string, ids: Partial<AttributionView> = {}): AttributionView => ({
   dealId, campaignId: null, campaignName: null, adsetId: null, adsetName: null, adId: null, adName: null,
   placement: null, landingPath: null, channel: "META_INSTANT_FORM", attributionSource: "BITRIX", conflict: false, icpClass: "UNSET", ...ids,
+});
+const spend2 = (adId: string, campaignId: string, adsetId: string, date: string, campaignName: string): SpendRow => ({
+  date, adId, adAccountId: "1137464954180448", campaignId, campaignName, adsetId, adsetName: null, adName: null, creativeId: null,
+  spendMinor: 100, currency: "USD", impressions: 1, clicks: 0,
 });
 const spend = (adId: string, usdCents: number, extra: Partial<SpendRow> = {}): SpendRow => ({
   date: "2026-10-01", adId, adAccountId: "1137464954180448", campaignId: "C1", campaignName: "Camp", adsetId: "S1", adsetName: "Set",
@@ -525,15 +529,51 @@ test("no Meta data is 'spend unavailable', never 0 UZS / 0 CPL / 0 CMC", () => {
   assert.deepEqual([row.spendUzs, row.cmcUzs, row.cplUzs], [null, null, null]);
   const http = read("lib/marketing/http.ts");
   assert.match(http, /const spendApplies = spendStatus === "AVAILABLE";/);
-  assert.match(http, /spendStatus: context\.spendStatus, range:/);
+  assert.match(http, /spendStatus: context\.spendStatus, meta: context\.meta, range:/);
+});
+
+test("integration contract: funnel rates, cost status and filter options come from the backend", () => {
+  assert.deepEqual(funnelRates({ leadCount: 651, saralanganCount: 552, sqlCount: 164, saleCount: 40 }), { saralanganRate: 552 / 651, sqlRate: 164 / 552, saleRate: 40 / 164 });
+  assert.deepEqual(funnelRates({ leadCount: 0, saralanganCount: 0, sqlCount: 0, saleCount: 0 }), { saralanganRate: null, sqlRate: null, saleRate: null });
+  const spend = (spendUzs: number | null, currencies: Record<string, number> = {}) => ({ spendUzs, spendByCurrency: currencies });
+  assert.equal(costStatus("NOT_INGESTED", spend(null), 1), "NOT_INGESTED");
+  assert.equal(costStatus("PARTIAL_RANGE", spend(null), 1), "PENDING");
+  assert.equal(costStatus("NOT_BROKEN_DOWN", spend(null), 1), "NOT_APPLICABLE");
+  assert.equal(costStatus("AVAILABLE", spend(null, { EUR: 100 }), 1), "CURRENCY_UNAVAILABLE");
+  assert.equal(costStatus("AVAILABLE", spend(0), 1), "NO_SPEND");
+  assert.equal(costStatus("AVAILABLE", spend(5), 0), "NO_SALES");
+  assert.equal(costStatus("AVAILABLE", spend(5), 2), "AVAILABLE");
+  const cohort = [rec("1", { source: "Facebook" } as never), rec("2", { source: "Sarafan" } as never)];
+  const attribution = new Map([
+    ["1", view("1", { campaignId: "C1", campaignName: "Old", adsetId: "S1", adId: "A1", placement: "ig_feed", landingPath: "/uz" })],
+    ["2", view("2", { campaignId: "C2", adsetId: "S2", adId: "A2" })],
+  ]);
+  const rows = [spend2("A1", "C1", "S1", "2026-10-02", "New"), spend2("A2", "C2", "S2", "2026-10-01", "Camp 2")];
+  const all = buildFilterOptions({ cohort, attribution, spend: rows, filters: {} });
+  assert.deepEqual(all.campaigns, [{ id: "C2", name: "Camp 2" }, { id: "C1", name: "New" }], "Meta's latest name wins; IDs are the values");
+  assert.deepEqual(all.marketingSources.map((item) => item.id), ["Facebook", "Sarafan"]);
+  assert.deepEqual(all.placements, [{ id: "ig_feed", name: "ig_feed" }]);
+  assert.deepEqual(all.platforms, [], "platform is not a backend dimension yet");
+  const scoped = buildFilterOptions({ cohort, attribution, spend: rows, filters: { campaignId: "C1" } });
+  assert.deepEqual(scoped.adSets.map((item) => item.id), ["S1"], "Ad Sets constrained by Campaign");
+  assert.deepEqual(scoped.ads.map((item) => item.id), ["A1"]);
+  assert.equal(scoped.campaigns.length, 2, "the parent list itself is not narrowed");
+  const summary = buildSummary({ cohort: [rec("9", { qualified: true, salesStatus: "WON", opportunity: 1 })], attribution: new Map([["9", view("9", { adId: "A1", campaignId: "C1" })]]), spend: [], fx: FX, icp: IBOX_ICP, spendApplies: false, spendStatus: "NOT_INGESTED" });
+  assert.equal(summary.costStatus, "NOT_INGESTED");
+  assert.equal(summary.icpEvaluationShare, 0, "ICP evaluated share of Lead is supplied for the coverage warning");
+  const http = read("lib/marketing/http.ts");
+  assert.match(http, /if \(spendApplies\) spend = report\.rows\.filter\(\(row\) => report\.assignment\.get\(row\.adId\) === workspace\);/, "only this workspace's assigned ads feed its CMC/ROAS");
+  assert.match(http, /mixed: buckets\.MIXED, unassigned: buckets\.UNASSIGNED, nonDashboard: buckets\.NON_DASHBOARD,/);
 });
 
 /* ------------------------------------------------ isolation and guards */
 
 test("marketing is additive: no Sales, Finance or Auth module imports it, and its APIs are guarded", () => {
-  for (const path of ["lib/analytics.ts", "lib/sales-sections.ts", "lib/dashboard-metrics.ts", "lib/auth/http.ts", "app/dashboard-client.tsx"]) {
+  for (const path of ["lib/analytics.ts", "lib/sales-sections.ts", "lib/dashboard-metrics.ts", "lib/auth/http.ts"]) {
     assert.doesNotMatch(read(path), /marketing\//, path);
   }
+  // The dashboard shell renders the Marketing UI, but never reaches the marketing backend directly.
+  assert.doesNotMatch(read("app/dashboard-client.tsx"), /lib\/marketing\//);
   // Each route guards itself before anything else runs: dashboard to read, settings to run jobs.
   for (const route of ["summary", "entities", "deals", "icp", "coverage"]) {
     assert.match(read(`app/api/marketing/${route}/route.ts`), /export async function GET\(request: Request\) \{\n  const denied = await authorizePermission\(request, "dashboard"\);\n  if \(denied\) return denied;/, route);

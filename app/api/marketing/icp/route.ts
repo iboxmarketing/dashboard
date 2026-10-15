@@ -1,5 +1,6 @@
 import { authorizePermission } from "@/lib/auth/http";
-import { funnelOwnerKey } from "@/lib/funnel-owner";
+import { FUNNEL_OWNER_LABELS, funnelOwnerKey } from "@/lib/funnel-owner";
+import { resolveManagerName } from "@/lib/manager-identity";
 import { marketingResponse } from "@/lib/marketing/http";
 import { countIcp } from "@/lib/marketing/icp";
 import { icpByKey } from "@/lib/marketing/metrics";
@@ -21,7 +22,9 @@ export async function GET(request: Request) {
     return {
       icp: countIcp(context.cohort.map((record) => context.attribution.get(record.dealId)?.icpClass ?? "UNSET"), icp),
       byChannel: icpByKey(context.cohort, context.attribution, (record) => context.attribution.get(record.dealId)?.channel ?? "NOT_YET_ATTRIBUTED", icp),
-      byManager: icpByKey(context.cohort, context.attribution, (record) => funnelOwnerKey(record as unknown as DashboardRecord), icp),
+      // The same owner key and display name as the Managers page.
+      byManager: (icpByKey(context.cohort, context.attribution, (record) => funnelOwnerKey(record as unknown as DashboardRecord), icp) ?? [])
+        .map((row) => ({ ...row, name: resolveManagerName(row.key, context.cohort as unknown as DashboardRecord[], FUNNEL_OWNER_LABELS) })),
     };
   });
 }
