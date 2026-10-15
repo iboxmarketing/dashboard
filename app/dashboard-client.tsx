@@ -22,6 +22,7 @@ import { stageWorkloadRows } from "@/lib/manager-profile";
 import type { MarketingManagerDiagnostic, QualityAnalytics, SalesManagerDiagnostic } from "@/lib/quality-analytics";
 import { DEFAULT_TREND_METRIC, TREND_METRICS, supportsMovingAverage, trendBarHeight, trendMetric, type TrendMetricId, type TrendPoint } from "@/lib/trend-series";
 import { CURRENT_STAGE_EXCLUSION_LABELS } from "@/lib/current-stages";
+import { clientUnavailable, fmtStageTime, parseStageLiveMeta, StageLiveStatus, type StageLiveMeta } from "./stage-control-status";
 import { initialStageFunnelState, stageFunnelNext, type StageFunnelAction, type StageFunnelState, type StageFunnelStatus } from "@/lib/stage-funnel-cache";
 import {
   classifyStartRecovery, classifySyncResponse, retryDelayMs, shouldRetry, SYNC_EXHAUSTED_MESSAGE,
@@ -664,7 +665,7 @@ function TrendChart({ trend }: { trend: DashboardSection["trend"] }) {
  * reconcile with the row that was clicked. The lower sections explain the top
  * rather than repeating it.
  */
-function ManagerDetailView({ section, currentStages, onBack }: { section: ManagerSection; currentStages: CurrentStageRecord[] | null; onBack: () => void }) {
+function ManagerDetailView({ section, currentStages, liveMeta, onBack }: { section: ManagerSection; currentStages: CurrentStageRecord[] | null; liveMeta: StageLiveMeta | null; onBack: () => void }) {
   // Profile, team lead total and team medians are computed on the server from
   // the same helpers; only the finished figures arrive here.
   const { manager, metrics, teamLeads, teamSla, medians, activeRoster: isActiveSales, historical } = section;
@@ -771,11 +772,13 @@ function ManagerDetailView({ section, currentStages, onBack }: { section: Manage
     </section>
 
     <section className="dashboard-grid two-one">
-      <article className="panel"><SectionHeader title="Joriy stage yuklamasi" subtitle="Bitrix’dagi joriy ochiq deal’lar" />
+      <article className="panel"><SectionHeader title="Joriy stage yuklamasi" subtitle={liveMeta?.dataSource === "LAST_SUCCESSFUL_LIVE"
+        ? `Oxirgi muvaffaqiyatli live ma’lumot · ${fmtStageTime(liveMeta.lastSuccessfulAt)}`
+        : "Bitrix’dagi joriy ochiq deal’lar"} />
         <div className="stage-load-list">{stageRows.map((row) => <div key={row.stage}>
           <span>{row.stage}</span><strong>{row.active} ta</strong>
           <small className={row.overdue ? "danger-text" : ""}>{row.overdue} ta muddati o‘tgan · {row.overdueRate}%</small>
-        </div>)}{!stageRows.length && <div className="empty-table">Aktiv lead yo‘q.</div>}</div>
+        </div>)}{!stageRows.length && <div className="empty-table">{liveMeta?.liveStatus === "UNAVAILABLE" ? "Live ma’lumot olinmadi." : "Aktiv lead yo‘q."}</div>}</div>
       </article>
       <article className="panel compact-kpis"><SectionHeader title="Chek" />
         <div><span>O‘rtacha chek</span><strong>{number(metrics.money.avg_check)}</strong></div>
@@ -1151,7 +1154,7 @@ function OverdueList({ rows, catalog, managers }: { rows: CurrentStageRecord[]; 
   </section>;
 }
 
-function StageControlView({ records, historicalRecords, reconciliation, stageCatalog, truncated, excluded, settings, loading, error, onRefresh, funnelStatus, onRetryFunnel, lastSyncAt }: { records: CurrentStageRecord[]; historicalRecords: StageFunnelRecord[]; reconciliation: StageReconciliation | null; stageCatalog: PipelineStageOption[]; truncated: boolean; excluded: { candidates: number; counts: Record<string, number> } | null; settings: DashboardSettings | null; loading: boolean; error: string | null; onRefresh: () => void; funnelStatus: StageFunnelStatus; onRetryFunnel: () => void; lastSyncAt: string | null }) {
+function StageControlView({ records, hasData, live, historicalRecords, reconciliation, stageCatalog, truncated, excluded, settings, loading, error, onRefresh, funnelStatus, onRetryFunnel, lastSyncAt }: { records: CurrentStageRecord[]; hasData: boolean; live: StageLiveMeta | null; historicalRecords: StageFunnelRecord[]; reconciliation: StageReconciliation | null; stageCatalog: PipelineStageOption[]; truncated: boolean; excluded: { candidates: number; counts: Record<string, number> } | null; settings: DashboardSettings | null; loading: boolean; error: string | null; onRefresh: () => void; funnelStatus: StageFunnelStatus; onRetryFunnel: () => void; lastSyncAt: string | null }) {
   const pipelineNames = useMemo(() => new Map((settings?.selectedPipelineIds ?? []).map((id, index) => [String(id), settings?.selectedPipelineNames?.[index] ?? `Pipeline #${id}`])), [settings]);
   const liveCatalog = useMemo(() => buildStageCatalog({ catalog: stageCatalog, live: records, pipelineNames }), [stageCatalog, records, pipelineNames]);
   const historyCatalog = useMemo(() => buildStageCatalog({ catalog: stageCatalog, historical: historicalRecords, pipelineNames }), [stageCatalog, historicalRecords, pipelineNames]);
@@ -1166,11 +1169,10 @@ function StageControlView({ records, historicalRecords, reconciliation, stageCat
   const managers = useMemo(() => matrix.map((row) => ({ id: row.managerId, name: row.manager })), [matrix]);
 
   return <><div className="page-title"><div><p className="eyebrow">PIPELINE CONTROL</p><h1>Stage nazorati</h1><p>Bitrix’dagi joriy ochiq deal’lar. <strong>Joriy stage sana filtriga bog‘liq emas</strong> — 400 kun oldin ochilgan deal ham shu yerda qoladi.</p></div><button className="button secondary" onClick={onRefresh} disabled={loading}>{loading ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}Joriy holatni yangilash</button></div>
-    {loading && !reconciliation && <div className="notice page-notice"><Loader2 size={17} className="spin" />Bitrix’dagi joriy stage’lar olinmoqda…</div>}
-    {error && <div className="notice warning page-notice"><AlertTriangle size={17} /><span>Bitrix live snapshot olinmadi: {error}. Vaqtincha oxirgi sync bazasi ko‘rsatilmoqda.</span></div>}
+    <StageLiveStatus meta={live} loading={loading} error={error} onRetry={onRefresh} />
     {reconView && <ReconciliationBanner view={reconView} lastSyncAt={lastSyncAt} />}
 
-    <p className="scope-flag live">Bitrix live · hozir</p>
+    {hasData && <>
     {excluded && excluded.candidates > 0 && <div className="field-discovery ok stage-exclusions">
       Bitrix’dan {excluded.candidates} ta yopilmagan Deal keldi; joriy ish yukida {records.length} ta.
       {Object.entries(excluded.counts).length > 0 && <> Chiqarildi: {Object.entries(excluded.counts)
@@ -1178,7 +1180,7 @@ function StageControlView({ records, historicalRecords, reconciliation, stageCat
         .join(" · ")}.</>}
     </div>}
     <section className="kpi-grid stage-kpis">
-      <KpiCard label="Joriy aktiv lead" value={String(summary.active)} detail={<>{reconciliation ? "Bitrix live snapshot" : "Oxirgi sync bazasi"}<small className="card-note">Yaratilgan sana bo‘yicha cheklanmagan</small></>} icon={Layers3} />
+      <KpiCard label="Joriy aktiv lead" value={String(summary.active)} detail={<>{live?.dataSource === "LAST_SUCCESSFUL_LIVE" ? "Oxirgi muvaffaqiyatli live" : "Live Bitrix"}<small className="card-note">Yaratilgan sana bo‘yicha cheklanmagan</small></>} icon={Layers3} />
       <KpiCard label="Limitdan oshgan" value={String(summary.overdue)} detail={<>{summary.overdue} / {summary.active}{summary.overdueRate === null ? "" : ` · ${summary.overdueRate}%`}<small className="card-note">Sozlangan stage limitlari bo‘yicha</small></>} icon={AlertTriangle} tone="red" />
       <KpiCard label="Eng ko‘p yuklangan stage" value={summary.busiest?.name ?? "—"} valueClassName="reason-value" detail={summary.busiest ? <>{summary.busiest.active} ta · aktiv leadlarning {summary.busiest.share}%<small className="card-note">{summary.busiest.overdue} ta overdue{summary.busiest.overdueRate === null ? "" : ` · ${summary.busiest.overdueRate}%`}</small></> : "Aktiv lead yo‘q"} icon={Layers3} tone="blue" />
       <KpiCard label="Eng uzoq turib qolgan" value={humanDuration(summary.oldest?.stageAgeHours ?? null)} detail={summary.oldest ? <span title={`${Math.round(summary.oldest.stageAgeHours)} soat · limit ${summary.oldest.stageLimitHours} soat`}>{summary.oldest.title}<small className="card-note">{summary.oldest.assignedManager || "Aniqlanmagan"} · {summary.oldest.stage}</small></span> : "—"} icon={Clock3} tone="amber" />
@@ -1217,6 +1219,7 @@ function StageControlView({ records, historicalRecords, reconciliation, stageCat
     </section>
 
     <OverdueList rows={records} catalog={columns} managers={managers} />
+    </>}
 
     <p className="scope-flag history">Analytics stage history · import oralig‘i</p>
     <section className="panel"><SectionHeader title="Tarixiy pipeline progression" subtitle="Faqat progression bosqichlari · terminal outcome’lar bu jadvalda emas" />
@@ -2225,6 +2228,10 @@ function DashboardApp({ session, project }: { session: AuthSession; project: Pro
   const [stageExcluded, setStageExcluded] = useState<{ candidates: number; counts: Record<string, number> } | null>(null);
   const [currentStageLoading, setCurrentStageLoading] = useState(false);
   const [currentStageError, setCurrentStageError] = useState<string | null>(null);
+  // Where the Stage Control rows came from, exactly as the API declared it.
+  const [stageLive, setStageLive] = useState<StageLiveMeta | null>(null);
+  const stageLiveRef = useRef<StageLiveMeta | null>(null);
+  const stageLoadInFlight = useRef(false);
   const [settings, setSettings] = useState<DashboardSettings | null>(null);
   const [sync, setSync] = useState<SyncState>(idleSync);
   // THIS workspace's last completed sync (lib/project-sync.ts) — never the other project's.
@@ -2279,21 +2286,36 @@ function DashboardApp({ session, project }: { session: AuthSession; project: Pro
 
   const loadCurrentStages = useCallback(async () => {
     if (!accessRef.current.canStages) return;
+    // One request at a time: a slow Bitrix answer is never stacked on by the
+    // refresh timer or a second click.
+    if (stageLoadInFlight.current) return;
+    stageLoadInFlight.current = true;
     setCurrentStageLoading(true); setCurrentStageError(null);
+    const fail = (meta: StageLiveMeta, message: string) => {
+      // No rows rather than zero rows: "could not load" must not read as "no open Deals".
+      stageLiveRef.current = meta; setStageLive(meta);
+      setCurrentStageRecords(null); setStageReconciliation(null); setStageExcluded(null); setStageSnapshotTruncated(false);
+      setCurrentStageError(message);
+    };
     try {
       const response = await authFetch(scoped("/api/current-stages"), { cache: "no-store" });
-      const payload = await response.json() as { records?: CurrentStageRecord[]; reconciliation?: StageReconciliation | null; stageCatalog?: PipelineStageOption[]; truncated?: boolean; stageSettings?: Partial<DashboardSettings>; liveCandidates?: number; excludedCounts?: Record<string, number>; error?: string };
-      if (!response.ok) throw new Error(payload.error ?? "Joriy stage’lar yuklanmadi");
-      setCurrentStageRecords(payload.records ?? []); setStageReconciliation(payload.reconciliation ?? null);
+      const payload = await response.json().catch(() => ({})) as { records?: CurrentStageRecord[] | null; reconciliation?: StageReconciliation | null; stageCatalog?: PipelineStageOption[]; truncated?: boolean; stageSettings?: Partial<DashboardSettings>; liveCandidates?: number; excludedCounts?: Record<string, number>; error?: string };
+      const meta = parseStageLiveMeta(payload);
+      if (!meta || meta.liveStatus === "UNAVAILABLE" || !response.ok || !Array.isArray(payload.records)) {
+        fail(meta?.liveStatus === "UNAVAILABLE" ? meta : clientUnavailable(response.ok ? "INVALID_RESPONSE" : `HTTP_${response.status}`), payload.error ?? "Joriy stage’lar yuklanmadi");
+        return;
+      }
+      stageLiveRef.current = meta; setStageLive(meta);
+      setCurrentStageRecords(payload.records); setStageReconciliation(payload.reconciliation ?? null);
       // Funnel names and stage semantics only — not the CRM settings.
       setStageSettings(payload.stageSettings ?? null);
       // Bitrix pagination truncation makes the live counts themselves partial,
       // so the signal must survive all the way into the trust banner.
       setStageCatalog(payload.stageCatalog ?? []); setStageSnapshotTruncated(Boolean(payload.truncated));
       setStageExcluded({ candidates: payload.liveCandidates ?? 0, counts: payload.excludedCounts ?? {} });
-    } catch (caught) {
-      setCurrentStageError(caught instanceof Error ? caught.message : "Joriy stage’lar yuklanmadi");
-    } finally { setCurrentStageLoading(false); }
+    } catch {
+      fail(clientUnavailable("NETWORK"), "Server bilan aloqa o‘rnatilmadi");
+    } finally { stageLoadInFlight.current = false; setCurrentStageLoading(false); }
   }, [scoped]);
 
   /**
@@ -2436,7 +2458,10 @@ function DashboardApp({ session, project }: { session: AuthSession; project: Pro
   }, [load]);
   useEffect(() => {
     if (!configured || !canStages) return;
-    const interval = window.setInterval(() => { void loadCurrentStages(); }, 120_000);
+    // The two-minute refresh keeps LIVE rows fresh. It does not keep retrying a
+    // failing Bitrix: once degraded or unavailable, the next attempt is the
+    // user's "Qayta urinish" (or the next dataset reload).
+    const interval = window.setInterval(() => { if (stageLiveRef.current?.liveStatus === "LIVE") void loadCurrentStages(); }, 120_000);
     return () => window.clearInterval(interval);
   }, [configured, loadCurrentStages, canStages]);
 
@@ -2668,7 +2693,7 @@ function DashboardApp({ session, project }: { session: AuthSession; project: Pro
           <FormerSellers rows={managersSection.data.managers.filter((row) => !row.activeRoster && row.id !== "review" && row.id !== "unknown")}
             onSelect={(manager) => { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); }} />
           <ReviewBucketPanel review={managersSection.data.review} /></>}
-        {view === "managerDetail" && selectedManager && managerSection.data && <ManagerDetailView section={managerSection.data} currentStages={currentStageRecords} onBack={() => setView("managers")} />}
+        {view === "managerDetail" && selectedManager && managerSection.data && <ManagerDetailView section={managerSection.data} currentStages={currentStageRecords} liveMeta={stageLive} onBack={() => setView("managers")} />}
         {view === "leadFlow" && leadFlowSection.data && <>{leadFlowSection.data.flow.total === 0 && <EmptyCohortNotice />}<LeadFlowView flow={leadFlowSection.data.flow} /></>}
         {view === "quality" && qualitySection.data && <QualityView analytics={qualitySection.data.analytics} onManager={(managerId) => {
           // The drill-down opens the Managers profile, so it needs `managers`.
@@ -2676,7 +2701,7 @@ function DashboardApp({ session, project }: { session: AuthSession; project: Pro
           const row = [...qualitySection.data!.analytics.marketingManagers, ...qualitySection.data!.analytics.salesManagers].find((entry) => entry.id === managerId);
           setSelectedManager({ id: managerId, name: row?.name ?? "Aniqlanmagan" }); setView("managerDetail");
         }} />}
-        {view === "stages" && <StageControlView records={filteredCurrentStages} historicalRecords={stageHistoricalRecords} reconciliation={stageReconciliation} stageCatalog={stageCatalog} truncated={stageSnapshotTruncated} excluded={stageExcluded} settings={(stageSettings ?? settings) as DashboardSettings | null} loading={currentStageLoading} error={currentStageError} onRefresh={() => void loadCurrentStages()} funnelStatus={stageFunnelStatus} onRetryFunnel={() => dispatchStageFunnel({ type: "RETRY" })} lastSyncAt={sync.lastSyncAt} />}
+        {view === "stages" && <StageControlView records={filteredCurrentStages} hasData={currentStageRecords !== null} live={stageLive} historicalRecords={stageHistoricalRecords} reconciliation={stageReconciliation} stageCatalog={stageCatalog} truncated={stageSnapshotTruncated} excluded={stageExcluded} settings={(stageSettings ?? settings) as DashboardSettings | null} loading={currentStageLoading} error={currentStageError} onRefresh={() => void loadCurrentStages()} funnelStatus={stageFunnelStatus} onRetryFunnel={() => dispatchStageFunnel({ type: "RETRY" })} lastSyncAt={sync.lastSyncAt} />}
         {view === "projects" && <ProjectsView projects={projects} updates={projectUpdateRows} filters={projectFilters} setFilters={setProjectFilters} busy={projectBusy}
           onOpen={(project) => { setOpenProjectId(project.id); setView("projectDetail"); }}
           onNew={() => setProjectDraft({ name: "", description: "", status: "", deadline: "" })} />}

@@ -47,6 +47,22 @@ live stage controls + reconciliation with analytics cache
 
 This separation prevents historical import limits from understating current workload.
 
+The live query (`lib/stage-control-live.ts`) pages `crm.deal.list` by ID keyset
+(`order ID ASC`, `>ID` cursor, `start: -1` so Bitrix skips the total count) with
+only the ten fields Stage Control reads, inside a 40-second budget with at most
+two transient retries. It never reads stage history. Each successful live fetch
+is stored per project in `stage_control_snapshots` (D1, migration 0016, also
+created on first use). When live Bitrix fails, the route answers with that
+project's last successful live snapshot — `liveStatus: DEGRADED`,
+`dataSource: LAST_SUCCESSFUL_LIVE`, `lastSuccessfulAt`, `staleAgeSeconds`,
+`liveErrorCode` — or, with no snapshot, a retryable 503 (`liveStatus:
+UNAVAILABLE`, `records: null`). It is never a 500 for a Bitrix timeout and never
+an empty list. A snapshot is accepted only for the project and the exact Sales
+categories it was taken from, so a category 3 snapshot cannot reach Sales Doctor
+or a category 5 one IBOX. Reconciliation against the analytics cache runs only
+on LIVE rows. The snapshot is not in `crm_dictionaries` on purpose: that table's
+`updated_at` is part of the Sales cache fingerprint.
+
 ## Sync phases
 
 1. `deals` — selected Sales Lead scope, plus bounded sale-event discovery, and

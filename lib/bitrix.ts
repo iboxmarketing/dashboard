@@ -29,13 +29,16 @@ export function getBitrixDomain() {
   return getWebhookUrl()?.hostname ?? null;
 }
 
-export async function bitrixCall<T>(method: string, params: Record<string, unknown> = {}) {
+// `timeoutMs` lets a caller with its own time budget (live Stage Control) ask
+// for less; every other caller keeps the 25-second default.
+export async function bitrixCall<T>(method: string, params: Record<string, unknown> = {}, options: { timeoutMs?: number } = {}) {
   const webhook = getWebhookUrl();
   if (!webhook) throw new SafeBitrixError("NOT_CONFIGURED", "Bitrix24 webhook ulanmagan");
   const endpoint = new URL(method, webhook);
   let response: Response;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 25_000);
+  const timeoutMs = options.timeoutMs ?? 25_000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     response = await fetch(endpoint, {
       method: "POST",
@@ -50,7 +53,7 @@ export async function bitrixCall<T>(method: string, params: Record<string, unkno
   } catch {
     throw new SafeBitrixError(
       "NETWORK_ERROR",
-      controller.signal.aborted ? "Bitrix24 so‘rovi 25 soniyada javob bermadi" : "Bitrix24 bilan aloqa o‘rnatilmadi",
+      controller.signal.aborted ? `Bitrix24 so‘rovi ${Math.round(timeoutMs / 1000)} soniyada javob bermadi` : "Bitrix24 bilan aloqa o‘rnatilmadi",
       controller.signal.aborted ? "TIMEOUT" : "NETWORK",
     );
   } finally {

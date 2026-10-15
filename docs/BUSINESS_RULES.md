@@ -585,6 +585,14 @@ Source (canonical `SOURCE_ID`), pipeline, stage and search all apply to the list
 The date range deliberately does not apply to live inventory and the view says
 so, rather than offering a control that does nothing.
 
+When live Bitrix does not answer, Stage Control shows this project's last
+successful live snapshot, labelled "Live ma’lumot olinmadi — oxirgi muvaffaqiyatli
+ma’lumot ko‘rsatilmoqda" with its timestamp and a "Qayta urinish" button, and
+the same exclusions and filters apply to it. It is never relabelled as live,
+never replaced by the analytics cache, and with no snapshot the view shows an
+error with Retry rather than zero Deals. The two-minute refresh only refreshes
+live data; it does not keep retrying a failing Bitrix.
+
 ## 8. Historical cohort
 
 - Cohort membership is based on deal creation time.

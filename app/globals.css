@@ -977,6 +977,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible,
 .scope-flag::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .scope-flag.live { color: #157253; }
 .scope-flag.history { color: #6b5bd1; }
+.stage-live-status span { display: grid; gap: 2px; }
+.stage-live-status small { font-weight: 500; opacity: .85; }
 
 .recon-head { display: flex; align-items: flex-start; gap: 9px; }
 .recon-primary { display: grid; gap: 3px; }

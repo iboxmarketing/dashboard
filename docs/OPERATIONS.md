@@ -122,6 +122,8 @@ GitHub stores migrations, not D1 rows. Most analytics data is recoverable from B
 
 Capture these values in an internal password manager/runbook, never in a public or AI-readable repository.
 
+`stage_control_snapshots` (migration 0016) holds one row per project: the last successful live Stage Control fetch. It is disposable — the next successful live load rewrites it — and the Worker creates the table on first use if 0016 was not applied. To check it read-only: `SELECT project_key, workspace_key, category_ids, fetched_at, row_count FROM stage_control_snapshots`. While Bitrix is slow, Stage Control shows that row labelled as the last successful live data; if the row is missing too, the page shows a retryable error instead of zero Deals.
+
 ## Repairing Period Sales coverage
 
 After deploying sale-event discovery, run one Full Sync for a history window
