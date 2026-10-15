@@ -10,7 +10,7 @@ import { buildCurrentStageRecords, type RawCurrentStageDeal } from "../lib/curre
 import { filterCurrentStageRecords } from "../lib/record-filters";
 import { SafeBitrixError } from "../lib/safe-bitrix-error";
 import {
-  acceptSnapshot, BITRIX_PAGE_SIZE, classifyLiveError, fetchOpenDealsKeyset, liveBudgetFromEnv, loadStageControl, parseSnapshotPayload,
+  acceptSnapshot, BITRIX_PAGE_SIZE, classifyLiveError, fetchOpenDealsKeyset, liveBudgetFromEnv, loadStageControl, parseSnapshotPayload, rangeSplitIds,
   SNAPSHOT_READ_SQL, SNAPSHOT_UPSERT_SQL, snapshotBindings, snapshotFromLive, STAGE_CONTROL_DEAL_FIELDS,
   STAGE_CONTROL_SCHEMA_STATEMENTS, type BitrixPageCall, type LiveFetchMetrics, type StageControlSnapshot,
 } from "../lib/stage-control-live";
@@ -220,18 +220,62 @@ test("H. the existing filters work on the fallback snapshot: manager, source, st
 
 /* -------------------------------------------------- J + the keyset fetch */
 
-function pagedBitrix(total: number, failures: Record<number, unknown> = {}) {
-  const ids = Array.from({ length: total }, (_, index) => 1000 + index * 3);
+function pagedBitrix(total: number, failures: Record<number, unknown> = {}, idsOverride?: number[]) {
+  const ids = idsOverride ?? Array.from({ length: total }, (_, index) => 1000 + index * 3);
   const calls: { method: string; params: Record<string, unknown>; timeoutMs: number }[] = [];
+  let inFlight = 0; let maxInFlight = 0;
   const call: BitrixPageCall = async (method, params, timeoutMs) => {
     calls.push({ method, params, timeoutMs });
     const failure = failures[calls.length];
     if (failure) throw failure;
-    const after = Number((params.filter as Record<string, unknown>)[">ID"] ?? 0);
-    return { result: ids.filter((id) => id > after).slice(0, BITRIX_PAGE_SIZE).map((id) => deal(id, "3", "C3:NEW")) };
+    inFlight += 1; maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    inFlight -= 1;
+    const filter = params.filter as Record<string, unknown>;
+    const after = Number(filter[">ID"] ?? 0); const upTo = filter["<=ID"] === undefined ? Infinity : Number(filter["<=ID"]);
+    return { result: ids.filter((id) => id > after && id <= upTo).slice(0, BITRIX_PAGE_SIZE).map((id) => deal(id, "3", "C3:NEW")) };
   };
-  return { call, calls, ids };
+  return { call, calls, ids, maxInFlight: () => maxInFlight };
 }
+
+test("parallel ID ranges: split at the previous snapshot's quantiles, every Deal exactly once, at most 4 at a time", async () => {
+  // Open Deals cluster in recent IDs: 20 old ones, 230 recent ones.
+  const ids = [...Array.from({ length: 20 }, (_, index) => 100 + index * 50), ...Array.from({ length: 230 }, (_, index) => 40_000 + index * 7)];
+  const splitIds = rangeSplitIds(ids.map(String));
+  assert.equal(splitIds.length, 3, "250 rows → 4 ranges");
+  assert.ok(splitIds.every((id, index) => index === 0 || id > splitIds[index - 1]));
+  const bitrix = pagedBitrix(0, {}, ids);
+  const result = await fetchOpenDealsKeyset(bitrix.call, { categoryIds: ["3"], splitIds });
+  assert.deepEqual(result.deals.map((row) => Number(row.ID)), ids, "complete, ordered, no repeats");
+  assert.ok(bitrix.maxInFlight() <= 4 && bitrix.maxInFlight() > 1, `parallel but bounded (${bitrix.maxInFlight()})`);
+  // Each range is (low, high]: the first has no >ID, the last has no <=ID.
+  const firsts = bitrix.calls.filter((entry) => !(">ID" in (entry.params.filter as object)) || splitIds.includes(Number((entry.params.filter as Record<string, unknown>)[">ID"])));
+  assert.equal(firsts.length, 4);
+  assert.equal(bitrix.calls.filter((entry) => !("<=ID" in (entry.params.filter as object))).length >= 1, true);
+  assert.ok(result.metrics.pages <= 8, `balanced ranges keep pages low (${result.metrics.pages})`);
+  // A stale hint costs balance, never completeness.
+  const stale = await fetchOpenDealsKeyset(pagedBitrix(0, {}, ids).call, { categoryIds: ["3"], splitIds: [5, 6, 7] });
+  assert.deepEqual(stale.deals.map((row) => Number(row.ID)), ids);
+  // No snapshot → no split → one sequential range.
+  assert.deepEqual(rangeSplitIds([]), []);
+  assert.deepEqual(rangeSplitIds(ids.slice(0, 60).map(String)), [], "one page of rows is not worth splitting");
+});
+
+test("the range plan comes from this project's accepted snapshot only", async () => {
+  const store = memoryStore();
+  const many = Array.from({ length: 300 }, (_, index) => deal(1000 + index, "3", "C3:NEW"));
+  await load(IBOX, store, { deals: many }, T0);
+  const hints: number[][] = [];
+  const run = (scope: typeof IBOX) => loadStageControl({
+    ...scope, fetchDeals: async ({ splitIds }) => { hints.push(splitIds); return { deals: [], truncated: false, metrics }; },
+    fetchStages: async () => [], readSnapshot: store.read(scope.project), writeSnapshot: store.write, now: () => at(1),
+  });
+  await run(IBOX);
+  assert.equal(hints[0].length, 3);
+  store.rows.set("SALES_DOCTOR", store.rows.get("IBOX")!);
+  await run(SD);
+  assert.deepEqual(hints[1], [], "an IBOX snapshot does not even shape Sales Doctor's query");
+});
 
 test("J. the live fetch is crm.deal.list only, with the Stage Control fields only — no stage history", async () => {
   const bitrix = pagedBitrix(120);

@@ -50,7 +50,7 @@ This separation prevents historical import limits from understating current work
 The live query (`lib/stage-control-live.ts`) pages `crm.deal.list` by ID keyset
 (`order ID ASC`, `>ID` cursor, `start: -1` so Bitrix skips the total count) with
 only the ten fields Stage Control reads, inside a 40-second budget (optional `STAGE_CONTROL_LIVE_BUDGET_MS`, clamped 1 ms–120 s) with at most
-two transient retries. It never reads stage history. Each successful live fetch
+two transient retries. With a previous snapshot, the ID space is split at that snapshot's ID quantiles into at most four consecutive ranges read in parallel (the hint balances the work; the ranges always cover every ID once). It never reads stage history. Each successful live fetch
 is stored per project in `stage_control_snapshots` (D1, migration 0016, also
 created on first use). When live Bitrix fails, the route answers with that
 project's last successful live snapshot — `liveStatus: DEGRADED`,

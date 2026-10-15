@@ -87,6 +87,27 @@ export function classifyLiveError(error: unknown): { code: LiveErrorCode; retrya
   return { code: "BITRIX_ERROR", retryable: statusClass !== "HTTP_4XX", message };
 }
 
+/** At most this many ID ranges are read from Bitrix at the same time. */
+export const LIVE_FETCH_MAX_PARALLEL = 4;
+const ROWS_PER_RANGE = 75;
+
+/**
+ * Where to split the ID space so parallel ranges carry similar row counts:
+ * quantiles of the previous successful fetch's Deal IDs. Open Deals cluster
+ * in recent IDs, so equal-width ranges would not parallelise. The hint only
+ * balances the work — the ranges always cover every ID exactly once.
+ */
+export function rangeSplitIds(previousIds: readonly unknown[], maxParallel = LIVE_FETCH_MAX_PARALLEL): number[] {
+  const ids = previousIds.map(Number).filter((id) => Number.isInteger(id) && id > 0).sort((a, b) => a - b);
+  const ranges = Math.max(1, Math.min(maxParallel, Math.ceil(ids.length / ROWS_PER_RANGE)));
+  const splits: number[] = [];
+  for (let index = 1; index < ranges; index += 1) {
+    const id = ids[Math.floor((ids.length * index) / ranges)];
+    if (id > (splits[splits.length - 1] ?? 0)) splits.push(id);
+  }
+  return splits;
+}
+
 /**
  * Every open Deal of the given Sales categories, by ID keyset.
  *
@@ -95,12 +116,17 @@ export function classifyLiveError(error: unknown): { code: LiveErrorCode; retrya
  * Offset paging could also skip or repeat a Deal that closed mid-scan — keyset
  * paging cannot, because IDs only ever increase.
  *
+ * With `splitIds` the ID space is cut into consecutive ranges — (0, s1],
+ * (s1, s2], …, (sN, ∞) — read in parallel (at most LIVE_FETCH_MAX_PARALLEL),
+ * each by its own keyset. Without them it is one sequential range.
+ *
  * Bounded three ways: the page budget (reported as truncated), the time budget
- * and the retry budget (both thrown, so the caller can fall back).
+ * and the retry budget (both thrown, so the caller can fall back). All three
+ * are shared by every range.
  */
 export async function fetchOpenDealsKeyset(
   call: BitrixPageCall,
-  input: { categoryIds: string[]; maxPages?: number; budgetMs?: number; requestTimeoutMs?: number; maxRetries?: number },
+  input: { categoryIds: string[]; splitIds?: number[]; maxPages?: number; budgetMs?: number; requestTimeoutMs?: number; maxRetries?: number },
   clock: Clock = realClock,
 ): Promise<{ deals: RawCurrentStageDeal[]; truncated: boolean; metrics: LiveFetchMetrics }> {
   const maxPages = input.maxPages ?? LIVE_FETCH_MAX_PAGES;
@@ -110,25 +136,20 @@ export async function fetchOpenDealsKeyset(
   const deadline = started + (input.budgetMs ?? LIVE_FETCH_BUDGET_MS);
   const categoryFilter = input.categoryIds.length === 1 ? { CATEGORY_ID: input.categoryIds[0] } : { "@CATEGORY_ID": input.categoryIds };
   const metrics: LiveFetchMetrics = { requests: 0, pages: 0, retries: 0, rows: 0, durationMs: 0, pagination: "KEYSET" };
-  const deals: RawCurrentStageDeal[] = [];
-  let lastId = 0;
+  let truncated = false;
 
-  for (let page = 0; page < maxPages; page += 1) {
-    const params = {
-      order: { ID: "ASC" },
-      filter: { ...categoryFilter, CLOSED: "N", ...(lastId ? { ">ID": lastId } : {}) },
-      select: [...STAGE_CONTROL_DEAL_FIELDS],
-      start: -1,
-    };
-    let items: RawCurrentStageDeal[] | null = null;
-    while (items === null) {
+  const splits = [...new Set((input.splitIds ?? []).filter((id) => Number.isInteger(id) && id > 0))].sort((a, b) => a - b).slice(0, LIVE_FETCH_MAX_PARALLEL - 1);
+  const ranges = [0, ...splits].map((low, index) => ({ low, high: splits[index] ?? null }));
+
+  async function page(params: Record<string, unknown>) {
+    for (;;) {
       const remaining = deadline - clock.now();
       if (remaining <= 1_000) {
         throw new SafeBitrixError("LIVE_BUDGET_EXCEEDED", `Bitrix live so‘rovi ${Math.round((clock.now() - started) / 1000)} soniyada tugamadi`, "TIMEOUT");
       }
       metrics.requests += 1;
       try {
-        items = unwrapList((await call("crm.deal.list", params, Math.min(requestTimeoutMs, remaining))).result);
+        return unwrapList((await call("crm.deal.list", params, Math.min(requestTimeoutMs, remaining))).result);
       } catch (error) {
         const failure = classifyLiveError(error);
         if (!failure.retryable || metrics.retries >= maxRetries || deadline - clock.now() <= 5_000) throw error;
@@ -136,19 +157,35 @@ export async function fetchOpenDealsKeyset(
         await clock.sleep(failure.code === "BITRIX_RATE_LIMIT" ? 1_000 : 300);
       }
     }
-    metrics.pages += 1;
-    deals.push(...items);
-    if (items.length < BITRIX_PAGE_SIZE) {
-      metrics.rows = deals.length; metrics.durationMs = clock.now() - started;
-      return { deals, truncated: false, metrics };
-    }
-    const nextId = Number(items[items.length - 1]?.ID);
-    // A page whose last ID does not move forward would repeat forever.
-    if (!Number.isFinite(nextId) || nextId <= lastId) throw new SafeBitrixError("INVALID_RESPONSE", "Bitrix Deal ID tartibi buzildi", "BITRIX");
-    lastId = nextId;
   }
+
+  async function readRange({ low, high }: { low: number; high: number | null }) {
+    const rows: RawCurrentStageDeal[] = [];
+    let lastId = low;
+    for (;;) {
+      if (metrics.pages >= maxPages) { truncated = true; return rows; }
+      metrics.pages += 1;
+      const items = await page({
+        order: { ID: "ASC" },
+        filter: { ...categoryFilter, CLOSED: "N", ...(lastId ? { ">ID": lastId } : {}), ...(high !== null ? { "<=ID": high } : {}) },
+        select: [...STAGE_CONTROL_DEAL_FIELDS],
+        start: -1,
+      });
+      rows.push(...items);
+      if (items.length < BITRIX_PAGE_SIZE) return rows;
+      const nextId = Number(items[items.length - 1]?.ID);
+      // A page whose last ID does not move forward would repeat forever.
+      if (!Number.isFinite(nextId) || nextId <= lastId) throw new SafeBitrixError("INVALID_RESPONSE", "Bitrix Deal ID tartibi buzildi", "BITRIX");
+      lastId = nextId;
+    }
+  }
+
+  const parts = await Promise.all(ranges.map(readRange));
+  // Ranges are disjoint, so a repeated ID can only be Bitrix's own; the
+  // workload builder reports it as DUPLICATE, exactly as before.
+  const deals = parts.flat().sort((a, b) => Number(a.ID) - Number(b.ID));
   metrics.rows = deals.length; metrics.durationMs = clock.now() - started;
-  return { deals, truncated: true, metrics };
+  return { deals, truncated, metrics };
 }
 
 /* ------------------------------------------------------------ snapshot */
@@ -237,7 +274,8 @@ export type StageControlLoad =
 export async function loadStageControl(deps: {
   project: ProjectKey;
   categoryIds: string[];
-  fetchDeals: () => Promise<{ deals: RawCurrentStageDeal[]; truncated: boolean; metrics: LiveFetchMetrics }>;
+  /** `splitIds` come from the previous snapshot, for parallel ID ranges; empty without one. */
+  fetchDeals: (hint: { splitIds: number[] }) => Promise<{ deals: RawCurrentStageDeal[]; truncated: boolean; metrics: LiveFetchMetrics }>;
   fetchStages: () => Promise<PipelineStageOption[]>;
   readSnapshot: () => Promise<unknown>;
   writeSnapshot: (snapshot: StageControlSnapshot) => Promise<void>;
@@ -246,7 +284,13 @@ export async function loadStageControl(deps: {
 }): Promise<StageControlLoad> {
   const now = deps.now ?? (() => new Date());
   const common: Common = { project: deps.project, workspace: STAGE_CONTROL_WORKSPACES[deps.project] };
-  const [deals, stages] = await Promise.allSettled([deps.fetchDeals(), deps.fetchStages()]);
+  // One D1 read serves both the range plan and, if live fails, the fallback.
+  let snapshot: StageControlSnapshot | null = null;
+  try { snapshot = acceptSnapshot(await deps.readSnapshot(), deps.project, deps.categoryIds); } catch {
+    deps.log?.(`stage-control: ${deps.project} snapshot o‘qilmadi`);
+  }
+  const splitIds = snapshot ? rangeSplitIds(snapshot.deals.map((deal) => deal.ID)) : [];
+  const [deals, stages] = await Promise.allSettled([deps.fetchDeals({ splitIds }), deps.fetchStages()]);
 
   if (deals.status === "fulfilled" && stages.status === "fulfilled") {
     const fetchedAt = now().toISOString();
@@ -268,10 +312,6 @@ export async function loadStageControl(deps: {
 
   const failure = classifyLiveError(deals.status === "rejected" ? deals.reason : (stages as PromiseRejectedResult).reason);
   deps.log?.(`stage-control: ${deps.project} live olinmadi (${failure.code})`);
-  let snapshot: StageControlSnapshot | null = null;
-  try { snapshot = acceptSnapshot(await deps.readSnapshot(), deps.project, deps.categoryIds); } catch {
-    deps.log?.(`stage-control: ${deps.project} snapshot o‘qilmadi`);
-  }
   if (!snapshot) {
     return {
       ...common, liveStatus: "UNAVAILABLE", dataSource: null, fetchedAt: null, lastSuccessfulAt: null, staleAgeSeconds: null,
