@@ -14,7 +14,7 @@ import type { AttributionView, SpendRow } from "./metrics";
 import { DEFAULT_MARKETING_USD_TO_UZS, type MarketingFx } from "./money";
 import { assignAds, collectAdEvidence } from "./assignment";
 import { MARKETING_SCHEMA_STATEMENTS } from "./schema";
-import { MARKETING_WORKSPACES, workspaceForProject } from "./workspaces";
+import { MARKETING_WORKSPACES, workspaceForProject, workspaceIcp } from "./workspaces";
 import { trackingCoverageRow, type CoverageEvidence } from "./coverage";
 import { ATTRIBUTION_UPSERT, DAILY_UPSERT, attributionBindings, dailyBindings } from "./sql";
 
@@ -155,6 +155,12 @@ export async function lookupTracking(dealIds: readonly string[], tracking: D1 | 
 
 /* ---------------------------------------------- materialize from records */
 
+/** A workspace's ICP definition and its field's option labels from Bitrix metadata. */
+function icpFor(workspace: string, optionMap: Map<string, Map<string, string>>) {
+  const icp = workspaceIcp(workspace);
+  return { icp, icpOptions: icp.enabled ? optionMap.get(canonicalDealFieldKey(icp.fieldId)) : undefined };
+}
+
 /**
  * Attribution for a batch of freshly built analytics records, from their raw
  * Deals. Used by Full/incremental Sync (every analytics batch) and the backfill,
@@ -168,14 +174,15 @@ export async function materializeAttribution(
   const resolution = context?.resolution ?? await getDictionary<MarketingFieldResolution>("marketingFields", { fields: {}, ambiguous: [] });
   const crmFields = context?.crmFields ?? await getDictionary<CrmFieldOption[]>("crmFields", []);
   const fields: MarketingFieldMap = resolution.fields ?? {};
-  const icpOptions = fields.icp ? buildFieldOptionMap(crmFields).get(canonicalDealFieldKey(fields.icp)) : undefined;
+  const optionMap = buildFieldOptionMap(crmFields);
   const byId = new Map(rawDeals.map((deal) => [String(deal.ID ?? ""), deal]));
   const projected = records
     .map((record) => ({ record, project: recordProject(record), deal: byId.get(record.dealId) }))
     .filter((item): item is { record: AnalyticsRecord; project: NonNullable<ReturnType<typeof recordProject>>; deal: Record<string, unknown> } => Boolean(item.project && item.deal));
   const tracking = await lookupTracking(projected.map((item) => item.record.dealId), context?.tracking === undefined ? getTrackingD1() : context.tracking);
   const rows = projected.map(({ record, project, deal }) => buildDealAttribution({
-    deal, workspaceKey: workspaceForProject(project), projectKey: project, leadCreatedAt: record.createdAt, fields, icpOptions, tracking: tracking.get(record.dealId) ?? null,
+    deal, workspaceKey: workspaceForProject(project), projectKey: project, leadCreatedAt: record.createdAt, fields,
+    ...icpFor(workspaceForProject(project), optionMap), tracking: tracking.get(record.dealId) ?? null,
   }));
   await upsertAttributions(rows, context?.db);
   return rows;

@@ -1,5 +1,5 @@
 import type { MarketingFieldMap, MarketingFieldRole } from "./fields";
-import { readIcp, type IcpClass } from "./icp";
+import { readIcp, type IcpClass, type IcpConfig } from "./icp";
 
 /**
  * One Deal's normalized marketing attribution.
@@ -95,6 +95,9 @@ export function buildDealAttribution(input: {
   projectKey: string | null;
   leadCreatedAt: string;
   fields: MarketingFieldMap;
+  /** The workspace's ICP definition; disabled → NOT_APPLICABLE. */
+  icp: IcpConfig;
+  /** Option ID → label for the ICP field, from Bitrix metadata. */
   icpOptions?: Map<string, string>;
   tracking?: TrackingEvidence | null;
 }): MarketingDealAttribution {
@@ -162,7 +165,7 @@ export function buildDealAttribution(input: {
         ? (lead ? "TRACKING_INSTANT_FORM" : "TRACKING_WEBSITE")
         : anyUtm ? "BITRIX_UTM_ONLY" : "UNKNOWN";
 
-  const icp = readIcp(read("icp"), fields.icp ? input.icpOptions : undefined);
+  const icp = readIcp(input.icp.enabled ? deal[input.icp.fieldId] : undefined, input.icpOptions, input.icp);
   return {
     dealId: String(deal.ID ?? ""),
     workspaceKey: input.workspaceKey,

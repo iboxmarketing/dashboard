@@ -4,11 +4,11 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { SPEND_BUCKETS, assignAds, classifyAd, collectAdEvidence, summarizeAssignment } from "../lib/marketing/assignment";
-import { workspaceForCategory, workspaceForProject } from "../lib/marketing/workspaces";
+import { MARKETING_WORKSPACES, workspaceForCategory, workspaceForProject, workspaceIcp } from "../lib/marketing/workspaces";
 import { trackingCoverageRow, workspaceCoverage } from "../lib/marketing/coverage";
 import { buildDealAttribution, stableId } from "../lib/marketing/attribution";
 import { ICP_FIELD, marketingSelect, resolveMarketingFields } from "../lib/marketing/fields";
-import { countIcp, icpClassFromLabel, readIcp } from "../lib/marketing/icp";
+import { countIcp, icpClassFromLabel, readIcp, type IcpConfig } from "../lib/marketing/icp";
 import { fetchDailyInsights, nextWindow, parseInsightRow } from "../lib/marketing/meta-insights";
 import {
   buildCoverage, buildEntities, buildSummary, costMetrics, dealOutcome, dealsForMetric, spendTotals, UNATTRIBUTED,
@@ -21,6 +21,8 @@ import type { CrmFieldOption } from "../lib/types";
 
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 const FX = { usdToUzs: DEFAULT_MARKETING_USD_TO_UZS };
+const IBOX_ICP = workspaceIcp("IBOX_UZ");
+const NO_ICP: IcpConfig = { enabled: false };
 
 /* The live Bitrix metadata, as staging stores it (2026-10-14), plus the named
    fields the Meta tracking Worker writes (its write audit lists exactly these). */
@@ -40,21 +42,35 @@ const ICP_OPTIONS = new Map(CRM_FIELDS[0].options.map((option) => [option.id, op
 
 /* ------------------------------------------------------------------ ICP */
 
-test("ICP: P1/P2/P3 fit, Other not fit, empty unset — resolved through the field's own metadata", () => {
-  assert.deepEqual(["11139", "11141", "11143", "11145"].map((id) => readIcp(id, ICP_OPTIONS).icpClass), ["P1", "P2", "P3", "OTHER"]);
-  assert.deepEqual(readIcp("11143", ICP_OPTIONS), { raw: "11143", label: "P3 (Retail )", icpClass: "P3" }, "raw enum evidence and class both kept");
-  for (const empty of [null, undefined, "", "0", []]) assert.equal(readIcp(empty, ICP_OPTIONS).icpClass, "UNSET");
+test("ICP (IBOX_UZ): P1/P2/P3 fit, Other not fit, empty unset — resolved through the field's own metadata", () => {
+  assert.deepEqual(IBOX_ICP, { enabled: true, fieldId: ICP_FIELD, fitValues: ["P1", "P2", "P3"], notFitValues: ["Other"] });
+  assert.deepEqual(["11139", "11141", "11143", "11145"].map((id) => readIcp(id, ICP_OPTIONS, IBOX_ICP).icpClass), ["P1", "P2", "P3", "OTHER"]);
+  assert.deepEqual(readIcp("11143", ICP_OPTIONS, IBOX_ICP), { raw: "11143", label: "P3 (Retail )", icpClass: "P3" }, "raw enum evidence and class both kept");
+  for (const empty of [null, undefined, "", "0", []]) assert.equal(readIcp(empty, ICP_OPTIONS, IBOX_ICP).icpClass, "UNSET");
   // An option ID the metadata does not know is never guessed into a tier.
-  assert.deepEqual(readIcp("99999", ICP_OPTIONS), { raw: "99999", label: null, icpClass: "UNSET" });
-  assert.equal(icpClassFromLabel("p2 (импортер)"), "P2");
-  assert.equal(icpClassFromLabel("Something new"), "OTHER");
-  assert.doesNotMatch(read("lib/marketing/icp.ts"), /1113\d|11145/, "no enum ID is hard-coded");
+  assert.deepEqual(readIcp("99999", ICP_OPTIONS, IBOX_ICP), { raw: "99999", label: null, icpClass: "UNSET" });
+  assert.equal(icpClassFromLabel("p2 (импортер)", IBOX_ICP), "P2");
+  assert.equal(icpClassFromLabel("P10 (future)", IBOX_ICP), "OTHER", "P1 does not swallow P10");
+  assert.equal(icpClassFromLabel("Something new", IBOX_ICP), "OTHER");
+  for (const path of ["lib/marketing/icp.ts", "lib/marketing/workspaces.ts"]) assert.doesNotMatch(read(path), /1113\d|11145/, "no enum ID is hard-coded");
+});
+
+test("ICP is a workspace capability: only IBOX_UZ has it; elsewhere NOT_APPLICABLE, never UNSET or 0%", () => {
+  assert.deepEqual(MARKETING_WORKSPACES.map((workspace) => [workspace.key, workspace.icp.enabled]), [["IBOX_UZ", true], ["SD_UZ", false], ["IBOX_KZ", false], ["SD_KZ", false]]);
+  assert.deepEqual(readIcp("11139", ICP_OPTIONS, NO_ICP), { raw: "11139", label: null, icpClass: "NOT_APPLICABLE" }, "raw kept, no class");
+  assert.equal(readIcp(null, ICP_OPTIONS, NO_ICP).icpClass, "NOT_APPLICABLE");
+  assert.equal(countIcp(["P1", "UNSET"], NO_ICP), null);
+  // Enabling it elsewhere later is a definition, not code: any field, any labels.
+  const custom: IcpConfig = { enabled: true, fieldId: "UF_CRM_X", fitValues: ["Gold", "Silver"], notFitValues: ["No"] };
+  assert.deepEqual(["Gold tier", "Silver", "No", "Bronze", ""].map((label) => icpClassFromLabel(label, custom)), ["Gold", "Silver", "OTHER", "OTHER", "UNSET"]);
+  assert.deepEqual(countIcp(["Gold", "Silver", "OTHER", "UNSET"], custom), { evaluated: 3, fit: 2, notFit: 1, unset: 1, byTier: { Gold: 1, Silver: 1 }, fitRate: 2 / 3 });
+  assert.doesNotMatch(read("lib/marketing/metrics.ts"), /"P1"|"P2"|"P3"|IBOX/, "metrics know no IBOX-specific ICP");
 });
 
 test("ICP fit rate = fit / evaluated; UNSET reported but never in the denominator", () => {
-  const counts = countIcp(["P1", "P2", "P3", "OTHER", "UNSET", "UNSET", null]);
-  assert.deepEqual({ ...counts }, { evaluated: 4, fit: 3, p1: 1, p2: 1, p3: 1, other: 1, unset: 3, fitRate: 0.75 });
-  assert.equal(countIcp(["UNSET", null]).fitRate, null, "nothing evaluated → no rate, not 0");
+  const counts = countIcp(["P1", "P2", "P3", "OTHER", "UNSET", "UNSET", null], IBOX_ICP);
+  assert.deepEqual({ ...counts }, { evaluated: 4, fit: 3, notFit: 1, unset: 3, byTier: { P1: 1, P2: 1, P3: 1 }, fitRate: 0.75 });
+  assert.equal(countIcp(["UNSET", null], IBOX_ICP)?.fitRate, null, "nothing evaluated → no rate, not 0");
 });
 
 /* --------------------------------------------------------------- fields */
@@ -82,7 +98,7 @@ test("marketing fields resolve only from live metadata — no numeric UF guessed
 test("raw_deals keeps marketing evidence: Full and incremental sync select the resolved fields", () => {
   const sync = read("lib/sync.ts");
   assert.match(sync, /if \(crmFields\.length\) await saveDictionary\("marketingFields", resolveMarketingFields\(crmFields\)\);/);
-  assert.match(sync, /for \(const field of marketingSelect\(marketing\.fields \?\? \{\}\)\) if \(!customFields\.includes\(field\)\) customFields\.push\(field\);/);
+  assert.match(sync, /for \(const field of \[\.\.\.marketingSelect\(marketing\.fields \?\? \{\}\), \.\.\.icpFieldIds\(\)\]\) if \(!customFields\.includes\(field\)\) customFields\.push\(field\);/);
   // Same select for every scope (main, period-sale discovery, refresh), so nothing is dropped.
   assert.match(sync, /const select = \["ID", "TITLE", [^\n]*\.\.\.customFields\];/);
   assert.match(sync, /if \(job\.dealScope === "refresh"\) return await refreshKnownStep\(job, select,/);
@@ -94,7 +110,8 @@ test("raw_deals keeps marketing evidence: Full and incremental sync select the r
 
 const deal = (fields: Record<string, unknown>) => ({ ID: "501", ...fields });
 const attribute = (fields: Record<string, unknown>, tracking: Parameters<typeof buildDealAttribution>[0]["tracking"] = null, projectKey = "IBOX") =>
-  buildDealAttribution({ deal: deal(fields), workspaceKey: projectKey === "SALES_DOCTOR" ? "SD_UZ" : "IBOX_UZ", projectKey, leadCreatedAt: "2026-10-01T05:00:00.000Z", fields: RESOLVED.fields, icpOptions: ICP_OPTIONS, tracking });
+  buildDealAttribution({ deal: deal(fields), workspaceKey: projectKey === "SALES_DOCTOR" ? "SD_UZ" : "IBOX_UZ", projectKey, leadCreatedAt: "2026-10-01T05:00:00.000Z", fields: RESOLVED.fields,
+    icp: workspaceIcp(projectKey === "SALES_DOCTOR" ? "SD_UZ" : "IBOX_UZ"), icpOptions: ICP_OPTIONS, tracking });
 
 const META_LEAD = {
   lead_id: "9000000000000001", page_id: "299589696560259", form_id: "964981302338971", form_name: "Optom forma",
@@ -151,7 +168,10 @@ test("attribution: website leads land in the same model (last paid touch, else f
 });
 
 test("attribution is project-aware: the Deal's own project, never another's", () => {
-  assert.equal(attribute({}, null, "SALES_DOCTOR").projectKey, "SALES_DOCTOR");
+  const sd = attribute({ [ICP_FIELD]: "11139" }, null, "SALES_DOCTOR");
+  assert.equal(sd.projectKey, "SALES_DOCTOR");
+  assert.equal(sd.workspaceKey, "SD_UZ");
+  assert.equal(sd.icpClass, "NOT_APPLICABLE", "a Sales Doctor Deal gets no ICP class, even with a value in the field");
   const store = read("lib/marketing/store.ts");
   // Materialized only for a Deal whose record has a project (recordProject), and read back per project.
   assert.match(store, /\.map\(\(record\) => \(\{ record, project: recordProject\(record\), deal: byId\.get\(record\.dealId\) \}\)\)/);
@@ -220,7 +240,7 @@ test("summary: the owner's example — 11,800,000 UZS spend, 47,200,000 UZS coho
     ["1", view("1", { campaignId: "C1", adId: "A1", icpClass: "P1" })], ["2", view("2", { campaignId: "C1", adId: "A1", icpClass: "OTHER" })],
     ["3", view("3", { campaignId: "C1", adId: "A2" })], ["4", view("4", { campaignId: "C1", adId: "A2", icpClass: "P2" })],
   ]);
-  const summary = buildSummary({ cohort, attribution, spend: [spend("A1", 60000), spend("A2", 40000)], fx: FX });
+  const summary = buildSummary({ cohort, attribution, spend: [spend("A1", 60000), spend("A2", 40000)], fx: FX, icp: IBOX_ICP });
   assert.equal(summary.spendUzs, 11_800_000);
   assert.equal(summary.attributedSaleCount, 1);
   assert.equal(summary.attributedRevenueUzs, 47_200_000);
@@ -238,7 +258,7 @@ test("cohort semantics: only the lead-date cohort counts — Period Sales never 
   assert.match(http, /const base = salesPopulations\(records, salesQuery\)\.cohort\.filter\(isEligibleCohortDeal\)/);
   assert.doesNotMatch(http, /\.won\b|periodSales/);
   // A Deal sold in the range but created before it is simply not in the cohort passed in.
-  const summary = buildSummary({ cohort: [rec("1")], attribution: new Map([["1", view("1", { campaignId: "C1" })]]), spend: [spend("A1", 100)], fx: FX });
+  const summary = buildSummary({ cohort: [rec("1")], attribution: new Map([["1", view("1", { campaignId: "C1" })]]), spend: [spend("A1", 100)], fx: FX, icp: IBOX_ICP });
   assert.equal(summary.attributedSaleCount, 0);
   assert.equal(summary.cmcUzs, null);
 });
@@ -248,7 +268,7 @@ test("entities group by stable ID; a renamed campaign is one row with its latest
   const attribution = new Map([
     ["1", view("1", { campaignId: "C1", campaignName: "Old name" })], ["2", view("2", { campaignId: "C1", campaignName: "Old name" })],
   ]);
-  const rows = buildEntities({ level: "campaign", cohort, attribution, fx: FX, spend: [
+  const rows = buildEntities({ level: "campaign", cohort, attribution, fx: FX, icp: IBOX_ICP, spend: [
     spend("A1", 10000, { date: "2026-10-01", campaignName: "Old name" }), spend("A1", 20000, { date: "2026-10-02", campaignName: "New name" }),
   ] });
   const c1 = rows.find((row) => row.id === "C1")!;
@@ -259,18 +279,31 @@ test("entities group by stable ID; a renamed campaign is one row with its latest
   assert.equal(c1.cmcUzs, 3_540_000);
   const unattributed = rows.find((row) => row.id === UNATTRIBUTED)!;
   assert.equal(unattributed.leadCount, 1, "rows still sum to the cohort");
-  const ads = buildEntities({ level: "ad", cohort, attribution: new Map([["1", view("1", { campaignId: "C1", adsetId: "S1", adId: "A1" })]]), spend: [spend("A1", 100)], fx: FX });
+  const ads = buildEntities({ level: "ad", cohort, attribution: new Map([["1", view("1", { campaignId: "C1", adsetId: "S1", adId: "A1" })]]), spend: [spend("A1", 100)], fx: FX, icp: IBOX_ICP });
   assert.deepEqual([ads[0].id, ads[0].campaignId, ads[0].adsetId], ["A1", "C1", "S1"], "parent IDs exposed");
-  const placements = buildEntities({ level: "placement", cohort, attribution: new Map([["1", view("1", { placement: "ig_feed" })]]), spend: [spend("A1", 100)], fx: FX });
+  const placements = buildEntities({ level: "placement", cohort, attribution: new Map([["1", view("1", { placement: "ig_feed" })]]), spend: [spend("A1", 100)], fx: FX, icp: IBOX_ICP });
   assert.equal(placements.find((row) => row.id === "ig_feed")?.spendUzs, null, "no spend breakdown by placement — unavailable, not zero");
 });
 
 test("deals drill-down and coverage", () => {
   const cohort = [rec("1", { qualified: true }), rec("2", { qualified: true, salesStatus: "WON" }), rec("3")];
   const attribution = new Map([["1", view("1", { campaignId: "C1", icpClass: "P3" })], ["2", view("2", { channel: "WEBSITE", conflict: true, adId: "A1" })]]);
-  assert.deepEqual(dealsForMetric("pipeline", cohort, attribution).map((row) => row.dealId), ["1"]);
-  assert.deepEqual(dealsForMetric("icp_fit", cohort, attribution).map((row) => row.dealId), ["1"]);
-  assert.deepEqual(dealsForMetric("icp_unset", cohort, attribution).map((row) => row.dealId), ["2", "3"]);
+  assert.deepEqual(dealsForMetric("pipeline", cohort, attribution, IBOX_ICP)!.map((row) => row.dealId), ["1"]);
+  assert.deepEqual(dealsForMetric("icp_fit", cohort, attribution, IBOX_ICP)!.map((row) => row.dealId), ["1"]);
+  assert.deepEqual(dealsForMetric("icp_unset", cohort, attribution, IBOX_ICP)!.map((row) => row.dealId), ["2", "3"]);
+  assert.equal(dealsForMetric("icp_fit", cohort, attribution, NO_ICP), null, "no ICP drill-down where ICP does not apply");
+  assert.equal(dealsForMetric("sql", cohort, attribution, NO_ICP)?.[0].icpClass, "NOT_APPLICABLE");
+  // A Sales Doctor-like summary and entity row carry no ICP numbers at all — not zeros.
+  const sdSummary = buildSummary({ cohort, attribution, spend: [], fx: FX, icp: NO_ICP }) as unknown as Record<string, unknown>;
+  assert.equal(sdSummary.icpStatus, "NOT_APPLICABLE");
+  for (const key of ["icpEvaluatedCount", "icpFitCount", "icpOtherCount", "icpUnsetCount", "icpFitRate", "costPerIcpFitUzs", "icp"]) assert.ok(!(key in sdSummary), key);
+  const [sdRow] = buildEntities({ level: "campaign", cohort, attribution, spend: [], fx: FX, icp: NO_ICP }) as unknown as Record<string, unknown>[];
+  assert.equal(sdRow.icpStatus, "NOT_APPLICABLE");
+  assert.ok(!("icpFitRate" in sdRow) && !("costPerIcpFitUzs" in sdRow));
+  const iboxSummary = buildSummary({ cohort, attribution, spend: [], fx: FX, icp: IBOX_ICP });
+  assert.deepEqual([iboxSummary.icpStatus, iboxSummary.icpFitCount, iboxSummary.icpUnsetCount, iboxSummary.icpByTier], ["ENABLED", 1, 2, { P1: 0, P2: 0, P3: 1 }]);
+  assert.match(read("app/api/marketing/deals/route.ts"), /code: "ICP_NOT_APPLICABLE"/);
+  assert.match(read("lib/marketing/http.ts"), /icpStatus: context\.icp\.enabled \? "ENABLED" : "NOT_APPLICABLE"/);
   assert.deepEqual(buildCoverage(cohort, attribution), {
     deals: 3, withCampaignId: 1, withAdsetId: 0, withAdId: 1, metaInstantForm: 1, website: 1, otherSource: 0, unknown: 0, conflicts: 1, notYetAttributed: 1,
   });
@@ -446,8 +479,8 @@ test("campaign and ad set spend inside a project roll up its assigned ads only",
   const assignment = new Map([["A1", "IBOX_UZ"], ["A2", "MIXED"]]);
   const all = [spend("A1", 1000, { campaignId: "C1", adsetId: "S1" }), spend("A2", 9000, { campaignId: "C1", adsetId: "S1" })];
   const ibox = all.filter((row) => assignment.get(row.adId) === "IBOX_UZ"); // what listSpend returns for IBOX
-  const [campaign] = buildEntities({ level: "campaign", cohort: [], attribution: new Map(), spend: ibox, fx: FX });
-  const [adset] = buildEntities({ level: "adset", cohort: [], attribution: new Map(), spend: ibox, fx: FX });
+  const [campaign] = buildEntities({ level: "campaign", cohort: [], attribution: new Map(), spend: ibox, fx: FX, icp: IBOX_ICP });
+  const [adset] = buildEntities({ level: "adset", cohort: [], attribution: new Map(), spend: ibox, fx: FX, icp: IBOX_ICP });
   assert.equal(campaign.spendUzs, 118_000, "the MIXED ad of the same campaign is not forced in");
   assert.equal(adset.spendUzs, 118_000);
 });

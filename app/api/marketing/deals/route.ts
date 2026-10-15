@@ -9,7 +9,9 @@ export async function GET(request: Request) {
   return marketingResponse(request, (context, params) => {
     const metric = (params.get("metric") ?? "lead") as DealMetric;
     if (!DEAL_METRICS.includes(metric)) return Response.json({ error: "metric noto‘g‘ri" }, { status: 400, headers: { "cache-control": "no-store" } });
-    const deals = dealsForMetric(metric, context.cohort, context.attribution);
+    const deals = dealsForMetric(metric, context.cohort, context.attribution, context.icp);
+    // ICP is not a dimension of this workspace: say so, never answer with an empty list.
+    if (!deals) return Response.json({ error: "ICP bu loyiha uchun qo‘llanilmaydi", code: "ICP_NOT_APPLICABLE" }, { status: 400, headers: { "cache-control": "no-store" } });
     return { metric, count: deals.length, deals: deals.slice(0, 2000), truncated: deals.length > 2000 };
   });
 }

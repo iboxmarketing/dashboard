@@ -21,18 +21,28 @@ project-specific analytics record. Branch `feature/marketing-data-v1`, code in
 | **Marketing FX** | `1 USD = 11,800 UZS` — a reporting setting (`app_settings` key `marketing`, `usdToUzs`), not Finance FX. A currency with no rate stays native and every UZS ratio on it is null. |
 | **Money** | integers only: Meta spend stored as `spend_minor` + `currency`; UZS results are whole sums. |
 
-### ICP — `UF_CRM_1787725980192` "ICP ga moslik"
+### ICP — a workspace capability (owner, 2026-10-15)
 
-| Bitrix option | ID (from metadata) | Class |
+ICP is defined per workspace in `lib/marketing/workspaces.ts` as
+`{ enabled, fieldId, fitValues, notFitValues }`. Today only **IBOX_UZ** has one —
+its sellers are the ones who fill the field:
+
+| Bitrix option (`UF_CRM_1787725980192` "ICP ga moslik") | ID (from metadata) | Class |
 | --- | --- | --- |
-| P1 (Оптовик) | 11139 | P1 — fit |
-| P2 (Импортер) | 11141 | P2 — fit |
-| P3 (Retail ) | 11143 | P3 — fit |
-| Other | 11145 | OTHER — evaluated, not fit |
+| P1 (Оптовик) | 11139 | P1 — FIT |
+| P2 (Импортер) | 11141 | P2 — FIT |
+| P3 (Retail ) | 11143 | P3 — FIT |
+| Other | 11145 | OTHER — NOT FIT |
 | empty | — | UNSET — reported, never in the denominator |
 
-`ICP_FIT_RATE = (P1+P2+P3) / (P1+P2+P3+OTHER)`. IDs are resolved through the
-field's metadata on every sync; none is hard-coded. Raw ID and class are both kept.
+`ICP_EVALUATED = FIT + NOT FIT`, `ICP_FIT_RATE = FIT / ICP_EVALUATED`. Labels
+are matched through the field's metadata on every sync; no enum ID is coded.
+
+SD_UZ, IBOX_KZ and SD_KZ have no ICP: every response says
+`icpStatus: "NOT_APPLICABLE"` and carries **no** ICP field — no zeros, no 0%,
+no "missing coverage"; ICP drill-downs answer `ICP_NOT_APPLICABLE`. Enabling ICP
+for another workspace is adding its definition — no schema or metric change.
+CMC, ROAS and spend attribution are generic and apply to every workspace.
 
 ## Bitrix fields (resolved from live metadata, never guessed)
 

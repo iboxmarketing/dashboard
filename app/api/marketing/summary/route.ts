@@ -7,6 +7,6 @@ export async function GET(request: Request) {
   const denied = await authorizePermission(request, "dashboard");
   if (denied) return denied;
   return marketingResponse(request, (context) => ({
-    summary: buildSummary({ cohort: context.cohort, attribution: context.attribution, spend: context.spend, fx: context.fx, spendApplies: context.spendApplies }),
+    summary: buildSummary({ cohort: context.cohort, attribution: context.attribution, spend: context.spend, fx: context.fx, spendApplies: context.spendApplies, icp: context.icp }),
   }));
 }

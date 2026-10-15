@@ -4,7 +4,9 @@ import { salesPopulations, type SalesQuery } from "../sales-sections";
 import type { ProjectKey } from "../sales-projects";
 import type { AttributionView, OutcomeRecord, SpendRow } from "./metrics";
 import type { MarketingFx } from "./money";
+import type { IcpConfig } from "./icp";
 import { getMarketingSettings, listAttributionViews, listSpend, marketingFx } from "./store";
+import { workspaceForProject, workspaceIcp, type WorkspaceKey } from "./workspaces";
 
 const noStore = { "cache-control": "no-store" };
 
@@ -38,7 +40,7 @@ export function parseMarketingQuery(params: URLSearchParams, today = new Date())
 }
 
 export type MarketingContext = {
-  project: ProjectKey; query: MarketingQuery; fx: MarketingFx;
+  project: ProjectKey; workspace: WorkspaceKey; icp: IcpConfig; query: MarketingQuery; fx: MarketingFx;
   cohort: OutcomeRecord[]; attribution: Map<string, AttributionView>; spend: SpendRow[];
   /** False when a placement/landing filter is active: Meta daily spend has no such breakdown. */
   spendApplies: boolean; dataAsOf: string | null;
@@ -71,8 +73,9 @@ export async function loadMarketingContext(project: ProjectKey, query: Marketing
   });
   const spendApplies = !query.placement && !query.landing;
   const spend = spendApplies ? await listSpend(project, query.startDate, query.endDate, query) : [];
+  const workspace = workspaceForProject(project);
   return {
-    project, query, fx: marketingFx(settings), cohort, attribution, spend, spendApplies,
+    project, workspace, icp: workspaceIcp(workspace), query, fx: marketingFx(settings), cohort, attribution, spend, spendApplies,
     dataAsOf: projectSync?.lastSyncAt ?? sync.lastSyncAt ?? null,
   };
 }
@@ -94,7 +97,7 @@ export async function marketingResponse(request: Request, build: (context: Marke
     const body = build(context, params);
     if (body instanceof Response) return body;
     return Response.json({
-      project: scoped.project, range: { startDate: parsed.query.startDate, endDate: parsed.query.endDate },
+      project: scoped.project, workspace: context.workspace, icpStatus: context.icp.enabled ? "ENABLED" : "NOT_APPLICABLE", range: { startDate: parsed.query.startDate, endDate: parsed.query.endDate },
       filters: parsed.query, fx: { usdToUzs: context.fx.usdToUzs }, dataAsOf: context.dataAsOf, ...(body as object),
     }, { headers: noStore });
   } catch {

@@ -1,5 +1,5 @@
 import { isClassifiedLead, isSalesLost } from "../sales-logic";
-import { countIcp, isIcpFit, type IcpClass, type IcpCounts } from "./icp";
+import { countIcp, ICP_NOT_APPLICABLE, ICP_NOT_FIT, ICP_UNSET, isIcpFit, type IcpClass, type IcpConfig, type IcpCounts } from "./icp";
 import { minorToUzs, opportunityToUzs, ratio, ratioWhole, type MarketingFx } from "./money";
 
 /**
@@ -75,10 +75,13 @@ type Totals = {
   leadCount: number; saralanganCount: number; sqlCount: number; nrCount: number; inPipelineCount: number;
   saleCount: number; lostCount: number;
   revenueByCurrency: Record<string, number>; revenueUzs: number; revenueUzsComplete: boolean;
-  icp: IcpCounts;
+  /** Null when the workspace has no ICP: NOT_APPLICABLE, never zeros. */
+  icp: IcpCounts | null;
 };
 
-function totals(records: readonly OutcomeRecord[], attribution: ReadonlyMap<string, AttributionView>, fx: MarketingFx): Totals {
+const icpOf = (view: AttributionView | undefined, icp: IcpConfig): IcpClass => (icp.enabled ? view?.icpClass ?? ICP_UNSET : ICP_NOT_APPLICABLE);
+
+function totals(records: readonly OutcomeRecord[], attribution: ReadonlyMap<string, AttributionView>, fx: MarketingFx, icp: IcpConfig): Totals {
   const out = {
     leadCount: 0, saralanganCount: 0, sqlCount: 0, nrCount: 0, inPipelineCount: 0, saleCount: 0, lostCount: 0,
     revenueByCurrency: {} as Record<string, number>, revenueUzs: 0, revenueUzsComplete: true,
@@ -100,9 +103,9 @@ function totals(records: readonly OutcomeRecord[], attribution: ReadonlyMap<stri
       const uzs = opportunityToUzs(amount, currency, fx);
       if (uzs === null) out.revenueUzsComplete = false; else out.revenueUzs += uzs;
     }
-    classes.push(attribution.get(record.dealId)?.icpClass ?? "UNSET");
+    classes.push(icpOf(attribution.get(record.dealId), icp));
   }
-  return { ...out, icp: countIcp(classes) };
+  return { ...out, icp: countIcp(classes, icp) };
 }
 
 export type SpendTotals = {
@@ -126,26 +129,40 @@ export function spendTotals(rows: readonly SpendRow[], fx: MarketingFx): SpendTo
 
 export type CostMetrics = {
   cmcUzs: number | null; roas: number | null;
-  cplUzs: number | null; costPerIcpFitUzs: number | null; costPerSqlUzs: number | null; costPerSaleUzs: number | null;
+  cplUzs: number | null; costPerSqlUzs: number | null; costPerSaleUzs: number | null;
+  /** Only where the workspace has ICP. */
+  costPerIcpFitUzs?: number | null;
 };
 
 export function costMetrics(input: {
-  spendUzs: number | null; leads: number; icpFit: number; sql: number; sales: number; revenueUzs: number | null;
+  spendUzs: number | null; leads: number; icpFit: number | null; sql: number; sales: number; revenueUzs: number | null;
 }): CostMetrics {
   const cmc = ratioWhole(input.spendUzs, input.sales);
   return {
     cmcUzs: cmc,
     roas: ratio(input.revenueUzs, input.spendUzs),
     cplUzs: ratioWhole(input.spendUzs, input.leads),
-    costPerIcpFitUzs: ratioWhole(input.spendUzs, input.icpFit),
+    ...(input.icpFit === null ? {} : { costPerIcpFitUzs: ratioWhole(input.spendUzs, input.icpFit) }),
     costPerSqlUzs: ratioWhole(input.spendUzs, input.sql),
     costPerSaleUzs: cmc,
   };
 }
 
-export type MarketingSummary = Totals & SpendTotals & CostMetrics & {
+/** The ICP fields of a summary/entity row, or just the NOT_APPLICABLE status. */
+function icpFields(counts: IcpCounts | null) {
+  if (!counts) return { icpStatus: "NOT_APPLICABLE" as const };
+  return {
+    icpStatus: "ENABLED" as const,
+    icpEvaluatedCount: counts.evaluated, icpFitCount: counts.fit, icpOtherCount: counts.notFit,
+    icpUnsetCount: counts.unset, icpFitRate: counts.fitRate, icpByTier: counts.byTier,
+  };
+}
+
+export type MarketingSummary = Omit<Totals, "icp"> & SpendTotals & CostMetrics & {
   attributedLeadCount: number; attributedSaleCount: number; attributedRevenueUzs: number | null;
-  icpEvaluatedCount: number; icpFitCount: number; icpOtherCount: number; icpUnsetCount: number; icpFitRate: number | null;
+  icpStatus: "ENABLED" | "NOT_APPLICABLE";
+  icpEvaluatedCount?: number; icpFitCount?: number; icpOtherCount?: number; icpUnsetCount?: number; icpFitRate?: number | null;
+  icpByTier?: Record<string, number>;
   coverage: { campaignIdCoverage: number | null; adsetIdCoverage: number | null; adIdCoverage: number | null };
   /** False when a placement/landing filter is active: Meta daily spend has no such breakdown. */
   spendApplies: boolean;
@@ -153,11 +170,11 @@ export type MarketingSummary = Totals & SpendTotals & CostMetrics & {
 
 export function buildSummary(input: {
   cohort: readonly OutcomeRecord[]; attribution: ReadonlyMap<string, AttributionView>;
-  spend: readonly SpendRow[]; fx: MarketingFx; spendApplies?: boolean;
+  spend: readonly SpendRow[]; fx: MarketingFx; spendApplies?: boolean; icp: IcpConfig;
 }): MarketingSummary {
   const spendApplies = input.spendApplies !== false;
-  const all = totals(input.cohort, input.attribution, input.fx);
-  const attributed = totals(input.cohort.filter((row) => isMetaAttributed(input.attribution.get(row.dealId))), input.attribution, input.fx);
+  const { icp: allIcp, ...all } = totals(input.cohort, input.attribution, input.fx, input.icp);
+  const attributed = totals(input.cohort.filter((row) => isMetaAttributed(input.attribution.get(row.dealId))), input.attribution, input.fx, input.icp);
   const spend = spendApplies ? spendTotals(input.spend, input.fx) : { spendByCurrency: {}, spendUzs: null, impressions: 0, clicks: 0 };
   const attributedRevenueUzs = attributed.revenueUzsComplete ? attributed.revenueUzs : null;
   const share = (predicate: (view: AttributionView | undefined) => boolean) =>
@@ -166,14 +183,13 @@ export function buildSummary(input: {
     ...all,
     ...spend,
     ...costMetrics({
-      spendUzs: spend.spendUzs, leads: attributed.leadCount, icpFit: attributed.icp.fit, sql: attributed.sqlCount,
+      spendUzs: spend.spendUzs, leads: attributed.leadCount, icpFit: attributed.icp?.fit ?? null, sql: attributed.sqlCount,
       sales: attributed.saleCount, revenueUzs: attributedRevenueUzs,
     }),
     attributedLeadCount: attributed.leadCount,
     attributedSaleCount: attributed.saleCount,
     attributedRevenueUzs,
-    icpEvaluatedCount: all.icp.evaluated, icpFitCount: all.icp.fit, icpOtherCount: all.icp.other,
-    icpUnsetCount: all.icp.unset, icpFitRate: all.icp.fitRate,
+    ...icpFields(allIcp),
     coverage: {
       campaignIdCoverage: share((view) => Boolean(view?.campaignId)),
       adsetIdCoverage: share((view) => Boolean(view?.adsetId)),
@@ -190,7 +206,9 @@ export const UNATTRIBUTED = "__unattributed__";
 export type EntityRow = {
   id: string; name: string | null; campaignId: string | null; adsetId: string | null;
   leadCount: number; saralanganCount: number;
-  icpEvaluatedCount: number; icpFitCount: number; icpUnsetCount: number; icpFitRate: number | null;
+  icpStatus: "ENABLED" | "NOT_APPLICABLE";
+  icpEvaluatedCount?: number; icpFitCount?: number; icpOtherCount?: number; icpUnsetCount?: number; icpFitRate?: number | null;
+  icpByTier?: Record<string, number>;
   sqlCount: number; inPipelineCount: number; saleCount: number;
   revenueUzs: number | null; spendUzs: number | null; spendByCurrency: Record<string, number>;
   impressions: number; clicks: number;
@@ -201,7 +219,7 @@ const SPEND_LEVELS = new Set<EntityLevel>(["campaign", "adset", "ad", "creative"
 
 export function buildEntities(input: {
   level: EntityLevel; cohort: readonly OutcomeRecord[]; attribution: ReadonlyMap<string, AttributionView>;
-  spend: readonly SpendRow[]; fx: MarketingFx; spendApplies?: boolean;
+  spend: readonly SpendRow[]; fx: MarketingFx; spendApplies?: boolean; icp: IcpConfig;
   /** ad_id → creative_id, from Meta daily rows. */
   creativeByAd?: ReadonlyMap<string, string>;
 }): EntityRow[] {
@@ -239,7 +257,7 @@ export function buildEntities(input: {
 
   const rows: EntityRow[] = [];
   for (const [id, entry] of groups) {
-    const counts = totals(entry.records, input.attribution, input.fx);
+    const counts = totals(entry.records, input.attribution, input.fx, input.icp);
     const spend = spendApplies ? spendTotals(entry.spend, input.fx) : { spendByCurrency: {}, spendUzs: null, impressions: 0, clicks: 0 };
     // The display name: the most recent Meta name, else the newest lead's name.
     const latestSpend = [...entry.spend].sort((a, b) => b.date.localeCompare(a.date))[0];
@@ -254,11 +272,11 @@ export function buildEntities(input: {
       campaignId: level === "campaign" || id === UNATTRIBUTED ? null : parent?.campaignId ?? null,
       adsetId: level === "ad" || level === "creative" ? parent?.adsetId ?? null : null,
       leadCount: counts.leadCount, saralanganCount: counts.saralanganCount,
-      icpEvaluatedCount: counts.icp.evaluated, icpFitCount: counts.icp.fit, icpUnsetCount: counts.icp.unset, icpFitRate: counts.icp.fitRate,
+      ...icpFields(counts.icp),
       sqlCount: counts.sqlCount, inPipelineCount: counts.inPipelineCount, saleCount: counts.saleCount,
       revenueUzs, spendUzs: spend.spendUzs, spendByCurrency: spend.spendByCurrency,
       impressions: spend.impressions, clicks: spend.clicks,
-      ...costMetrics({ spendUzs: spend.spendUzs, leads: counts.leadCount, icpFit: counts.icp.fit, sql: counts.sqlCount, sales: counts.saleCount, revenueUzs }),
+      ...costMetrics({ spendUzs: spend.spendUzs, leads: counts.leadCount, icpFit: counts.icp?.fit ?? null, sql: counts.sqlCount, sales: counts.saleCount, revenueUzs }),
     });
   }
   return rows.sort((a, b) => (b.spendUzs ?? 0) - (a.spendUzs ?? 0) || b.leadCount - a.leadCount || a.id.localeCompare(b.id));
@@ -267,14 +285,18 @@ export function buildEntities(input: {
 export type DealMetric = "lead" | "icp_fit" | "icp_other" | "icp_unset" | "sql" | "pipeline" | "sale";
 export const DEAL_METRICS: readonly DealMetric[] = ["lead", "icp_fit", "icp_other", "icp_unset", "sql", "pipeline", "sale"];
 
-export function dealsForMetric(metric: DealMetric, cohort: readonly OutcomeRecord[], attribution: ReadonlyMap<string, AttributionView>) {
+export const ICP_METRICS: readonly DealMetric[] = ["icp_fit", "icp_other", "icp_unset"];
+
+/** The Deals behind one number. An ICP metric on a workspace without ICP is null (not applicable), never empty. */
+export function dealsForMetric(metric: DealMetric, cohort: readonly OutcomeRecord[], attribution: ReadonlyMap<string, AttributionView>, icpConfig: IcpConfig) {
+  if (ICP_METRICS.includes(metric) && !icpConfig.enabled) return null;
   return cohort.filter((record) => {
     const outcome = dealOutcome(record);
-    const icp = attribution.get(record.dealId)?.icpClass ?? "UNSET";
+    const icp = icpOf(attribution.get(record.dealId), icpConfig);
     if (metric === "lead") return true;
-    if (metric === "icp_fit") return isIcpFit(icp);
-    if (metric === "icp_other") return icp === "OTHER";
-    if (metric === "icp_unset") return icp === "UNSET";
+    if (metric === "icp_fit") return isIcpFit(icp, icpConfig);
+    if (metric === "icp_other") return icp === ICP_NOT_FIT;
+    if (metric === "icp_unset") return icp === ICP_UNSET;
     if (metric === "sql") return outcome.sql;
     if (metric === "pipeline") return outcome.inPipeline;
     return outcome.sale;
@@ -285,7 +307,7 @@ export function dealsForMetric(metric: DealMetric, cohort: readonly OutcomeRecor
       dealId: record.dealId, title: record.title ?? null, createdAt: record.createdAt, bitrixUrl: record.bitrixUrl ?? null,
       stage: record.stage ?? null, stageId: record.stageId ?? null, assignedManagerId: record.assignedManagerId ?? null,
       ...outcome, opportunity: Number(record.opportunity ?? 0) || 0, currencyId: record.currencyId ?? null,
-      icpClass: view?.icpClass ?? "UNSET",
+      icpClass: icpOf(view, icpConfig),
       campaignId: view?.campaignId ?? null, campaignName: view?.campaignName ?? null,
       adsetId: view?.adsetId ?? null, adsetName: view?.adsetName ?? null,
       adId: view?.adId ?? null, adName: view?.adName ?? null,
@@ -318,13 +340,14 @@ export function buildCoverage(cohort: readonly OutcomeRecord[], attribution: Rea
 }
 
 /** ICP per owner, for the existing Overview/Managers pages to consume later. */
-export function icpByKey(cohort: readonly OutcomeRecord[], attribution: ReadonlyMap<string, AttributionView>, keyOf: (record: OutcomeRecord) => string) {
+export function icpByKey(cohort: readonly OutcomeRecord[], attribution: ReadonlyMap<string, AttributionView>, keyOf: (record: OutcomeRecord) => string, icp: IcpConfig) {
+  if (!icp.enabled) return null;
   const groups = new Map<string, IcpClass[]>();
   for (const record of cohort) {
     const key = keyOf(record);
     const list = groups.get(key) ?? [];
-    list.push(attribution.get(record.dealId)?.icpClass ?? "UNSET");
+    list.push(icpOf(attribution.get(record.dealId), icp));
     groups.set(key, list);
   }
-  return [...groups].map(([key, classes]) => ({ key, ...countIcp(classes) })).sort((a, b) => b.evaluated - a.evaluated || a.key.localeCompare(b.key));
+  return [...groups].map(([key, classes]) => ({ key, ...(countIcp(classes, icp) as IcpCounts) })).sort((a, b) => b.evaluated - a.evaluated || a.key.localeCompare(b.key));
 }

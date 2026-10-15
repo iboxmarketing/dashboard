@@ -22,6 +22,7 @@ import { PROJECT_SELLER_NAMES, directoryUsers, resolveRoster, rosterDictionaryKe
 import { runPostSyncReconciliation } from "./post-sync-reconciliation";
 import { marketingSelect, resolveMarketingFields, type MarketingFieldResolution } from "./marketing/fields";
 import { materializeAttribution } from "./marketing/store";
+import { icpFieldIds } from "./marketing/workspaces";
 import {
   DEFAULT_PROJECT, PROJECT_KEYS, PROJECT_SELLER_IDENTITY, SALES_PROJECTS, projectForCategory, type ProjectKey,
 } from "./sales-projects";
@@ -376,7 +377,7 @@ async function dealStep(job: StoredSyncJob) {
   // Marketing attribution evidence rides on the same read, so raw_deals keeps it
   // (UTM_*, the tracking Worker's UF_CRM_META_* fields, ICP, landing).
   const marketing = await getDictionary<MarketingFieldResolution>("marketingFields", { fields: {}, ambiguous: [] });
-  for (const field of marketingSelect(marketing.fields ?? {})) if (!customFields.includes(field)) customFields.push(field);
+  for (const field of [...marketingSelect(marketing.fields ?? {}), ...icpFieldIds()]) if (!customFields.includes(field)) customFields.push(field);
   // CLOSED is current-state evidence for reconciliation only. Won/lost
   // classification stays with the canonical stage and stage-history rules;
   // nothing derives salesStatus from this flag.
