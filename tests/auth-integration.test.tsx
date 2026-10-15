@@ -367,8 +367,10 @@ test("12. the auth integration changes no analytics, seller or finance calculati
   // Second-audit additions: widget/source permissions and share ownership,
   // fixed safe errors, and SafeBitrixError moved out of lib/bitrix.ts (class
   // unchanged, re-exported) so it can be tested without the Worker runtime.
+  // KPI detail adds display-only contract and route/query helpers; neither
+  // module imports or evaluates an analytics formula.
   assert.deepEqual(libChanges.sort(), [
-    "lib/bitrix.ts", "lib/finance-adapter.ts", "lib/safe-bitrix-error.ts", "lib/safe-errors.ts",
+    "lib/bitrix.ts", "lib/finance-adapter.ts", "lib/kpi-detail-contract.ts", "lib/kpi-detail-routes.ts", "lib/safe-bitrix-error.ts", "lib/safe-errors.ts",
     "lib/sales-http.ts", "lib/sales-sections.ts", "lib/share-storage.ts", "lib/share-store.ts", "lib/share-tokens.ts",
     "lib/widget-permissions.ts",
   ].sort());

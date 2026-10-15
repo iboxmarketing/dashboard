@@ -242,8 +242,9 @@ test("coverage stays behind a compact details affordance and UI performs no metr
 
 test("Overview and Managers keep their existing placement with adapter-only Marketing blocks", () => {
   const client = read("app/dashboard-client.tsx");
-  // Same placement; the additions now follow the host page's own date range.
-  assert.match(client, /<MarketingOverviewAdditions workspace=\{marketingWorkspaceForProject\(project\)\} adapter=\{marketingAdapter\} range=\{marketingRange\} \/>/);
+  // Same placement; the additions follow the host page's date range and the
+  // ICP card receives only a UI route, never a second data source.
+  assert.match(client, /<MarketingOverviewAdditions workspace=\{marketingWorkspaceForProject\(project\)\} adapter=\{marketingAdapter\} range=\{marketingRange\}\s+detailHref=\{kpiDetailHref\(project, "icp_fit", detailSearch\)\} \/>/);
   assert.match(client, /<ManagerIcpAdditions workspace=\{marketingWorkspaceForProject\(project\)\} adapter=\{marketingAdapter\} range=\{rangeBounds\(filters\)\} \/>/);
   assert.match(client, /<MarketingView workspace=\{marketingWorkspaceForProject\(project\)\} adapter=\{marketingAdapter\} \/>/);
 });

@@ -9,6 +9,7 @@ import { CostValue, formatMarketingRate, IcpBreakdownDrawer, MarketingDealDrawer
 import { defaultMarketingFilters } from "./marketing-url-state";
 import { MarketingResourceNotice, useMarketingResource } from "./marketing-resource";
 import { Drawer } from "../ui/drawer";
+import { activateKpiCardOnKeyDown } from "@/lib/kpi-detail-routes";
 
 function IcpResourceDrawer({ open, workspace, adapter, filters, onSelect, onClose }: {
   open: boolean;
@@ -40,8 +41,8 @@ function filtersForRange(range: MarketingRange) {
  * Overview ICP card (IBOX only — workspace capability). CMC/ROAS cards are
  * feature-gated off by default: the Marketing page is V1's home for cost analytics.
  */
-export function MarketingOverviewAdditions({ workspace, adapter, range, showCosts = false }: {
-  workspace: MarketingWorkspaceKey; adapter: MarketingDataAdapter; range?: MarketingRange; showCosts?: boolean;
+export function MarketingOverviewAdditions({ workspace, adapter, range, showCosts = false, detailHref }: {
+  workspace: MarketingWorkspaceKey; adapter: MarketingDataAdapter; range?: MarketingRange; showCosts?: boolean; detailHref?: string;
 }) {
   const filters = useMemo(() => filtersForRange(range), [range]);
   // The Overview is the whole CRM cohort: workspace scope (its ICP is every IBOX Lead).
@@ -59,7 +60,10 @@ export function MarketingOverviewAdditions({ workspace, adapter, range, showCost
   return <>
     <MarketingResourceNotice state={summaryResource.state} onRetry={summaryResource.retry} compact empty="Marketing cohort bo‘sh." />
     {summary && (showIcp || showCosts) ? <section className="marketing-overview-additions" aria-label="Marketing qo‘shimcha ko‘rsatkichlari">
-      {showIcp ? <button className="kpi-card violet marketing-kpi-button" onClick={() => setIcpOpen(true)}>
+      {showIcp ? detailHref ? <a className="kpi-card violet marketing-kpi-button kpi-card-link" href={detailHref} onKeyDown={activateKpiCardOnKeyDown}>
+        <span className="kpi-top"><span>ICP ga moslik</span><span className="kpi-icon"><Gauge size={18} /></span></span>
+        <strong>{formatMarketingRate(summary.icpFitRate)}</strong><small>{summary.icpFitCount ?? "—"} / {summary.icpEvaluatedCount ?? "—"} belgilangan{summary.icpUnsetCount !== null ? <span className="card-note">{summary.icpUnsetCount} ta belgilanmagan</span> : null}{summary.icpEvaluationShare !== null ? <span className={`card-note marketing-icp-coverage ${summary.icpEvaluationShare < 0.5 ? "warning-text" : ""}`}>Faqat {formatMarketingRate(summary.icpEvaluationShare)} Lead baholangan</span> : null}</small>
+      </a> : <button className="kpi-card violet marketing-kpi-button" onClick={() => setIcpOpen(true)}>
         <span className="kpi-top"><span>ICP ga moslik</span><span className="kpi-icon"><Gauge size={18} /></span></span>
         <strong>{formatMarketingRate(summary.icpFitRate)}</strong><small>{summary.icpFitCount ?? "—"} / {summary.icpEvaluatedCount ?? "—"} belgilangan{summary.icpUnsetCount !== null ? <span className="card-note">{summary.icpUnsetCount} ta belgilanmagan</span> : null}{summary.icpEvaluationShare !== null ? <span className={`card-note marketing-icp-coverage ${summary.icpEvaluationShare < 0.5 ? "warning-text" : ""}`}>Faqat {formatMarketingRate(summary.icpEvaluationShare)} Lead baholangan</span> : null}</small>
       </button> : null}

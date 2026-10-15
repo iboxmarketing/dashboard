@@ -85,6 +85,10 @@ import { ManagerIcpAdditions, MarketingOverviewAdditions } from "./marketing/mar
 import { HttpMarketingAdapter } from "./marketing/marketing-adapter";
 import { marketingWorkspaceForProject } from "./marketing/marketing-workspaces";
 import { marketingViewRequested, searchForDashboardView } from "./marketing/marketing-url-state";
+import {
+  HEADLINE_KPI_DETAIL, activateKpiCardOnKeyDown, kpiDetailHref,
+  parseDashboardFilterSearch, serializeDashboardFilterSearch, type DashboardUrlFilters,
+} from "@/lib/kpi-detail-routes";
 
 /** Composition root: the real Marketing API (/api/marketing/*). Typed fixtures are for tests and demos only. */
 const marketingAdapter = new HttpMarketingAdapter();
@@ -104,15 +108,7 @@ export const isManagementView = (view: string) => (MANAGEMENT_VIEWS as readonly 
 type MarketingViewId = "marketing";
 type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "projects" | "projectDetail" | "pages" | "pageDetail" | "diagnostics" | "settings" | "finance" | "users" | "sellerReview" | MarketingViewId;
 type SyncState = SyncProgressState;
-type Filters = {
-  range: "today" | "yesterday" | "7" | "30" | "month" | "lastMonth" | "custom";
-  from: string; to: string;
-  // Manager and Source accept several values: OR inside the dimension, AND
-  // across dimensions. An empty array means "all". See lib/record-filters.ts.
-  managers: string[]; sources: string[];
-  pipeline: string;
-  stage: string; period: string; sla: string; processing: string; search: string;
-};
+type Filters = DashboardUrlFilters;
 
 const emptyFilters: Filters = {
   range: "30", from: "", to: "", managers: [], sources: [], pipeline: "",
@@ -267,10 +263,13 @@ function SetupScreen({ configured, sync, syncing, externalError, onStart, onPaus
   </main>;
 }
 
-function KpiCard({ label, value, detail, tone = "blue", icon: Icon, valueClassName = "", hint }: { label: string; value: string; detail: React.ReactNode; tone?: string; icon: typeof Activity; valueClassName?: string; hint?: string }) {
+function KpiCard({ label, value, detail, tone = "blue", icon: Icon, valueClassName = "", hint, href }: { label: string; value: string; detail: React.ReactNode; tone?: string; icon: typeof Activity; valueClassName?: string; hint?: string; href?: string }) {
   // `hint` explains how a number is measured. It is a tooltip, never a fourth
   // line of text on the card.
-  return <article className={`kpi-card ${tone}`} title={hint}><div className="kpi-top"><span>{label}{hint ? <HelpCircle size={13} className="kpi-hint" /> : null}</span><div className="kpi-icon"><Icon size={18} /></div></div><strong className={valueClassName}>{value}</strong><small>{detail}</small></article>;
+  const content = <><div className="kpi-top"><span>{label}{hint ? <HelpCircle size={13} className="kpi-hint" /> : null}</span><div className="kpi-icon"><Icon size={18} /></div></div><strong className={valueClassName}>{value}</strong><small>{detail}</small></>;
+  return href
+    ? <a className={`kpi-card ${tone} kpi-card-link`} href={href} title={hint} onKeyDown={activateKpiCardOnKeyDown}>{content}</a>
+    : <article className={`kpi-card ${tone}`} title={hint}>{content}</article>;
 }
 function MetricDelta({ current, previous }: { current: number; previous: number }) {
   if (!previous && !current) return <span className="delta-inline neutral">o‘tgan davr bilan teng</span>;
@@ -500,7 +499,7 @@ function FiltersBar({ filters, setFilters, options, currentStages, mode = "cohor
   </div>;
 }
 
-function DashboardView({ section, onManager, marketingRange }: { section: DashboardSection; onManager: (manager: ManagerRow) => void; marketingRange?: { from: string; to: string } }) {
+function DashboardView({ section, onManager, marketingRange, detailSearch = "" }: { section: DashboardSection; onManager: (manager: ManagerRow) => void; marketingRange?: { from: string; to: string }; detailSearch?: string }) {
   const project = useProject() ?? "IBOX";
   const { metrics, previousMetrics, managers, metricIds } = section;
   const selected = resolveHeadlineCardIds(metricIds);
@@ -580,10 +579,12 @@ function DashboardView({ section, onManager, marketingRange }: { section: Dashbo
       {/* Driven by the saved order, not the registry order. */}
       {selected.map((id) => {
         const card = cards[id];
-        return <KpiCard key={id} label={headlineCardLabel(id)} value={card.value} detail={card.detail} tone={card.tone} icon={card.icon} hint={card.hint} />;
+        return <KpiCard key={id} label={headlineCardLabel(id)} value={card.value} detail={card.detail} tone={card.tone} icon={card.icon} hint={card.hint}
+          href={kpiDetailHref(project, HEADLINE_KPI_DETAIL[id], detailSearch)} />;
       })}
     </section>
-    <MarketingOverviewAdditions workspace={marketingWorkspaceForProject(project)} adapter={marketingAdapter} range={marketingRange} />
+    <MarketingOverviewAdditions workspace={marketingWorkspaceForProject(project)} adapter={marketingAdapter} range={marketingRange}
+      detailHref={kpiDetailHref(project, "icp_fit", detailSearch)} />
     {/* Only with `managers`: the server sends no manager rows otherwise. */}
     {managers && <section className="panel"><SectionHeader title="Menejerlar performance" subtitle="Qatorni bossangiz dashboard shu menejer bo‘yicha filtrlanadi" /><ManagerTable rows={managers} limit={8} onSelect={onManager} /></section>}
   </>;
@@ -2253,7 +2254,19 @@ function DashboardApp({ session, project }: { session: AuthSession; project: Pro
     return () => { active = false; window.removeEventListener("popstate", onPopState); };
   }, [defaultView]);
   const [selectedManager, setSelectedManager] = useState<{ id: string; name: string } | null>(null);
-  const [filters, setFilters] = useState<Filters>(emptyFilters);
+  const [filters, setFilters] = useState<Filters>(() => typeof window === "undefined"
+    ? emptyFilters
+    : parseDashboardFilterSearch(window.location.search, emptyFilters));
+  const dashboardDetailSearch = serializeDashboardFilterSearch(filters, rangeBounds(filters));
+  // Sales filters are URL state so a KPI page, refresh and browser Back all
+  // return to the same cohort. Marketing owns its own query lane and is left
+  // untouched while it is open.
+  useEffect(() => {
+    if (!isSalesView(view) || marketingViewRequested(window.location.search)) return;
+    const next = `${window.location.pathname}${dashboardDetailSearch ? `?${dashboardDetailSearch}` : ""}${window.location.hash}`;
+    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (next !== current) window.history.replaceState(null, "", next);
+  }, [dashboardDetailSearch, view]);
   const [refreshing, setRefreshing] = useState(false);
   const [syncPipelineId, setSyncPipelineId] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
@@ -2688,7 +2701,7 @@ function DashboardApp({ session, project }: { session: AuthSession; project: Pro
         {isSalesView(view) && view !== "stages" && <CoverageNotice earliestDay={activeSales?.data?.coverageStart ?? null} filters={filters} />}
         {isSalesView(view) && view !== "stages" && activeSales && <SectionStatus state={activeSales} />}
         <ViewErrorBoundary onBack={() => setView(defaultView)}>
-        {view === "dashboard" && dashboardSection.data && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{dashboardSection.data.leadCount} Leadlar</strong></div></div>{dashboardSection.data.leadCount === 0 && <EmptyCohortNotice />}<DashboardView section={dashboardSection.data} marketingRange={rangeBounds(filters)} onManager={(manager) => { if (canManagers) { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); } }} /><TrendChart trend={dashboardSection.data.trend} /></>}
+        {view === "dashboard" && dashboardSection.data && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{dashboardSection.data.leadCount} Leadlar</strong></div></div>{dashboardSection.data.leadCount === 0 && <EmptyCohortNotice />}<DashboardView section={dashboardSection.data} marketingRange={rangeBounds(filters)} detailSearch={dashboardDetailSearch} onManager={(manager) => { if (canManagers) { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); } }} /><TrendChart trend={dashboardSection.data.trend} /></>}
         {view === "marketing" && <MarketingView workspace={marketingWorkspaceForProject(project)} adapter={marketingAdapter} />}
         {view === "managers" && managersSection.data && <><div className="page-title"><div><p className="eyebrow">TEAM PERFORMANCE</p><h1>Menejerlar</h1><p>Joriy Sales jamoasi reytingi. Tarixiy sotuvchilar pastda alohida ko‘rsatiladi.</p></div></div>
           <section className="dashboard-grid compact-kpis">
