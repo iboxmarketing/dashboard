@@ -22,7 +22,7 @@ import { stageWorkloadRows } from "@/lib/manager-profile";
 import type { MarketingManagerDiagnostic, QualityAnalytics, SalesManagerDiagnostic } from "@/lib/quality-analytics";
 import { DEFAULT_TREND_METRIC, TREND_METRICS, supportsMovingAverage, trendBarHeight, trendMetric, type TrendMetricId, type TrendPoint } from "@/lib/trend-series";
 import { CURRENT_STAGE_EXCLUSION_LABELS } from "@/lib/current-stages";
-import { clientUnavailable, fmtStageTime, parseStageLiveMeta, StageLiveStatus, type StageLiveMeta } from "./stage-control-status";
+import { clientUnavailable, fmtStageTime, parseStageLiveMeta, StageLiveStatus, wantsLiveStages, type StageLiveMeta } from "./stage-control-status";
 import { initialStageFunnelState, stageFunnelNext, type StageFunnelAction, type StageFunnelState, type StageFunnelStatus } from "@/lib/stage-funnel-cache";
 import {
   classifyStartRecovery, classifySyncResponse, retryDelayMs, shouldRetry, SYNC_EXHAUSTED_MESSAGE,
@@ -2442,7 +2442,9 @@ function DashboardApp({ session, project }: { session: AuthSession; project: Pro
       // cached Stage Control history is marked stale.
       if (accessRef.current.hasSalesAccess) setSalesReload((token) => token + 1);
       if (accessRef.current.canStages) invalidateStageFunnel();
-      if (accessRef.current.canStages) void loadCurrentStages();
+      // Live Bitrix is asked only while a view that shows it is open; any other
+      // view refetches on entry (the effect below).
+      if (accessRef.current.canStages && wantsLiveStages(viewRef.current)) void loadCurrentStages();
       if (accessRef.current.canProjects) void loadProjects();
       if (accessRef.current.canPages) { void loadPages(); void loadShares(); }
     } catch (caught) { setLoadError(caught instanceof Error ? caught.message : "Dashboard yuklanmadi"); }
@@ -2456,14 +2458,23 @@ function DashboardApp({ session, project }: { session: AuthSession; project: Pro
     const timer = window.setTimeout(() => { void load(); }, 0);
     return () => window.clearTimeout(timer);
   }, [load]);
+  const liveStagesOpen = wantsLiveStages(view);
+  // Opening Stage Control (or Manager detail, which shows the same live rows)
+  // asks Bitrix once; the previous rows stay on screen while it answers.
   useEffect(() => {
-    if (!configured || !canStages) return;
-    // The two-minute refresh keeps LIVE rows fresh. It does not keep retrying a
-    // failing Bitrix: once degraded or unavailable, the next attempt is the
-    // user's "Qayta urinish" (or the next dataset reload).
+    if (!configured || !canStages || !liveStagesOpen) return;
+    const timer = window.setTimeout(() => { void loadCurrentStages(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [configured, canStages, liveStagesOpen, loadCurrentStages]);
+  useEffect(() => {
+    if (!configured || !canStages || !liveStagesOpen) return;
+    // The two-minute refresh runs only while that view is open, and keeps LIVE
+    // rows fresh. It does not keep retrying a failing Bitrix: once degraded or
+    // unavailable, the next attempt is the user's "Qayta urinish" (or the next
+    // dataset reload, or reopening the view).
     const interval = window.setInterval(() => { if (stageLiveRef.current?.liveStatus === "LIVE") void loadCurrentStages(); }, 120_000);
     return () => window.clearInterval(interval);
-  }, [configured, loadCurrentStages, canStages]);
+  }, [configured, loadCurrentStages, canStages, liveStagesOpen]);
 
   // Each Sales view asks its own endpoint, with the permission-gated filters
   // stripped for a caller who lacks them. Only the open view fetches.
@@ -2593,7 +2604,7 @@ function DashboardApp({ session, project }: { session: AuthSession; project: Pro
   async function saveSettings(next: DashboardSettings) {
     const response = await authFetch(scoped("/api/settings"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next) });
     const payload = await response.json() as { settings?: DashboardSettings; error?: string };
-    if (!response.ok || !payload.settings) throw new Error(payload.error ?? "Sozlamalar saqlanmadi"); setSettings(normalizeSettings(payload.settings)); void loadCurrentStages();
+    if (!response.ok || !payload.settings) throw new Error(payload.error ?? "Sozlamalar saqlanmadi"); setSettings(normalizeSettings(payload.settings)); if (wantsLiveStages(viewRef.current)) void loadCurrentStages();
   }
   async function saveAndFullSync(next: DashboardSettings, pipelineId: string) {
     await saveSettings(next);

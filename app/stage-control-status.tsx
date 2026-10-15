@@ -15,6 +15,15 @@ export type StageLiveMeta = {
   retryable: boolean;
 };
 
+/**
+ * The views that render live Stage Control rows. Bitrix is asked, and the
+ * two-minute refresh runs, only while one of them is open.
+ */
+export const LIVE_STAGE_VIEWS: ReadonlySet<string> = new Set(["stages", "managerDetail"]);
+export function wantsLiveStages(view: string) {
+  return LIVE_STAGE_VIEWS.has(view);
+}
+
 const STATUSES = new Set(["LIVE", "DEGRADED", "UNAVAILABLE"]);
 const SOURCES = new Set(["BITRIX_LIVE", "LAST_SUCCESSFUL_LIVE", null]);
 const text = (value: unknown) => (typeof value === "string" && value ? value : null);

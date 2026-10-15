@@ -590,8 +590,10 @@ successful live snapshot, labelled "Live ma’lumot olinmadi — oxirgi muvaffaq
 ma’lumot ko‘rsatilmoqda" with its timestamp and a "Qayta urinish" button, and
 the same exclusions and filters apply to it. It is never relabelled as live,
 never replaced by the analytics cache, and with no snapshot the view shows an
-error with Retry rather than zero Deals. The two-minute refresh only refreshes
-live data; it does not keep retrying a failing Bitrix.
+error with Retry rather than zero Deals. Live Bitrix is asked only while Stage
+Control or Manager detail (which shows the same live rows) is open: on opening
+the view, on its button, and every two minutes while it stays open and live.
+One request at a time, and a failing Bitrix is not retried automatically.
 
 ## 8. Historical cohort
 

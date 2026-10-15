@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { StageLiveStatus, parseStageLiveMeta, type StageLiveMeta } from "../app/stage-control-status";
+import { StageLiveStatus, parseStageLiveMeta, wantsLiveStages, type StageLiveMeta } from "../app/stage-control-status";
 import { defaultSettings } from "../lib/business-time";
 import { buildCurrentStageRecords, type RawCurrentStageDeal } from "../lib/current-stages";
 import { filterCurrentStageRecords } from "../lib/record-filters";
@@ -456,4 +456,25 @@ test("the client reads the explicit contract and never infers a state from missi
   // Every answer of the route carries the contract fields.
   const route = read("app/api/current-stages/route.ts");
   for (const field of ["liveStatus", "dataSource", "fetchedAt", "lastSuccessfulAt", "staleAgeSeconds", "liveErrorCode", "retryable", "rowCount"]) assert.match(route, new RegExp(`${field}:`));
+});
+
+test("polling: live Stage Control is asked only while a view showing it is open", () => {
+  assert.equal(wantsLiveStages("stages"), true);
+  assert.equal(wantsLiveStages("managerDetail"), true, "Manager detail shows the same live rows");
+  for (const view of ["dashboard", "managers", "deals", "leadFlow", "quality", "diagnostics", "settings", "finance", "users", "marketing"]) {
+    assert.equal(wantsLiveStages(view), false, view);
+  }
+  const client = read("app/dashboard-client.tsx");
+  // Every caller is gated: the dataset reload and a settings save ask only on a live view,
+  // opening such a view asks once, the button asks on click.
+  const calls = client.split("\n").filter((line) => line.includes("loadCurrentStages()"));
+  assert.equal(calls.length, 5);
+  assert.match(client, /if \(accessRef\.current\.canStages && wantsLiveStages\(viewRef\.current\)\) void loadCurrentStages\(\);/);
+  assert.match(client, /if \(wantsLiveStages\(viewRef\.current\)\) void loadCurrentStages\(\);/);
+  assert.match(client, /onRefresh=\{\(\) => void loadCurrentStages\(\)\}/);
+  // The two-minute timer exists only while that view is open, and is cleared on leaving it.
+  assert.match(client, /if \(!configured \|\| !canStages \|\| !liveStagesOpen\) return;\n    \/\/ The two-minute refresh runs only while that view is open/);
+  assert.match(client, /return \(\) => window\.clearInterval\(interval\);\n  \}, \[configured, loadCurrentStages, canStages, liveStagesOpen\]\);/);
+  // Single flight: a click or the timer while a request is pending does nothing.
+  assert.match(client, /if \(stageLoadInFlight\.current\) return;\n    stageLoadInFlight\.current = true;/);
 });
