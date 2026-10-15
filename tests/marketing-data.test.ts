@@ -495,6 +495,7 @@ test("Meta backfill survives throttling: same window retried, a hard error pause
   assert.match(jobs, /if \(!restart && existing && existing\.status === "running"\) return existing;/, "a second start resumes");
   assert.match(jobs, /account\.completedUntil = account\.completedUntil \?\? window\.until;\n\s+account\.completedSince = window\.since;/, "the exact stored range is recorded");
   assert.match(read("app/api/marketing/meta-sync/route.ts"), /if \(payload\.action === "resume"\) return resumeMetaSync\(\);/);
+  assert.match(jobs, /\? \{ \.\.\.account, cursor: account\.completedSince \? dayBefore\(account\.completedSince\) : state\.to, paused: false, attempts: 0 \}/, "extend fetches only the days before what is stored");
   const now = new Date("2026-10-15T09:00:00Z");
   assert.deepEqual(metaRange({ from: "2025-10-15", to: "2026-10-14" }, now), { from: "2025-10-15", to: "2026-10-14" });
   assert.equal(metaRange({ from: "2025-10-01", to: "2026-10-14" }, now), null, "over 366 days");

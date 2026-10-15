@@ -81,6 +81,8 @@ export type MetaSyncAccount = {
   cursor: string | null; error: string | null; rows: number;
   /** A non-retryable error stopped this account; its cursor is kept for {action:"resume"}. */
   paused?: boolean; attempts?: number;
+  /** The last creative-identity failure (optional data; never blocks spend). */
+  creativeError?: string | null;
   /** The exact range already stored for this account. */
   completedSince?: string | null; completedUntil?: string | null;
 };
@@ -146,6 +148,23 @@ export async function startMetaSync(days = 365, fetchImpl: typeof fetch = fetch,
   return state;
 }
 
+/**
+ * Moves a run's start earlier and fetches only the days before what each account
+ * already holds — no completed date is fetched again or forgotten.
+ */
+export async function extendMetaSync(from: unknown, fetchImpl: typeof fetch = fetch): Promise<MetaSyncState | { error: string }> {
+  const state = await getDictionary<MetaSyncState | null>(META_SYNC_KEY, null);
+  const range = state ? metaRange({ from, to: state.to }) : null;
+  if (!state || !range || range.from >= state.from) return { error: "Kengaytirish oralig‘i noto‘g‘ri" };
+  const dayBefore = (date: string) => new Date(Date.parse(`${date}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+  const accounts = state.accounts.map((account) => (account.currency && !account.cursor
+    ? { ...account, cursor: account.completedSince ? dayBefore(account.completedSince) : state.to, paused: false, attempts: 0 }
+    : account));
+  const next: MetaSyncState = { ...state, from: range.from, accounts, status: "running", updatedAt: new Date().toISOString() };
+  await saveDictionary(META_SYNC_KEY, next);
+  return stepMetaSync(fetchImpl);
+}
+
 /** Clears paused accounts so a stopped run continues from its saved cursors. */
 export async function resumeMetaSync(fetchImpl: typeof fetch = fetch): Promise<MetaSyncState> {
   const state = await getDictionary<MetaSyncState | null>(META_SYNC_KEY, null);
@@ -179,7 +198,8 @@ export async function stepMetaSync(fetchImpl: typeof fetch = fetch): Promise<Met
     try {
       const rows: MetaDailyRow[] = await fetchDailyInsights(fetchImpl, { id: account.id, currency: account.currency ?? "USD", timezone: account.timezone }, window.since, window.until, token);
       let creatives = new Map<string, { creativeId: string | null; videoId: string | null; imageHash: string | null }>();
-      try { creatives = await fetchCreatives(fetchImpl, [...new Set(rows.map((row) => row.adId))], token); } catch { /* creative identity is optional in V1 */ }
+      try { creatives = await fetchCreatives(fetchImpl, [...new Set(rows.map((row) => row.adId))], token); account.creativeError = null; }
+      catch (error) { account.creativeError = error instanceof MetaApiError ? error.code : "UNKNOWN"; /* optional in V1: spend continues */ }
       for (const row of rows) {
         const creative = creatives.get(row.adId);
         if (creative) Object.assign(row, creative);
