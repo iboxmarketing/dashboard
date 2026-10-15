@@ -4,9 +4,19 @@ import {
   buildMarketingDealFixtures, creativeRows,
 } from "./marketing-fixtures";
 import type {
-  CreativeRankingMetric, CreativeRankingRow, MarketingDataAdapter, MarketingDealRequest,
+  CreativeRankingMetric, CreativeRankingRow, MarketingCapabilities, MarketingDataAdapter, MarketingDealRequest,
   MarketingEntityRow, MarketingSnapshotRequest,
 } from "./marketing-types";
+
+/**
+ * Current fixture workspaces map to IBOX_UZ and SD_UZ respectively. A real
+ * backend adapter supplies this per workspace; new workspaces remain hidden
+ * until their capability is explicitly enabled.
+ */
+export const MARKETING_CAPABILITIES: Record<MarketingSnapshotRequest["project"], MarketingCapabilities> = {
+  IBOX: { icp: true },
+  SALES_DOCTOR: { icp: false },
+};
 
 const rankValue = (row: CreativeRankingRow, metric: CreativeRankingMetric) => {
   if (metric === "SALES") return row.sales;
@@ -30,6 +40,7 @@ export const fixtureMarketingAdapter: MarketingDataAdapter = {
       projectName: SALES_PROJECTS[request.project].name,
       dataAsOf: "2026-10-14T09:00:00+05:00",
       fixture: true,
+      capabilities: MARKETING_CAPABILITIES[request.project],
       summary: MARKETING_SUMMARIES[request.project],
       options: MARKETING_OPTIONS[request.project],
       rows,
@@ -60,8 +71,6 @@ export const fixtureMarketingAdapter: MarketingDataAdapter = {
     return MARKETING_MANAGER_ICP[project];
   },
 };
-
-export const marketingOverviewSummary = (project: MarketingSnapshotRequest["project"]) => MARKETING_SUMMARIES[project];
 
 export function nextMarketingLevel(row: MarketingEntityRow) {
   if (row.level === "CAMPAIGN") return "AD_SET" as const;

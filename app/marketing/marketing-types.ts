@@ -8,6 +8,7 @@ import type { ProjectKey } from "@/lib/sales-projects";
  */
 export type MarketingEntityLevel = "CAMPAIGN" | "AD_SET" | "AD" | "PLACEMENT" | "LANDING_FORM";
 export type MarketingCostStatus = "AVAILABLE" | "META_NOT_CONNECTED" | "PENDING" | "CURRENCY_UNAVAILABLE";
+export type MarketingCapabilities = { icp: boolean };
 export type IcpSegment = "P1" | "P2" | "P3" | "OTHER" | "UNSET";
 export type MarketingMetric = "LEAD" | "CLASSIFIED" | "ICP_FIT" | "SQL" | "PIPELINE" | "SALE";
 export type CreativeRankingMetric = "SALES" | "ICP_FIT_RATE" | "SQL" | "ROAS" | "CMC";
@@ -176,6 +177,7 @@ export type MarketingSnapshot = {
   projectName: string;
   dataAsOf: string;
   fixture: boolean;
+  capabilities: MarketingCapabilities;
   summary: MarketingSummary;
   options: MarketingFilterOptions;
   rows: MarketingEntityRow[];

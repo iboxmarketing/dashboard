@@ -6,7 +6,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MarketingView, INITIAL_MARKETING_NAVIGATION, drillMarketingEntity } from "../app/marketing/marketing-view";
 import { CostValue, formatMarketingMoney } from "../app/marketing/marketing-shared";
 import { fixtureMarketingAdapter } from "../app/marketing/marketing-adapter";
-import { EMPTY_MARKETING_FILTERS } from "../app/marketing/marketing-types";
+import { ManagerIcpAdditions, MarketingOverviewAdditions } from "../app/marketing/marketing-additions";
+import { EMPTY_MARKETING_FILTERS, type MarketingDataAdapter } from "../app/marketing/marketing-types";
 
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 const snapshot = (project: "IBOX" | "SALES_DOCTOR", level: "CAMPAIGN" | "AD_SET" | "AD" | "PLACEMENT" | "LANDING_FORM" = "CAMPAIGN", parentId: string | null = null) => fixtureMarketingAdapter.getSnapshot({ project, filters: EMPTY_MARKETING_FILTERS, level, parentId });
@@ -23,6 +24,40 @@ test("Marketing page renders inside the selected project workspace", () => {
   assert.match(sd, /Sales Doctor/);
   assert.match(sd, /Meta Insights ulanmagan/);
   assert.doesNotMatch(sd, />0 UZS</, "unavailable spend is never presented as zero");
+});
+
+test("ICP appears only when the workspace capability enables it", () => {
+  assert.equal(snapshot("IBOX").capabilities.icp, true, "IBOX_UZ enables ICP");
+  assert.equal(snapshot("SALES_DOCTOR").capabilities.icp, false, "SD_UZ disables ICP");
+
+  const ibox = renderToStaticMarkup(<MarketingView project="IBOX" />);
+  assert.match(ibox, /ICP ga moslik/);
+  assert.match(ibox, /ICP mos/);
+
+  const sd = renderToStaticMarkup(<MarketingView project="SALES_DOCTOR" />);
+  assert.doesNotMatch(sd, /ICP/i, "a non-applicable workspace exposes no ICP card, columns, ranking, or unset copy");
+  assert.equal(renderToStaticMarkup(<ManagerIcpAdditions project="SALES_DOCTOR" />), "", "manager ICP view is absent for SD_UZ");
+  assert.equal(renderToStaticMarkup(<MarketingOverviewAdditions project="SALES_DOCTOR" />), "", "an unavailable generic cost block does not leave an empty section");
+});
+
+test("disabling ICP through adapter capability needs no UI redesign and keeps CMC and ROAS independent", () => {
+  const icpDisabledAdapter: MarketingDataAdapter = {
+    ...fixtureMarketingAdapter,
+    getSnapshot(request) {
+      return { ...fixtureMarketingAdapter.getSnapshot(request), capabilities: { icp: false } };
+    },
+  };
+
+  const page = renderToStaticMarkup(<MarketingView project="IBOX" adapter={icpDisabledAdapter} />);
+  assert.doesNotMatch(page, /ICP/i);
+  assert.match(page, />CMC</);
+  assert.match(page, />ROAS</);
+
+  const overview = renderToStaticMarkup(<MarketingOverviewAdditions project="IBOX" adapter={icpDisabledAdapter} />);
+  assert.doesNotMatch(overview, /ICP/i);
+  assert.match(overview, />CMC</);
+  assert.match(overview, />ROAS</);
+  assert.equal(renderToStaticMarkup(<ManagerIcpAdditions project="IBOX" adapter={icpDisabledAdapter} />), "");
 });
 
 test("Campaign → Ad Set → Ad drilldown keeps a stable project/filter boundary", () => {

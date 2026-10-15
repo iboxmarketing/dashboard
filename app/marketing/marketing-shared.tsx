@@ -29,9 +29,10 @@ function fmtDate(value: string | null) {
   return new Intl.DateTimeFormat("uz-UZ", { timeZone: "Asia/Tashkent", day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(value));
 }
 
-export function MarketingDealDrawer({ request, adapter, onClose }: {
+export function MarketingDealDrawer({ request, adapter, showIcp, onClose }: {
   request: MarketingDealRequest | null;
   adapter: MarketingDataAdapter;
+  showIcp: boolean;
   onClose: () => void;
 }) {
   const deals = useMemo(() => request ? adapter.getDeals(request) : [], [adapter, request]);
@@ -54,9 +55,9 @@ export function MarketingDealDrawer({ request, adapter, onClose }: {
       </div>
       {activeFilters.length > 0 && <div className="marketing-filter-chips drawer-chips"><span>Faol filtrlar</span>{activeFilters.map((filter) => <b key={filter}>{filter}</b>)}</div>}
       <div className="table-wrap marketing-deals-wrap"><table className="data-table marketing-deals-table">
-        <thead><tr><th>Deal</th><th>Manager</th><th>Current Stage</th><th>Quality</th><th>ICP</th><th>CRM manba</th><th>Marketing source</th><th>Platform</th><th>Campaign</th><th>Ad Set</th><th>Ad</th><th>Created date</th><th>Sale date</th><th>Revenue</th></tr></thead>
+        <thead><tr><th>Deal</th><th>Manager</th><th>Current Stage</th><th>Quality</th>{showIcp && <th>ICP</th>}<th>CRM manba</th><th>Marketing source</th><th>Platform</th><th>Campaign</th><th>Ad Set</th><th>Ad</th><th>Created date</th><th>Sale date</th><th>Revenue</th></tr></thead>
         <tbody>{deals.map((deal) => <tr key={deal.dealId}>
-          <td className="sticky-col"><strong>#{deal.dealId}</strong><small>{deal.title}</small></td><td>{deal.manager}</td><td>{deal.currentStage}</td><td>{deal.quality}</td><td><span className={`marketing-icp-tag ${deal.icp.toLowerCase()}`}>{deal.icp === "UNSET" ? "Belgilanmagan" : deal.icp === "OTHER" ? "Other" : deal.icp}</span></td><td>{deal.crmSource}</td><td>{deal.marketingSource}</td><td>{deal.platform}</td><td>{deal.campaign}</td><td>{deal.adSet}</td><td>{deal.ad}</td><td>{fmtDate(deal.createdAt)}</td><td>{fmtDate(deal.saleAt)}</td><td>{formatMarketingMoney(deal.revenue, deal.currency)}</td>
+          <td className="sticky-col"><strong>#{deal.dealId}</strong><small>{deal.title}</small></td><td>{deal.manager}</td><td>{deal.currentStage}</td><td>{deal.quality}</td>{showIcp && <td><span className={`marketing-icp-tag ${deal.icp.toLowerCase()}`}>{deal.icp === "UNSET" ? "Belgilanmagan" : deal.icp === "OTHER" ? "Other" : deal.icp}</span></td>}<td>{deal.crmSource}</td><td>{deal.marketingSource}</td><td>{deal.platform}</td><td>{deal.campaign}</td><td>{deal.adSet}</td><td>{deal.ad}</td><td>{fmtDate(deal.createdAt)}</td><td>{fmtDate(deal.saleAt)}</td><td>{formatMarketingMoney(deal.revenue, deal.currency)}</td>
         </tr>)}</tbody>
       </table></div>
       {!deals.length && <div className="marketing-empty">Bu kontekstda Deal topilmadi.</div>}
