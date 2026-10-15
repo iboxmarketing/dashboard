@@ -3,7 +3,7 @@
 import {
   Activity, AlertTriangle, ArrowLeft, BarChart3, CalendarDays, Check,
   ChevronDown, Clock3, Database, Download, ExternalLink, Gauge, LayoutDashboard,
-  Loader2, Menu, RefreshCw, Search, Settings, ShieldCheck,
+  Loader2, Megaphone, Menu, RefreshCw, Search, Settings, ShieldCheck,
   SlidersHorizontal, TimerReset, UserCheck, UserCog, Users, Wallet, X, XCircle, CircleDollarSign, ClipboardList, Layers3, GripVertical, ChevronUp,
   CalendarClock, HelpCircle
 } from "lucide-react";
@@ -54,7 +54,7 @@ import { AuthGate, type AuthSession } from "./auth/auth-shell";
 import { ProfileMenu } from "./auth/profile-menu";
 import { UsersScreen } from "./auth/users-screen";
 import { SellerReviewScreen } from "./seller-review-screen";
-import { canAccessView } from "@/lib/auth-permissions";
+import { canAccessView as mappedCanAccessView } from "@/lib/auth-permissions";
 import { authFetch } from "@/lib/auth-fetch";
 import { EmptyCohortNotice, SectionStatus, useSalesSection, useSectionFetch, type SectionCommon, type SectionState } from "./sales-data";
 import type {
@@ -79,11 +79,19 @@ import { hasPermission, type PermissionKey } from "@/lib/auth/permissions";
 import { SALES_PROJECTS, type ProjectKey } from "@/lib/sales-projects";
 import { responseMatchesProject, withProject } from "@/lib/project-url";
 import { ProjectProvider, ProjectSelector, ProjectSwitcher, lastProject, rememberProject, useProject } from "./project-context";
+import { MarketingView } from "./marketing/marketing-view";
+import { ManagerIcpAdditions, MarketingOverviewAdditions } from "./marketing/marketing-additions";
+import { FixtureMarketingAdapter } from "./marketing/marketing-adapter";
+import { marketingWorkspaceForProject } from "./marketing/marketing-workspaces";
+import { marketingViewRequested, searchForDashboardView } from "./marketing/marketing-url-state";
+
+/** Composition root: swap this one instance for HttpMarketingAdapter after the data branch is merged. */
+const marketingAdapter = new FixtureMarketingAdapter();
 
 /** Sales analytics views. Only these carry the global cohort filter bar. */
 const SALES_VIEWS = ["dashboard", "managers", "managerDetail", "leadFlow", "quality", "stages", "deals"] as const;
-/** Management views: no sales filters, no funnel/sync controls. */
-const MANAGEMENT_VIEWS = ["projects", "projectDetail", "pages", "pageDetail", "settings", "diagnostics", "finance", "users", "sellerReview"] as const;
+/** Views with their own data/filter lane: no Sales filters or Sales sync controls. */
+const MANAGEMENT_VIEWS = ["marketing", "projects", "projectDetail", "pages", "pageDetail", "settings", "diagnostics", "finance", "users", "sellerReview"] as const;
 /**
  * Finance is its own lane. It holds its own date filter and dataset and shares no
  * state with the Sales cohort filter, so opening Finance cannot move a Sales number.
@@ -92,7 +100,8 @@ export const isFinanceView = (view: string) => view === "finance";
 export const isSalesView = (view: string) => (SALES_VIEWS as readonly string[]).includes(view);
 export const isManagementView = (view: string) => (MANAGEMENT_VIEWS as readonly string[]).includes(view);
 
-type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "projects" | "projectDetail" | "pages" | "pageDetail" | "diagnostics" | "settings" | "finance" | "users" | "sellerReview";
+type MarketingViewId = "marketing";
+type View = "dashboard" | "managers" | "managerDetail" | "leadFlow" | "quality" | "stages" | "deals" | "projects" | "projectDetail" | "pages" | "pageDetail" | "diagnostics" | "settings" | "finance" | "users" | "sellerReview" | MarketingViewId;
 type SyncState = SyncProgressState;
 type Filters = {
   range: "today" | "yesterday" | "7" | "30" | "month" | "lastMonth" | "custom";
@@ -117,6 +126,9 @@ const idleSync: SyncState = {
 
 const navItems: { id: View; label: string; icon: typeof LayoutDashboard; permission: PermissionKey }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, permission: "dashboard" },
+  // Marketing is an additive, project-scoped view. During the fixture phase it
+  // inherits read access from Dashboard and adds no Auth/API capability.
+  { id: "marketing", label: "Marketing", icon: Megaphone, permission: "dashboard" },
   { id: "managers", label: "Menejerlar", icon: Users, permission: "managers" },
   { id: "leadFlow", label: "Lead oqimi", icon: BarChart3, permission: "leadFlow" },
   { id: "quality", label: "Lead sifati", icon: ClipboardList, permission: "quality" },
@@ -132,6 +144,11 @@ const navItems: { id: View; label: string; icon: typeof LayoutDashboard; permiss
   // refuses to grant that permission to anybody else, and the route re-checks it.
   { id: "sellerReview", label: "Sotuvchi tasdiqlash", icon: UserCheck, permission: "users" },
 ];
+
+/** Marketing V1 adds no Auth capability; it inherits the existing Dashboard read gate. */
+function canAccessView(user: Parameters<typeof mappedCanAccessView>[0], view: string) {
+  return mappedCanAccessView(user, view === "marketing" ? "dashboard" : view);
+}
 
 function pct(value: number, total: number) { return total ? Math.round((value / total) * 100) : 0; }
 /** The product-wide duration format lives in lib/ so it can be tested alone. */
@@ -565,6 +582,7 @@ function DashboardView({ section, onManager }: { section: DashboardSection; onMa
         return <KpiCard key={id} label={headlineCardLabel(id)} value={card.value} detail={card.detail} tone={card.tone} icon={card.icon} hint={card.hint} />;
       })}
     </section>
+    <MarketingOverviewAdditions workspace={marketingWorkspaceForProject(project)} adapter={marketingAdapter} />
     {/* Only with `managers`: the server sends no manager rows otherwise. */}
     {managers && <section className="panel"><SectionHeader title="Menejerlar performance" subtitle="Qatorni bossangiz dashboard shu menejer bo‘yicha filtrlanadi" /><ManagerTable rows={managers} limit={8} onSelect={onManager} /></section>}
   </>;
@@ -2220,6 +2238,13 @@ function DashboardApp({ session, project }: { session: AuthSession; project: Pro
   // never painted first. The API rejects the data calls regardless; this only
   // keeps the UI honest.
   const view: View = canAccessView(authUser, requestedView) ? requestedView : defaultView;
+  useEffect(() => {
+    const onPopState = () => setView(marketingViewRequested(window.location.search) ? "marketing" : defaultView);
+    let active = true;
+    queueMicrotask(() => { if (active) onPopState(); });
+    window.addEventListener("popstate", onPopState);
+    return () => { active = false; window.removeEventListener("popstate", onPopState); };
+  }, [defaultView]);
   const [selectedManager, setSelectedManager] = useState<{ id: string; name: string } | null>(null);
   const [filters, setFilters] = useState<Filters>(emptyFilters);
   const [refreshing, setRefreshing] = useState(false);
@@ -2587,6 +2612,10 @@ function DashboardApp({ session, project }: { session: AuthSession; project: Pro
     // still false here and the fetch below would never fire.
     if (view === "settings" && next !== "settings" && settingsDirty
       && !window.confirm("Sozlamalarda saqlanmagan o‘zgarishlar bor. Ularni tashlab ketilsinmi?")) return;
+    if (next === "marketing" || view === "marketing") {
+      const query = searchForDashboardView(window.location.search, next === "marketing");
+      window.history.pushState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
+    }
     setView(next);
     // Stage history is only needed by Stage Control, so it is fetched when the
     // user actually navigates there — once — rather than on the initial load.
@@ -2616,14 +2645,15 @@ function DashboardApp({ session, project }: { session: AuthSession; project: Pro
         : <button className="button secondary refresh" onClick={refresh}>{sync.status === "running" ? <TimerReset size={17} /> : refreshing ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}{sync.status === "running" ? "Pauza" : `${SALES_PROJECTS[project].name}ni sinxronlash`}</button>}</>}<ProfileMenu user={session.user} onChangePassword={session.changePassword} onLogout={session.logout} /></div></header>
       <div className="content-inner">
         {loadError && <div className="notice error page-notice"><XCircle size={18} />{loadError}<button onClick={() => setLoadError(null)}><X size={14} /></button></div>}
-        {canSettings && hasLegacyData && sync.status !== "running" && <div className="notice warning page-notice"><AlertTriangle size={18} /><span>Post-sale observer seller dalilini yuklash uchun Sozlamalarda CRM field’larini tekshirib, <strong>“To‘liq qayta sync”</strong>ni bosing. Analytics Backfill observer’ni Bitrix’dan yuklamaydi.</span><button onClick={() => setView("settings")}>Sozlamalar</button></div>}
-        {canSettings && ["running", "paused", "error"].includes(sync.status) && <SyncProgress sync={sync} busy={refreshing} onPause={() => void pauseCurrentSync()} onResume={() => void syncLoop("resume")} />}
+        {view !== "marketing" && canSettings && hasLegacyData && sync.status !== "running" && <div className="notice warning page-notice"><AlertTriangle size={18} /><span>Post-sale observer seller dalilini yuklash uchun Sozlamalarda CRM field’larini tekshirib, <strong>“To‘liq qayta sync”</strong>ni bosing. Analytics Backfill observer’ni Bitrix’dan yuklamaydi.</span><button onClick={() => setView("settings")}>Sozlamalar</button></div>}
+        {view !== "marketing" && canSettings && ["running", "paused", "error"].includes(sync.status) && <SyncProgress sync={sync} busy={refreshing} onPause={() => void pauseCurrentSync()} onResume={() => void syncLoop("resume")} />}
         {isSalesView(view) && <FiltersBar filters={filters} setFilters={setFilters} options={salesOptions} currentStages={effectiveCurrentStages}
           mode={view === "stages" ? "current" : "cohort"} canManagers={canManagers} canSearch={canDeals || view === "stages"} />}
         {isSalesView(view) && view !== "stages" && <CoverageNotice earliestDay={activeSales?.data?.coverageStart ?? null} filters={filters} />}
         {isSalesView(view) && view !== "stages" && activeSales && <SectionStatus state={activeSales} />}
         <ViewErrorBoundary onBack={() => setView(defaultView)}>
         {view === "dashboard" && dashboardSection.data && <><div className="page-title dashboard-title"><div><p className="eyebrow">SALES ANALYTICS</p><h1>Sales performance dashboard</h1><p>Tanlangan loyiha Sales + Обучение / Сопровождение bo‘yicha bitta oqim sifatida hisoblanadi.</p></div><div className="period-summary"><CalendarDays size={17} /><span>{rangeBounds(filters).from} — {rangeBounds(filters).to}</span><strong>{dashboardSection.data.leadCount} Leadlar</strong></div></div>{dashboardSection.data.leadCount === 0 && <EmptyCohortNotice />}<DashboardView section={dashboardSection.data} onManager={(manager) => { if (canManagers) { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); } }} /><TrendChart trend={dashboardSection.data.trend} /></>}
+        {view === "marketing" && <MarketingView workspace={marketingWorkspaceForProject(project)} adapter={marketingAdapter} />}
         {view === "managers" && managersSection.data && <><div className="page-title"><div><p className="eyebrow">TEAM PERFORMANCE</p><h1>Menejerlar</h1><p>Joriy Sales jamoasi reytingi. Tarixiy sotuvchilar pastda alohida ko‘rsatiladi.</p></div></div>
           <section className="dashboard-grid compact-kpis">
             <div className="section-header"><div><h2>Sotuv atributsiyasi</h2><p>Faqat tasdiqlangan sotuv xodim hisobiga kiradi; qolgani ko‘rinadi, lekin hech kimga yozilmaydi</p></div></div>
@@ -2634,6 +2664,7 @@ function DashboardApp({ session, project }: { session: AuthSession; project: Pro
           <section className="panel"><SectionHeader title="Joriy Sales jamoasi" subtitle="Lead va cohort konversiya — yaratilgan sana; davr sotuv — Oplata sanasi bo‘yicha" />
             <ManagerTable rows={managersSection.data.managers.filter((row) => row.activeRoster && row.id !== "review" && row.id !== "unknown")}
               onSelect={(manager) => { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); }} /></section>
+          <ManagerIcpAdditions workspace={marketingWorkspaceForProject(project)} adapter={marketingAdapter} />
           <FormerSellers rows={managersSection.data.managers.filter((row) => !row.activeRoster && row.id !== "review" && row.id !== "unknown")}
             onSelect={(manager) => { setSelectedManager({ id: manager.id, name: manager.name }); setView("managerDetail"); }} />
           <ReviewBucketPanel review={managersSection.data.review} /></>}
