@@ -6,7 +6,7 @@ import type { AttributionView, OutcomeRecord, SpendRow } from "./metrics";
 import type { MarketingFx } from "./money";
 import type { IcpConfig } from "./icp";
 import { getMarketingSettings, listAttributionViews, listSpend, marketingFx } from "./store";
-import { workspaceForProject, workspaceIcp, type WorkspaceKey } from "./workspaces";
+import { MARKETING_WORKSPACES, workspaceForProject, workspaceIcp, type WorkspaceKey } from "./workspaces";
 
 const noStore = { "cache-control": "no-store" };
 
@@ -81,13 +81,29 @@ export async function loadMarketingContext(project: ProjectKey, query: Marketing
 }
 
 /**
+ * `?workspace=IBOX_UZ|SD_UZ` (or the dashboard's `?project=`). A reserved
+ * workspace (IBOX_KZ, SD_KZ) has no CRM analytics yet, so it is refused with an
+ * explicit code rather than answered with an empty population.
+ */
+export function marketingScope(request: Request): { ok: true; project: ProjectKey } | { ok: false; response: Response } {
+  const raw = new URL(request.url).searchParams.get("workspace");
+  if (raw === null || raw === "") return requestProject(request);
+  const workspace = MARKETING_WORKSPACES.find((item) => item.key === raw);
+  if (!workspace) return { ok: false, response: Response.json({ error: "Workspace noto‘g‘ri" }, { status: 400, headers: noStore }) };
+  if (!workspace.activated || !workspace.project) {
+    return { ok: false, response: Response.json({ error: "Bu workspace hali faollashtirilmagan", code: "WORKSPACE_NOT_ACTIVATED", workspace: workspace.key }, { status: 409, headers: noStore }) };
+  }
+  return { ok: true, project: workspace.project };
+}
+
+/**
  * Project + query + context, then the endpoint's own body. Formatting is the
  * UI's job. The caller has ALREADY guarded the request — every marketing route
  * calls `authorizePermission` itself (dashboard to read, settings to run jobs),
  * where the route-guard audit can see it.
  */
 export async function marketingResponse(request: Request, build: (context: MarketingContext, params: URLSearchParams) => unknown) {
-  const scoped = requestProject(request);
+  const scoped = marketingScope(request);
   if (!scoped.ok) return scoped.response;
   const params = new URL(request.url).searchParams;
   const parsed = parseMarketingQuery(params);

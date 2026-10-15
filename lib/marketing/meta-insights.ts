@@ -117,6 +117,17 @@ export async function fetchCreatives(fetchImpl: Fetch, adIds: readonly string[],
   return out;
 }
 
+/**
+ * Meta throttling and transient failures (rate limits 4/17/32/613, Insights
+ * throttles 80000–80014, temporary 1/2, network, HTTP 5xx). The same window is
+ * retried later; nothing is skipped or restarted.
+ */
+export function isRetryableMetaError(code: string) {
+  if (code === "NETWORK" || /HTTP/.test(code)) return true;
+  const number = Number(/:(\d+)/.exec(code)?.[1] ?? NaN);
+  return [1, 2, 4, 17, 32, 341, 613].includes(number) || (number >= 80000 && number <= 80014);
+}
+
 /** The newest-first window walk: [max(from, cursor-6), cursor], then before it. */
 export function nextWindow(cursorUntil: string, from: string, days = 7): { since: string; until: string; nextCursor: string | null } | null {
   if (cursorUntil < from) return null;

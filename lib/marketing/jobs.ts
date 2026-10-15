@@ -3,7 +3,7 @@ import { env } from "cloudflare:workers";
 import { getD1 } from "@/db";
 import { getDictionary, saveDictionary } from "../storage";
 import type { AnalyticsRecord } from "../types";
-import { fetchCreatives, fetchDailyInsights, fetchMetaAccount, MetaApiError, nextWindow, normalizeAccountId, type MetaDailyRow } from "./meta-insights";
+import { fetchCreatives, fetchDailyInsights, fetchMetaAccount, isRetryableMetaError, MetaApiError, nextWindow, normalizeAccountId, type MetaDailyRow } from "./meta-insights";
 import { attributionBackfillPageSql } from "./sql";
 import { getMarketingSettings, getTrackingD1, materializeAttribution, upsertMetaDaily } from "./store";
 
@@ -76,10 +76,15 @@ export const META_SYNC_KEY = "metaInsightsSync";
 export const META_TOKEN_SECRET = "META_ADS_ACCESS_TOKEN";
 
 export type MetaSyncAccount = {
-  id: string; currency: string | null; timezone: string | null;
+  id: string; currency: string | null; timezone: string | null; name?: string | null;
   /** Next window ends here (YYYY-MM-DD); null when the account is complete. */
   cursor: string | null; error: string | null; rows: number;
+  /** A non-retryable error stopped this account; its cursor is kept for {action:"resume"}. */
+  paused?: boolean; attempts?: number;
+  /** The exact range already stored for this account. */
+  completedSince?: string | null; completedUntil?: string | null;
 };
+
 
 export type MetaSyncState = {
   status: "running" | "success" | "error" | "blocked";
@@ -104,7 +109,14 @@ async function adAccounts(): Promise<{ id: string }[]> {
   return (result.results ?? []).map((row) => normalizeAccountId(row.ad_account_id)).filter((id): id is string => Boolean(id)).map((id) => ({ id }));
 }
 
-export async function startMetaSync(days = 365, fetchImpl: typeof fetch = fetch): Promise<MetaSyncState> {
+/**
+ * Starts a run — unless one is already in progress, which is resumed instead:
+ * a second "start" never throws away stored progress. `restart` forces a fresh
+ * run (still idempotent: rows are upserted per date and ad).
+ */
+export async function startMetaSync(days = 365, fetchImpl: typeof fetch = fetch, restart = false): Promise<MetaSyncState> {
+  const existing = await getDictionary<MetaSyncState | null>(META_SYNC_KEY, null);
+  if (!restart && existing && existing.status === "running") return existing;
   const now = new Date();
   const safeDays = Math.max(1, Math.min(365, Math.floor(days)));
   const base = { from: dateKey(new Date(now.getTime() - (safeDays - 1) * 86_400_000)), to: dateKey(now), accounts: [], rows: 0, startedAt: now.toISOString(), updatedAt: now.toISOString() };
@@ -118,7 +130,7 @@ export async function startMetaSync(days = 365, fetchImpl: typeof fetch = fetch)
   for (const account of await adAccounts()) {
     try {
       const info = await fetchMetaAccount(fetchImpl, account.id, token);
-      accounts.push({ id: account.id, currency: info.currency, timezone: info.timezone, cursor: base.to, error: null, rows: 0 });
+      accounts.push({ id: account.id, currency: info.currency, timezone: info.timezone, name: info.name ?? null, cursor: base.to, error: null, rows: 0, completedSince: null, completedUntil: null });
     } catch (error) {
       accounts.push({ id: account.id, currency: null, timezone: null, cursor: null, error: error instanceof MetaApiError ? error.code : "UNKNOWN", rows: 0 });
     }
@@ -126,6 +138,16 @@ export async function startMetaSync(days = 365, fetchImpl: typeof fetch = fetch)
   const state: MetaSyncState = { ...base, accounts, status: accounts.some((account) => account.cursor) ? "running" : "error", reason: accounts.length ? null : "NO_AD_ACCOUNTS" };
   await saveDictionary(META_SYNC_KEY, state);
   return state;
+}
+
+/** Clears paused accounts so a stopped run continues from its saved cursors. */
+export async function resumeMetaSync(fetchImpl: typeof fetch = fetch): Promise<MetaSyncState> {
+  const state = await getDictionary<MetaSyncState | null>(META_SYNC_KEY, null);
+  if (!state) return startMetaSync(365, fetchImpl);
+  const accounts = state.accounts.map((account) => ({ ...account, paused: false, attempts: 0 }));
+  const resumed: MetaSyncState = { ...state, accounts, status: accounts.some((account) => account.cursor) ? "running" : state.status };
+  await saveDictionary(META_SYNC_KEY, resumed);
+  return stepMetaSync(fetchImpl);
 }
 
 /** One 7-day window of one account, newest first, then checkpoint. */
@@ -138,14 +160,15 @@ export async function stepMetaSync(fetchImpl: typeof fetch = fetch): Promise<Met
     await saveDictionary(META_SYNC_KEY, blocked);
     return blocked;
   }
-  const account = state.accounts.find((item) => item.cursor);
+  const account = state.accounts.find((item) => item.cursor && !item.paused);
   if (!account) {
-    const done = { ...state, status: "success" as const, updatedAt: new Date().toISOString() };
+    const done = { ...state, status: state.accounts.some((item) => item.paused) ? "error" as const : "success" as const, updatedAt: new Date().toISOString() };
     await saveDictionary(META_SYNC_KEY, done);
     return done;
   }
   const window = nextWindow(account.cursor as string, state.from);
   let added = 0;
+  let throttled = false;
   if (window) {
     try {
       const rows: MetaDailyRow[] = await fetchDailyInsights(fetchImpl, { id: account.id, currency: account.currency ?? "USD", timezone: account.timezone }, window.since, window.until, token);
@@ -157,16 +180,25 @@ export async function stepMetaSync(fetchImpl: typeof fetch = fetch): Promise<Met
       }
       await upsertMetaDaily(rows);
       added = rows.length;
+      // Newest first: the stored range grows backwards from the first window's end.
+      account.completedUntil = account.completedUntil ?? window.until;
+      account.completedSince = window.since;
       account.cursor = window.nextCursor;
+      account.error = null; account.attempts = 0;
     } catch (error) {
-      account.error = error instanceof MetaApiError ? error.code : "UNKNOWN";
-      account.cursor = null;
+      const code = error instanceof MetaApiError ? error.code : "UNKNOWN";
+      account.error = code;
+      account.attempts = (account.attempts ?? 0) + 1;
+      // Throttled: keep the same window for a later step. Anything else pauses
+      // only this account, its cursor kept so "resume" continues — never restarts.
+      if (isRetryableMetaError(code) && account.attempts < 8) throttled = true;
+      else account.paused = true;
     }
   } else account.cursor = null;
   account.rows += added;
-  const next: MetaSyncState = {
-    ...state, rows: state.rows + added, updatedAt: new Date().toISOString(),
-    status: state.accounts.some((item) => item.cursor) ? "running" : state.accounts.some((item) => item.rows > 0) ? "success" : "error",
+  const next: MetaSyncState & { throttled?: boolean } = {
+    ...state, rows: state.rows + added, updatedAt: new Date().toISOString(), throttled,
+    status: state.accounts.some((item) => item.cursor && !item.paused) ? "running" : state.accounts.some((item) => item.paused) ? "error" : "success",
   };
   await saveDictionary(META_SYNC_KEY, next);
   return next;

@@ -9,7 +9,7 @@ import { trackingCoverageRow, workspaceCoverage } from "../lib/marketing/coverag
 import { buildDealAttribution, stableId } from "../lib/marketing/attribution";
 import { ICP_FIELD, marketingSelect, resolveMarketingFields } from "../lib/marketing/fields";
 import { countIcp, icpClassFromLabel, readIcp, type IcpConfig } from "../lib/marketing/icp";
-import { fetchDailyInsights, nextWindow, parseInsightRow } from "../lib/marketing/meta-insights";
+import { fetchDailyInsights, isRetryableMetaError, nextWindow, parseInsightRow } from "../lib/marketing/meta-insights";
 import {
   buildCoverage, buildEntities, buildSummary, costMetrics, dealOutcome, dealsForMetric, spendTotals, UNATTRIBUTED,
   type AttributionView, type OutcomeRecord, type SpendRow,
@@ -483,6 +483,24 @@ test("campaign and ad set spend inside a project roll up its assigned ads only",
   const [adset] = buildEntities({ level: "adset", cohort: [], attribution: new Map(), spend: ibox, fx: FX, icp: IBOX_ICP });
   assert.equal(campaign.spendUzs, 118_000, "the MIXED ad of the same campaign is not forced in");
   assert.equal(adset.spendUzs, 118_000);
+});
+
+test("Meta backfill survives throttling: same window retried, a hard error pauses one account, start never wipes a run", () => {
+  const jobs = read("lib/marketing/jobs.ts");
+  for (const code of ["OAuthException:4", "OAuthException:17", "OAuthException:613", "OAuthException:80000", "OAuthException:80004", "NETWORK", "HTTP", "OAuthException:2"]) assert.equal(isRetryableMetaError(code), true, code);
+  for (const code of ["OAuthException:190", "OAuthException:100", "OAuthException:200", "OAuthException:10"]) assert.equal(isRetryableMetaError(code), false, code);
+  assert.match(jobs, /if \(isRetryableMetaError\(code\) && account\.attempts < 8\) throttled = true;\n\s+else account\.paused = true;/, "a throttle keeps the cursor; a hard error pauses only that account");
+  assert.doesNotMatch(jobs.slice(jobs.indexOf("export async function stepMetaSync")), /account\.cursor = null;\n\s+\}\s*catch|catch[\s\S]{0,200}account\.cursor = null/, "an error never discards the cursor");
+  assert.match(jobs, /if \(!restart && existing && existing\.status === "running"\) return existing;/, "a second start resumes");
+  assert.match(jobs, /account\.completedUntil = account\.completedUntil \?\? window\.until;\n\s+account\.completedSince = window\.since;/, "the exact stored range is recorded");
+  assert.match(read("app/api/marketing/meta-sync/route.ts"), /if \(payload\.action === "resume"\) return resumeMetaSync\(\);/);
+});
+
+test("marketing APIs take ?workspace=; a reserved KZ workspace is refused explicitly, not answered empty", () => {
+  const http = read("lib/marketing/http.ts");
+  assert.match(http, /if \(!workspace\.activated \|\| !workspace\.project\) \{\n\s+return \{ ok: false, response: Response\.json\(\{ error: "Bu workspace hali faollashtirilmagan", code: "WORKSPACE_NOT_ACTIVATED"/);
+  assert.match(http, /const scoped = marketingScope\(request\);/);
+  assert.match(http, /if \(raw === null \|\| raw === ""\) return requestProject\(request\);/, "?project= keeps working");
 });
 
 /* ------------------------------------------------ isolation and guards */
