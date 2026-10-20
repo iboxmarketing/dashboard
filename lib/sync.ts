@@ -539,8 +539,12 @@ async function lookupStep(job: StoredSyncJob) {
   const permissions = { ...job.permissions };
   try { users = await bitrixList<Record<string, unknown>>("user.get", { FILTER: { ACTIVE: true } }, { maxPages: 20 }); } catch { permissions.managers = "error"; }
   try { statuses = await bitrixList<Record<string, unknown>>("crm.status.list", { order: { SORT: "ASC" } }, { maxPages: 20 }); } catch { /* Raw IDs remain visible. */ }
-  await saveDictionary("users", users);
-  await saveDictionary("statuses", statuses);
+  // A failed or empty lookup must not replace the last good directory: saving []
+  // made a whole run write "Menejer #<id>" for every seller (2026-10-20 06:35 UTC,
+  // production). The previous dictionary stays until a lookup succeeds; the
+  // failure is still recorded in `permissions.managers`.
+  if (users.length) await saveDictionary("users", users);
+  if (statuses.length) await saveDictionary("statuses", statuses);
   await saveDictionary("pipelines", [...job.selectedPipelines, ...job.reportingPipelines]);
   // The owner-approved Sales roster is a list of NAMES (lib/seller-roster.ts).
   // Resolve it to Bitrix user ids once, here, where the fresh directory is in

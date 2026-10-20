@@ -13,7 +13,7 @@ import { countsCurrently, dealLifecycle, lifecycleBreakdown } from "./deal-lifec
 import { DEFAULT_PROJECT, recordProject, type ProjectKey } from "./sales-projects";
 import { certifyStoredAttribution, countsForScorecard } from "./seller-evidence";
 import { FUNNEL_OWNER_LABELS, funnelOwnerBreakdown, funnelOwnerKey, resolveFunnelOwner } from "./funnel-owner";
-import { resolveManagerName } from "./manager-identity";
+import { canonicalizeManagerNames, resolveManagerName, type ManagerNameDirectory } from "./manager-identity";
 import { SLA_LABELS, resolveSlaState } from "./sla";
 import { TREND_METRICS, buildTrendSeriesSet, type TrendMetricId, type TrendPoint } from "./trend-series";
 import type { DashboardSettings, SyncProgressState } from "./types";
@@ -146,8 +146,8 @@ export function hydrateRecord(row: DashboardRecord): DashboardRecord {
  * order, as the dashboard's load: hydrate, keep the selected project's
  * pipelines, re-resolve SLA against the clock, mark duplicates.
  */
-export function prepareSalesRecords(rows: DashboardRecord[], settings: DashboardSettings, now: Date = new Date(), project: ProjectKey = DEFAULT_PROJECT): DashboardRecord[] {
-  return resolveSalesSla(prepareSalesBase(rows, settings, project), settings, now);
+export function prepareSalesRecords(rows: DashboardRecord[], settings: DashboardSettings, now: Date = new Date(), project: ProjectKey = DEFAULT_PROJECT, directory?: ManagerNameDirectory): DashboardRecord[] {
+  return resolveSalesSla(prepareSalesBase(rows, settings, project, directory), settings, now);
 }
 
 /**
@@ -160,8 +160,14 @@ export function prepareSalesRecords(rows: DashboardRecord[], settings: Dashboard
  * sorts stably, so marking before or after the SLA pass yields the same rows
  * in the same order.
  */
-export function prepareSalesBase(rows: DashboardRecord[], settings: Pick<DashboardSettings, "selectedPipelineIds" | "postSalePipelineIds">, project: ProjectKey = DEFAULT_PROJECT): DashboardRecord[] {
-  return markDuplicates(projectScopedRecords(rows.map(hydrateRecord), settings, project));
+export function prepareSalesBase(
+  rows: DashboardRecord[], settings: Pick<DashboardSettings, "selectedPipelineIds" | "postSalePipelineIds">, project: ProjectKey = DEFAULT_PROJECT,
+  directory?: ManagerNameDirectory,
+): DashboardRecord[] {
+  // Display names are settled once, here, from the stable id (lib/manager-identity.ts):
+  // a stored "Menejer #<id>" never reaches a table, filter or detail while that
+  // person's real name is known. Only name strings change; ids and owners do not.
+  return markDuplicates(canonicalizeManagerNames(projectScopedRecords(rows.map(hydrateRecord), settings, project), directory));
 }
 
 /**

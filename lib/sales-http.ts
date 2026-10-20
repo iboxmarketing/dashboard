@@ -4,7 +4,9 @@ import { authError, requirePermission } from "@/lib/auth/http";
 import { hasPermission, type PermissionKey } from "@/lib/auth/permissions";
 import { normalizeSettings } from "@/lib/settings-safety";
 import { getDictionary, getSettings, getSyncState, listDashboardRecordJsonWithFingerprint, readSalesFingerprint } from "@/lib/storage";
-import { DEFAULT_PROJECT, parseProjectKey, type ProjectKey } from "@/lib/sales-projects";
+import { DEFAULT_PROJECT, SALES_DOCTOR_ROSTER, parseProjectKey, type ProjectKey } from "@/lib/sales-projects";
+import { managerNameDirectory, type ManagerNameDirectory } from "@/lib/manager-identity";
+import { rosterDictionaryKey, type RosterResolution } from "@/lib/seller-roster";
 import { projectSyncKey, type ProjectSyncRecord } from "@/lib/project-sync";
 import { salesBaseCache, salesCacheKey } from "@/lib/sales-cache";
 import {
@@ -20,6 +22,20 @@ export type SalesLoadTiming = { cache: "hit" | "miss"; loadMs: number };
  * otherwise the rows are read together with their fingerprint, parsed and
  * prepared once. The SLA state is resolved against `now` on every request.
  */
+/**
+ * The project's canonical manager names: its Sales roster first, then the Bitrix
+ * users directory (lib/manager-identity.ts). Both live in `crm_dictionaries`, whose
+ * `updated_at` is part of the Sales fingerprint, so a cached base is never kept
+ * with names older than the directory it was resolved from.
+ */
+export async function loadManagerDirectory(project: ProjectKey): Promise<ManagerNameDirectory> {
+  const [rosterEntries, userRows] = await Promise.all([
+    getDictionary<RosterResolution[]>(rosterDictionaryKey(project), []),
+    getDictionary<Record<string, unknown>[]>("users", []),
+  ]);
+  return managerNameDirectory({ rosterEntries, staticRoster: project === "SALES_DOCTOR" ? SALES_DOCTOR_ROSTER : [], userRows });
+}
+
 export async function loadSalesRecords(now = new Date(), project: ProjectKey = DEFAULT_PROJECT) {
   const started = Date.now();
   const [fingerprint, rawSettings, sync, projectSync] = await Promise.all([
@@ -30,8 +46,8 @@ export async function loadSalesRecords(now = new Date(), project: ProjectKey = D
   let base = salesBaseCache.get(salesCacheKey(fingerprint, settings, project), Date.now(), project);
   const cache: SalesLoadTiming["cache"] = base ? "hit" : "miss";
   if (!base) {
-    const fresh = await listDashboardRecordJsonWithFingerprint();
-    base = prepareSalesBase(fresh.rows.map((row) => JSON.parse(row) as DashboardRecord), settings, project);
+    const [fresh, directory] = await Promise.all([listDashboardRecordJsonWithFingerprint(), loadManagerDirectory(project)]);
+    base = prepareSalesBase(fresh.rows.map((row) => JSON.parse(row) as DashboardRecord), settings, project, directory);
     salesBaseCache.set(salesCacheKey(fresh.fingerprint, settings, project), base, Date.now(), project);
   }
   // Workers advance the clock only across I/O, so this is the D1 wall time.

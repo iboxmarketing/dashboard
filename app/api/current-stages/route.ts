@@ -2,7 +2,7 @@ import { bitrixCall, getBitrixDomain, safeBitrixMessage } from "@/lib/bitrix";
 import { buildCurrentStageRecords, reconcileCurrentStages } from "@/lib/current-stages";
 import { buildStatusMaps } from "@/lib/analytics-dictionaries";
 import { getDictionary, getSettings, listAnalyticsRecords } from "@/lib/storage";
-import { requestProject } from "@/lib/sales-http";
+import { loadManagerDirectory, requestProject } from "@/lib/sales-http";
 import { recordProject } from "@/lib/sales-projects";
 import { listPipelineStages } from "@/lib/sync";
 import { authorizePermission } from "@/lib/auth/http";
@@ -22,11 +22,6 @@ function stageSettings(settings: DashboardSettings) {
     qualifiedStageIds: settings.qualifiedStageIds, lowQualityStageIds: settings.lowQualityStageIds,
     paymentStageIds: settings.paymentStageIds, closedLostStageIds: settings.closedLostStageIds,
   };
-}
-
-function value(row: Record<string, unknown>, key: string) {
-  const raw = row[key];
-  return raw === null || raw === undefined ? "" : String(raw);
 }
 
 /**
@@ -55,7 +50,7 @@ export async function GET(request: Request) {
       }, { status: 409 });
     }
 
-    const [load, userRows, statusRows, cachedRecords] = await Promise.all([
+    const [load, directory, statusRows, cachedRecords] = await Promise.all([
       loadStageControl({
         project: scoped.project,
         categoryIds,
@@ -67,7 +62,7 @@ export async function GET(request: Request) {
         writeSnapshot: writeStageControlSnapshot,
         log: (message) => console.warn(message),
       }),
-      getDictionary<Record<string, unknown>[]>("users", []),
+      loadManagerDirectory(scoped.project),
       getDictionary<Record<string, unknown>[]>("statuses", []),
       listAnalyticsRecords().then((rows) => rows.filter((row) => recordProject(row) === scoped.project)),
     ]);
@@ -91,7 +86,9 @@ export async function GET(request: Request) {
       stages.set(`${stage.categoryId}:${stage.id}`, stage.name);
       if (!stages.has(stage.id)) stages.set(stage.id, stage.name);
     }
-    const users = new Map(userRows.map((row) => [value(row, "ID"), [value(row, "NAME"), value(row, "LAST_NAME")].filter(Boolean).join(" ") || `Menejer #${value(row, "ID")}`]));
+    // The shared manager-name rule (lib/manager-identity.ts): roster name, then the
+    // users directory; an id with neither keeps the builder's `Menejer #<id>`.
+    const users = new Map([...directory.users, ...directory.roster]);
     const { sources } = buildStatusMaps(statusRows);
     // Live Bitrix returns every non-closed Deal in the funnel; the canonical
     // workload is narrower (lib/current-stages.ts). Whatever is left out is

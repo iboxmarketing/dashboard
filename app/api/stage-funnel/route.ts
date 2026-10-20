@@ -1,5 +1,6 @@
 import { getSettings, listStageFunnelJson } from "@/lib/storage";
-import { requestProject } from "@/lib/sales-http";
+import { loadManagerDirectory, requestProject } from "@/lib/sales-http";
+import { canonicalizeManagerNames } from "@/lib/manager-identity";
 import { authorizePermission } from "@/lib/auth/http";
 import { projectScopedRecords } from "@/lib/sales-sections";
 import type { StageFunnelRecord } from "@/lib/dashboard-record";
@@ -20,8 +21,9 @@ export async function GET(request: Request) {
   const scoped = requestProject(request);
   if (!scoped.ok) return scoped.response;
   try {
-    const [rows, settings] = await Promise.all([listStageFunnelJson(), getSettings(scoped.project)]);
-    const records = projectScopedRecords(rows.map((row) => JSON.parse(row) as StageFunnelRecord), settings, scoped.project);
+    const [rows, settings, directory] = await Promise.all([listStageFunnelJson(), getSettings(scoped.project), loadManagerDirectory(scoped.project)]);
+    // The same manager-name rule as every Sales section; ids are untouched.
+    const records = canonicalizeManagerNames(projectScopedRecords(rows.map((row) => JSON.parse(row) as StageFunnelRecord), settings, scoped.project), directory);
     return Response.json({ records, project: scoped.project });
   } catch {
     return Response.json({ error: "Stage tarixini yuklab bo‘lmadi" }, { status: 500 });

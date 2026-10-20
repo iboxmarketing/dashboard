@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { canonicalizeManagerNames } from "../lib/manager-identity";
 import { readFileSync } from "node:fs";
 import { businessMinutesExceed, calculateBusinessMinutes, defaultSettings, getSlaStart } from "../lib/business-time";
 import { markDuplicates } from "../lib/duplicates";
@@ -94,7 +95,9 @@ function referencePrepare(rows: DashboardRecord[], settings: DashboardSettings, 
       funnelOwnerId: owner.ownerId, funnelOwnerName: owner.ownerName, funnelOwnerBasis: owner.basis,
     };
   });
-  return markDuplicates(decided.map((row) => ({ ...row, slaStatus: referenceSla(row, settings, now) })));
+  // Display names are settled from the stable id before anything else reads them
+  // (hotfix 2026-10-20, lib/manager-identity.ts); the reference pass does the same.
+  return markDuplicates(canonicalizeManagerNames(decided).map((row) => ({ ...row, slaStatus: referenceSla(row, settings, now) })));
 }
 
 /** `resolveSlaState` exactly as it was: the full elapsed walk, then the comparison. */
